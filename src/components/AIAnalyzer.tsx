@@ -1,5 +1,5 @@
-import { useState, useRef } from "react";
-import { Upload, FileText, Loader2, AlertCircle, Copy, Check, Sparkles, ChevronRight, AlertTriangle } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { Upload, FileText, Loader2, AlertCircle, Copy, Check, Sparkles, ChevronRight, AlertTriangle, LogIn } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -7,6 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { supabase } from "@/integrations/supabase/client";
+import { Session } from "@supabase/supabase-js";
 
 interface AnalysisResult {
   scenario: string;
@@ -34,9 +36,26 @@ const AIAnalyzer = () => {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+
+  useEffect(() => {
+    // Set up auth state listener
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (event, session) => {
+        setSession(session);
+      }
+    );
+
+    // Check for existing session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -83,11 +102,22 @@ const AIAnalyzer = () => {
     setResult(null);
 
     try {
+      if (!session?.access_token) {
+        setError("Please log in to use the AI analyzer");
+        toast({
+          title: "Authentication required",
+          description: "Please log in to use the AI analyzer",
+          variant: "destructive",
+        });
+        setIsAnalyzing(false);
+        return;
+      }
+
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-response`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          "Authorization": `Bearer ${session.access_token}`,
         },
         body: JSON.stringify({
           responseText: responseText || undefined,
@@ -160,6 +190,22 @@ const AIAnalyzer = () => {
         </div>
 
         {/* Input form */}
+        {!session ? (
+          <div className="card-elevated rounded-2xl border border-border/50 p-8 text-center">
+            <LogIn className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+            <h3 className="text-xl font-serif font-semibold text-foreground mb-2">Authentication Required</h3>
+            <p className="text-muted-foreground mb-6">
+              Please log in to use the AI-powered response analyzer.
+            </p>
+            <Button 
+              onClick={() => window.location.href = '/auth'}
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              <LogIn className="w-4 h-4 mr-2" />
+              Log In to Continue
+            </Button>
+          </div>
+        ) : (
         <div className="card-elevated rounded-2xl border border-border/50 p-6 md:p-8 space-y-6">
           {/* Image upload or text input */}
           <div className="space-y-4">
@@ -312,7 +358,7 @@ const AIAnalyzer = () => {
             </div>
           )}
         </div>
-
+        )}
         {/* Results */}
         {result && (
           <div className="mt-8 space-y-6 animate-slide-up">
