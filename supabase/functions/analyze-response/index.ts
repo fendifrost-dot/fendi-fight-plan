@@ -51,6 +51,11 @@ Always include placeholders like:
 
 Remind users: "If you don't include account numbers and dates opened, bureaus exploit ambiguity."`;
 
+// Input validation constants
+const MAX_IMAGE_SIZE = 15000000; // ~10MB base64
+const MAX_TEXT_LENGTH = 50000;
+const VALID_BUREAUS = ['experian', 'equifax', 'transunion'];
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -59,9 +64,57 @@ serve(async (req) => {
   try {
     const { responseText, responseImage, bureau, disputeDate, responseDate, hasIdentityDocs } = await req.json();
 
+    // Input validation
+    if (responseImage) {
+      if (typeof responseImage !== 'string') {
+        return new Response(JSON.stringify({ error: "Invalid image format" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (responseImage.length > MAX_IMAGE_SIZE) {
+        return new Response(JSON.stringify({ error: "Image size exceeds maximum allowed (10MB)" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (!responseImage.match(/^data:image\/(png|jpg|jpeg|gif|webp);base64,/)) {
+        return new Response(JSON.stringify({ error: "Invalid image format. Please upload PNG, JPG, GIF, or WebP" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    if (responseText) {
+      if (typeof responseText !== 'string') {
+        return new Response(JSON.stringify({ error: "Invalid text format" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (responseText.length > MAX_TEXT_LENGTH) {
+        return new Response(JSON.stringify({ error: "Text exceeds maximum length (50,000 characters)" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    if (bureau && !VALID_BUREAUS.includes(bureau.toLowerCase())) {
+      return new Response(JSON.stringify({ error: "Invalid bureau. Must be Experian, Equifax, or TransUnion" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) {
-      throw new Error("LOVABLE_API_KEY is not configured");
+      console.error("LOVABLE_API_KEY is not configured");
+      return new Response(JSON.stringify({ error: "Service configuration error. Please contact support." }), {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     const userContent: any[] = [];
@@ -86,7 +139,10 @@ serve(async (req) => {
         text: contextMessage + `\n\nBureau Response Text:\n"""\n${responseText}\n"""`
       });
     } else {
-      throw new Error("No response text or image provided");
+      return new Response(JSON.stringify({ error: "Please provide a response image or text to analyze" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
@@ -118,16 +174,25 @@ serve(async (req) => {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
+      // Log detailed error server-side only
       const errorText = await response.text();
       console.error("AI gateway error:", response.status, errorText);
-      throw new Error(`AI gateway error: ${response.status}`);
+      // Return generic message to client
+      return new Response(JSON.stringify({ error: "An error occurred while analyzing the response. Please try again." }), {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content;
     
     if (!content) {
-      throw new Error("No content in AI response");
+      console.error("No content in AI response");
+      return new Response(JSON.stringify({ error: "Unable to analyze the response. Please try again." }), {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     let parsedResult;
@@ -149,9 +214,11 @@ serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
+    // Log detailed errors server-side only
     console.error("Error in analyze-response function:", error);
+    // Return generic message to client
     return new Response(JSON.stringify({ 
-      error: error instanceof Error ? error.message : "Unknown error occurred" 
+      error: "An error occurred while processing your request. Please try again." 
     }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
