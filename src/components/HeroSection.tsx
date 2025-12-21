@@ -23,7 +23,7 @@ const HeroSection = () => {
         
         {/* Title */}
         <h1 className="text-5xl md:text-7xl font-serif font-bold mb-6 animate-slide-up">
-          <span className="text-gold-gradient">Fendi Frost</span>
+          <span className="text-gold-gradient">Continuum Capital Group</span>
           <br />
           <span className="text-foreground">Credit Dispute System</span>
           <span className="text-primary">™</span>

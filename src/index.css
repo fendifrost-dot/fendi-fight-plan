@@ -4,7 +4,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Fendi Credit Dispute System - Premium Legal/Financial Design System */
+/* Continuum Capital Group Credit Dispute System - Premium Legal/Financial Design System */
 
 @layer base {
   :root {
@@ -20,7 +20,7 @@
     --popover: 220 18% 10%;
     --popover-foreground: 45 30% 95%;
 
-    /* Gold accent - luxury Fendi inspired */
+    /* Gold accent - luxury inspired */
     --primary: 42 75% 55%;
     --primary-foreground: 220 20% 8%;
 
