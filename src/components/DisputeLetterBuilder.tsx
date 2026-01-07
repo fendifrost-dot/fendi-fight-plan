@@ -1,18 +1,48 @@
-import { useState } from "react";
-import { FileText, Loader2, Copy, Check, AlertTriangle, Scale, ChevronRight, Shield, HelpCircle } from "lucide-react";
+import { useState, useMemo } from "react";
+import { FileText, Loader2, Copy, Check, AlertTriangle, Scale, Shield, HelpCircle, User, MapPin, Building2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import { supabase } from "@/integrations/supabase/client";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+
+// HARDCODED BUREAU DATA (NON-NEGOTIABLE)
+const BUREAU_DATA = {
+  experian: {
+    legalName: "Experian Information Solutions, Inc.",
+    address: "P.O. Box 4500",
+    cityStateZip: "Allen, TX 75013",
+  },
+  equifax: {
+    legalName: "Equifax Information Services LLC",
+    address: "P.O. Box 740256",
+    cityStateZip: "Atlanta, GA 30374",
+  },
+  transunion: {
+    legalName: "TransUnion LLC",
+    address: "P.O. Box 2000",
+    cityStateZip: "Chester, PA 19016",
+  },
+} as const;
+
+type BureauKey = keyof typeof BUREAU_DATA;
+
+// Consumer info interface
+interface ConsumerInfo {
+  fullName: string;
+  addressLine1: string;
+  addressLine2: string;
+  cityStateZip: string;
+}
 
 // Survey answers interface
 interface DisputeSurvey {
@@ -112,7 +142,33 @@ const surveyQuestions = [
 
 const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuilderProps) => {
   const { toast } = useToast();
-  
+
+  // Parse extracted address into components if available
+  const parseAddress = (addr: string) => {
+    // Try to parse "City, State ZIP" pattern from the end
+    const parts = addr.split(',').map(p => p.trim());
+    if (parts.length >= 2) {
+      return {
+        line1: parts.slice(0, -1).join(', '),
+        cityStateZip: parts[parts.length - 1],
+      };
+    }
+    return { line1: addr, cityStateZip: '' };
+  };
+
+  const parsedAddr = parseAddress(extractedData.currentAddress || '');
+
+  // Consumer info state - pre-populated from extracted data
+  const [consumerInfo, setConsumerInfo] = useState<ConsumerInfo>({
+    fullName: extractedData.fullLegalName || '',
+    addressLine1: parsedAddr.line1,
+    addressLine2: '',
+    cityStateZip: parsedAddr.cityStateZip,
+  });
+
+  // Bureau selection
+  const [selectedBureaus, setSelectedBureaus] = useState<BureauKey[]>([]);
+
   const [survey, setSurvey] = useState<DisputeSurvey>({
     isFraudulent: false,
     isIdentityTheft: false,
@@ -127,48 +183,92 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
     hasPreviousDisputes: false,
     additionalFacts: "",
   });
-  
+
   const [isGenerating, setIsGenerating] = useState(false);
-  const [generatedLetter, setGeneratedLetter] = useState<string | null>(null);
+  const [generatedLetters, setGeneratedLetters] = useState<{ bureau: BureauKey; letter: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+
+  const updateConsumerInfo = <K extends keyof ConsumerInfo>(key: K, value: string) => {
+    setConsumerInfo(prev => ({ ...prev, [key]: value }));
+  };
+
+  const toggleBureau = (bureau: BureauKey) => {
+    setSelectedBureaus(prev =>
+      prev.includes(bureau)
+        ? prev.filter(b => b !== bureau)
+        : [...prev, bureau]
+    );
+  };
 
   const updateSurvey = <K extends keyof DisputeSurvey>(key: K, value: DisputeSurvey[K]) => {
     setSurvey(prev => ({ ...prev, [key]: value }));
   };
 
+  // Validation: Check if all required fields are filled
+  const validationErrors = useMemo(() => {
+    const errors: string[] = [];
+    if (!consumerInfo.fullName.trim()) errors.push("Full legal name is required");
+    if (!consumerInfo.addressLine1.trim()) errors.push("Street address is required");
+    if (!consumerInfo.cityStateZip.trim()) errors.push("City, State, ZIP is required");
+    if (selectedBureaus.length === 0) errors.push("Select at least one credit bureau");
+    return errors;
+  }, [consumerInfo, selectedBureaus]);
+
+  const canGenerate = validationErrors.length === 0;
+
   const handleGenerateLetter = async () => {
+    if (!canGenerate) {
+      setError(`Cannot generate letter: ${validationErrors.join(', ')}`);
+      return;
+    }
+
     setIsGenerating(true);
     setError(null);
-    setGeneratedLetter(null);
+    setGeneratedLetters([]);
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 90000); // 90s timeout for letter generation
+    const timeoutId = setTimeout(() => controller.abort(), 120000); // 120s for multiple letters
 
     try {
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-dispute-letter`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({
-          survey,
-          extractedData,
-        }),
-        signal: controller.signal,
+      // Generate letters for each selected bureau
+      const letterPromises = selectedBureaus.map(async (bureauKey) => {
+        const bureau = BUREAU_DATA[bureauKey];
+        const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-dispute-letter`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            survey,
+            extractedData,
+            consumerInfo,
+            bureau: {
+              key: bureauKey,
+              legalName: bureau.legalName,
+              address: bureau.address,
+              cityStateZip: bureau.cityStateZip,
+            },
+          }),
+          signal: controller.signal,
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || `Failed to generate letter for ${bureau.legalName}`);
+        }
+
+        return { bureau: bureauKey, letter: data.letter };
       });
 
-      const data = await response.json();
-      
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to generate dispute letter");
-      }
+      const results = await Promise.all(letterPromises);
+      setGeneratedLetters(results);
 
-      setGeneratedLetter(data.letter);
       toast({
-        title: "Dispute letter generated",
-        description: "Your dispute letter is ready. Review and copy it.",
+        title: `${results.length} dispute letter${results.length > 1 ? 's' : ''} generated`,
+        description: "Your letters are ready. Review and copy them.",
       });
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
@@ -187,19 +287,20 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
     }
   };
 
-  const copyLetter = async () => {
-    if (!generatedLetter) return;
-    await navigator.clipboard.writeText(generatedLetter);
-    setCopied(true);
+  const copyLetter = async (index: number) => {
+    const letter = generatedLetters[index]?.letter;
+    if (!letter) return;
+    await navigator.clipboard.writeText(letter);
+    setCopiedIndex(index);
     toast({
       title: "Copied to clipboard",
-      description: "Dispute letter copied successfully",
+      description: `${BUREAU_DATA[generatedLetters[index].bureau].legalName} letter copied`,
     });
-    setTimeout(() => setCopied(false), 2000);
+    setTimeout(() => setCopiedIndex(null), 2000);
   };
 
   // Count disputable items
-  const totalItems = 
+  const totalItems =
     extractedData.inaccurateNames.length +
     extractedData.inaccurateAddresses.length +
     extractedData.derogatoryAccounts.length +
@@ -220,18 +321,118 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
           Dispute Letter Builder
         </h3>
         <p className="text-muted-foreground max-w-2xl mx-auto">
-          Answer the following questions to generate a legally-grounded dispute letter 
-          citing FCRA statutes and incorporating all {totalItems} identified items.
+          Generate print-ready dispute letters for {totalItems} identified items.
+          All letters are automatically addressed with correct bureau information.
         </p>
       </div>
 
-      {/* Survey Section */}
+      {/* Step 1: Consumer Information */}
+      <div className="card-elevated rounded-2xl border border-border/50 p-6 md:p-8">
+        <h4 className="text-lg font-serif font-semibold text-foreground mb-6 flex items-center gap-2">
+          <User className="w-5 h-5 text-primary" />
+          Step 1: Your Information
+        </h4>
+        <p className="text-sm text-muted-foreground mb-6">
+          This information will appear in the letterhead. Pre-populated from your credit report.
+        </p>
+
+        <div className="grid gap-4">
+          <div className="space-y-2">
+            <Label htmlFor="fullName">Full Legal Name *</Label>
+            <Input
+              id="fullName"
+              placeholder="John Michael Smith"
+              value={consumerInfo.fullName}
+              onChange={(e) => updateConsumerInfo('fullName', e.target.value)}
+              className="bg-muted/30"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="addressLine1">Street Address *</Label>
+            <Input
+              id="addressLine1"
+              placeholder="123 Main Street"
+              value={consumerInfo.addressLine1}
+              onChange={(e) => updateConsumerInfo('addressLine1', e.target.value)}
+              className="bg-muted/30"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="addressLine2">Apartment / Suite (Optional)</Label>
+            <Input
+              id="addressLine2"
+              placeholder="Apt 4B"
+              value={consumerInfo.addressLine2}
+              onChange={(e) => updateConsumerInfo('addressLine2', e.target.value)}
+              className="bg-muted/30"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="cityStateZip">City, State ZIP *</Label>
+            <Input
+              id="cityStateZip"
+              placeholder="New York, NY 10001"
+              value={consumerInfo.cityStateZip}
+              onChange={(e) => updateConsumerInfo('cityStateZip', e.target.value)}
+              className="bg-muted/30"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Step 2: Bureau Selection */}
+      <div className="card-elevated rounded-2xl border border-border/50 p-6 md:p-8">
+        <h4 className="text-lg font-serif font-semibold text-foreground mb-6 flex items-center gap-2">
+          <Building2 className="w-5 h-5 text-primary" />
+          Step 2: Select Credit Bureau(s) *
+        </h4>
+        <p className="text-sm text-muted-foreground mb-6">
+          A separate letter will be generated for each bureau selected. Addresses are pre-configured.
+        </p>
+
+        <div className="grid gap-4">
+          {(Object.keys(BUREAU_DATA) as BureauKey[]).map((key) => {
+            const bureau = BUREAU_DATA[key];
+            const isSelected = selectedBureaus.includes(key);
+            return (
+              <label
+                key={key}
+                className={cn(
+                  "flex items-start gap-4 p-4 rounded-xl border cursor-pointer transition-all",
+                  isSelected
+                    ? "border-primary bg-primary/5"
+                    : "border-border/50 bg-muted/20 hover:bg-muted/40"
+                )}
+              >
+                <Checkbox
+                  checked={isSelected}
+                  onCheckedChange={() => toggleBureau(key)}
+                  className="mt-1"
+                />
+                <div className="flex-1">
+                  <p className="font-semibold text-foreground">{bureau.legalName}</p>
+                  <p className="text-sm text-muted-foreground">{bureau.address}</p>
+                  <p className="text-sm text-muted-foreground">{bureau.cityStateZip}</p>
+                </div>
+              </label>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Step 3: Survey */}
       <div className="card-elevated rounded-2xl border border-border/50 p-6 md:p-8">
         <h4 className="text-lg font-serif font-semibold text-foreground mb-6 flex items-center gap-2">
           <Shield className="w-5 h-5 text-primary" />
-          Required Survey
+          Step 3: Dispute Survey
         </h4>
-        
+        <p className="text-sm text-muted-foreground mb-6">
+          Your answers shape the legal arguments in your dispute letter.
+        </p>
+
         <div className="space-y-6">
           <TooltipProvider>
             {surveyQuestions.map((q) => (
@@ -265,7 +466,7 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
                     )}>Yes</span>
                   </div>
                 </div>
-                
+
                 {/* Conditional details field */}
                 {q.hasDetails && survey[q.key] && (
                   <Textarea
@@ -319,21 +520,34 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
         </div>
       </div>
 
+      {/* Validation Errors */}
+      {validationErrors.length > 0 && (
+        <div className="flex items-start gap-3 p-4 bg-warning/10 border border-warning/30 rounded-lg">
+          <AlertTriangle className="w-5 h-5 text-warning flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="font-medium text-warning">Missing required information:</p>
+            <ul className="list-disc list-inside text-sm text-warning/80 mt-1">
+              {validationErrors.map((e, i) => <li key={i}>{e}</li>)}
+            </ul>
+          </div>
+        </div>
+      )}
+
       {/* Generate Button */}
       <Button
         onClick={handleGenerateLetter}
-        disabled={isGenerating}
-        className="w-full py-6 text-lg font-medium bg-primary text-primary-foreground hover:bg-primary/90"
+        disabled={isGenerating || !canGenerate}
+        className="w-full py-6 text-lg font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
       >
         {isGenerating ? (
           <>
             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-            Generating Dispute Letter...
+            Generating {selectedBureaus.length} Letter{selectedBureaus.length > 1 ? 's' : ''}...
           </>
         ) : (
           <>
             <FileText className="w-5 h-5 mr-2" />
-            Generate Dispute Letter
+            Generate {selectedBureaus.length > 0 ? selectedBureaus.length : ''} Dispute Letter{selectedBureaus.length !== 1 ? 's' : ''}
           </>
         )}
       </Button>
@@ -346,42 +560,39 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
         </div>
       )}
 
-      {/* Generated Letter */}
-      {generatedLetter && (
-        <div className="card-elevated rounded-2xl border border-primary/30 p-6 md:p-8 animate-slide-up">
+      {/* Generated Letters */}
+      {generatedLetters.map((item, index) => (
+        <div key={item.bureau} className="card-elevated rounded-2xl border border-primary/30 p-6 md:p-8 animate-slide-up">
           <div className="flex items-center justify-between mb-6">
             <h4 className="text-xl font-serif font-semibold text-foreground flex items-center gap-2">
               <Scale className="w-5 h-5 text-primary" />
-              Your Dispute Letter
+              {BUREAU_DATA[item.bureau].legalName}
             </h4>
-            <Button variant="outline" onClick={copyLetter}>
-              {copied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
-              {copied ? "Copied" : "Copy Letter"}
+            <Button variant="outline" onClick={() => copyLetter(index)}>
+              {copiedIndex === index ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
+              {copiedIndex === index ? "Copied" : "Copy Letter"}
             </Button>
           </div>
-          
-          <div className="bg-muted/30 rounded-xl p-6 border border-border/50">
-            <pre className="whitespace-pre-wrap font-sans text-foreground text-sm leading-relaxed">
-              {generatedLetter}
+
+          <div className="bg-white rounded-xl p-6 border border-border/50 shadow-inner">
+            <pre className="whitespace-pre-wrap font-serif text-foreground text-sm leading-relaxed">
+              {item.letter}
             </pre>
           </div>
 
-          <div className="mt-6 p-4 bg-warning/10 border border-warning/30 rounded-lg">
+          <div className="mt-6 p-4 bg-primary/5 border border-primary/20 rounded-lg">
             <div className="flex items-start gap-2">
-              <AlertTriangle className="w-5 h-5 text-warning flex-shrink-0 mt-0.5" />
-              <div className="text-sm text-warning/90">
-                <p className="font-semibold mb-1">Before sending:</p>
-                <ul className="space-y-1 ml-4 list-disc">
-                  <li>Review the letter for accuracy</li>
-                  <li>Add your signature and date</li>
-                  <li>Include copies of identity documents</li>
-                  <li>Send via certified mail with return receipt</li>
-                </ul>
+              <MapPin className="w-5 h-5 text-primary flex-shrink-0 mt-0.5" />
+              <div className="text-sm text-foreground">
+                <p className="font-semibold mb-1">Send via Certified Mail to:</p>
+                <p>{BUREAU_DATA[item.bureau].legalName}</p>
+                <p>{BUREAU_DATA[item.bureau].address}</p>
+                <p>{BUREAU_DATA[item.bureau].cityStateZip}</p>
               </div>
             </div>
           </div>
         </div>
-      )}
+      ))}
     </div>
   );
 };
