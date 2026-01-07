@@ -1,15 +1,30 @@
-import * as pdfjsLib from 'pdfjs-dist';
+// Lazy-load pdfjs to avoid issues during initial bundle
+let pdfjsLib: typeof import('pdfjs-dist') | null = null;
+let pdfjsPromise: Promise<typeof import('pdfjs-dist')> | null = null;
 
-// Configure the worker for v3.x
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
+async function getPdfJs(): Promise<typeof import('pdfjs-dist')> {
+  if (pdfjsLib) return pdfjsLib;
+  
+  if (!pdfjsPromise) {
+    pdfjsPromise = (async () => {
+      const pdfjs = await import('pdfjs-dist');
+      pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
+      pdfjsLib = pdfjs;
+      return pdfjs;
+    })();
+  }
+  
+  return pdfjsPromise;
+}
 
 /**
  * Convert a PDF file to an array of base64 image strings (one per page)
  * Limited to maxPages (default 10) for performance
  */
 export async function pdfToImages(file: File, maxPages = 10): Promise<{ images: string[]; pageCount: number }> {
+  const pdfjs = await getPdfJs();
   const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
   
   const pageCount = pdf.numPages;
   const pagesToRender = Math.min(pageCount, maxPages);
@@ -67,8 +82,9 @@ export function detectBureauFromText(text: string): 'experian' | 'equifax' | 'tr
  */
 export async function extractTextFromPdf(file: File): Promise<string> {
   try {
+    const pdfjs = await getPdfJs();
     const arrayBuffer = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
     
     // Get first page text for detection
     const page = await pdf.getPage(1);
