@@ -42,7 +42,7 @@ interface DisputeAnalysisResult {
     date_opened: string;
     derogatory_triggers: string[];
     status_as_reported: string;
-    confidence: "high" | "medium" | "low";
+    confidence: "high" | "medium" | "low" | "incomplete";
     source?: string;
   }[];
   late_payment_summary: {
@@ -94,8 +94,9 @@ interface UploadedFile {
   images: string[]; // Base64 images (converted from PDF or direct upload)
   detectedBureau: 'experian' | 'equifax' | 'transunion' | 'unknown';
   selectedBureau: 'experian' | 'equifax' | 'transunion' | 'unknown';
-  label: string;
+  label: string; // UI-only metadata - NEVER sent to AI per invariant
   isProcessing: boolean;
+  processingStatus?: string; // Read-only status for display (e.g., "21 pages processed")
   error?: string;
 }
 
@@ -187,8 +188,9 @@ const AIAnalyzer = () => {
         images: [],
         detectedBureau: 'unknown',
         selectedBureau: 'unknown',
-        label: '',
+        label: '', // Label is UI-only metadata, never sent to AI
         isProcessing: true,
+        processingStatus: '', // Read-only processing status
       }]);
 
       // Process file with timeout
@@ -200,13 +202,13 @@ const AIAnalyzer = () => {
             const text = await extractTextFromPdf(file);
             const detectedBureau = detectBureauFromText(text);
             
-            // Convert PDF to images (capped at 10 pages in pdfToImages)
+            // Convert PDF to images - ALL PAGES (no truncation per invariant)
             const { images, pageCount } = await pdfToImages(file);
             return { images, detectedBureau, pageCount };
           };
 
           const timeoutPromise = new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error('PDF processing timed out')), 30000);
+            setTimeout(() => reject(new Error('PDF processing timed out')), 60000); // 60s for full doc
           });
 
           try {
@@ -223,26 +225,16 @@ const AIAnalyzer = () => {
                     detectedBureau, 
                     selectedBureau: detectedBureau,
                     isProcessing: false,
-                    label: pageCount > 10 ? `(First 10 of ${pageCount} pages)` : ''
+                    processingStatus: `${pageCount} page${pageCount > 1 ? 's' : ''} processed`,
                   }
                 : f
             ));
-            
-            if (pageCount > 10) {
-              toast({
-                title: "PDF truncated",
-                description: `Only first 10 pages of ${file.name} will be analyzed.`,
-              });
-            }
           } catch (timeoutErr) {
-            setUploadedFiles(prev => prev.map(f => 
-              f.id === fileId 
-                ? { ...f, isProcessing: false, error: 'PDF processing slow - try screenshots instead' }
-                : f
-            ));
+            // INVARIANT: If processing fails, reject entirely - no partial processing
+            setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
             toast({
-              title: "PDF processing slow",
-              description: `${file.name} is taking too long. Try uploading screenshots instead.`,
+              title: "PDF processing failed",
+              description: `${file.name} could not be fully processed. Upload screenshots instead to ensure complete analysis.`,
               variant: "destructive",
             });
           }
@@ -685,15 +677,17 @@ const AIAnalyzer = () => {
     });
   };
 
-  const getConfidenceBadge = (confidence: "high" | "medium" | "low") => {
+  const getConfidenceBadge = (confidence: "high" | "medium" | "low" | "incomplete") => {
     const styles = {
       high: "bg-success/20 text-success border-success/30",
       medium: "bg-warning/20 text-warning border-warning/30",
-      low: "bg-muted text-muted-foreground border-border"
+      low: "bg-muted text-muted-foreground border-border",
+      incomplete: "bg-destructive/20 text-destructive border-destructive/30"
     };
+    const label = confidence === "incomplete" ? "review required" : `${confidence} confidence`;
     return (
       <span className={cn("px-2 py-0.5 text-xs font-medium rounded border", styles[confidence])}>
-        {confidence} confidence
+        {label}
       </span>
     );
   };
