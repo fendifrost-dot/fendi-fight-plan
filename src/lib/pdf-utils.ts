@@ -19,18 +19,17 @@ async function getPdfJs(): Promise<typeof import('pdfjs-dist')> {
 
 /**
  * Convert a PDF file to an array of base64 image strings (one per page)
- * Limited to maxPages (default 10) for performance
+ * INVARIANT: Process ALL pages or throw an error. No silent truncation.
  */
-export async function pdfToImages(file: File, maxPages = 10): Promise<{ images: string[]; pageCount: number }> {
+export async function pdfToImages(file: File): Promise<{ images: string[]; pageCount: number }> {
   const pdfjs = await getPdfJs();
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
   
   const pageCount = pdf.numPages;
-  const pagesToRender = Math.min(pageCount, maxPages);
   const images: string[] = [];
 
-  for (let i = 1; i <= pagesToRender; i++) {
+  for (let i = 1; i <= pageCount; i++) {
     const page = await pdf.getPage(i);
     const scale = 2; // Higher scale for better OCR quality
     const viewport = page.getViewport({ scale });
@@ -39,7 +38,7 @@ export async function pdfToImages(file: File, maxPages = 10): Promise<{ images: 
     const context = canvas.getContext('2d');
     
     if (!context) {
-      throw new Error('Could not create canvas context');
+      throw new Error(`Could not create canvas context for page ${i}`);
     }
 
     canvas.width = viewport.width;
