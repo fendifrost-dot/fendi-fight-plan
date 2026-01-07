@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { FileText, Loader2, Copy, Check, AlertTriangle, Scale, Shield, HelpCircle, User, MapPin, Building2 } from "lucide-react";
+import { FileText, Loader2, Copy, Check, AlertTriangle, Scale, Shield, HelpCircle, User, MapPin, Building2, Pencil, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -188,6 +188,7 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
   const [generatedLetters, setGeneratedLetters] = useState<{ bureau: BureauKey; letter: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
 
   const updateConsumerInfo = <K extends keyof ConsumerInfo>(key: K, value: string) => {
     setConsumerInfo(prev => ({ ...prev, [key]: value }));
@@ -561,34 +562,63 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
       )}
 
       {/* Generated Letters */}
-      {generatedLetters.map((item, index) => (
+      {generatedLetters.map((item, index) => {
+        const isEditing = editingIndex === index;
+        return (
         <div key={item.bureau} className="card-elevated rounded-2xl border border-primary/30 p-6 md:p-8 animate-slide-up">
-          <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
             <h4 className="text-xl font-serif font-semibold text-foreground flex items-center gap-2">
               <Scale className="w-5 h-5 text-primary" />
               {BUREAU_DATA[item.bureau].legalName}
             </h4>
-            <Button variant="outline" onClick={() => copyLetter(index)}>
-              {copiedIndex === index ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
-              {copiedIndex === index ? "Copied" : "Copy Letter"}
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button 
+                variant="outline" 
+                size="sm"
+                onClick={() => setEditingIndex(isEditing ? null : index)}
+              >
+                {isEditing ? <Eye className="w-4 h-4 mr-2" /> : <Pencil className="w-4 h-4 mr-2" />}
+                {isEditing ? "View" : "Edit"}
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => copyLetter(index)}>
+                {copiedIndex === index ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
+                {copiedIndex === index ? "Copied" : "Copy"}
+              </Button>
+            </div>
           </div>
 
           {/* PRINT-READY LETTER CONTAINER - Explicit styling to prevent theme inheritance */}
           <div 
-            className="rounded-xl p-6 md:p-8 border shadow-inner print:shadow-none print:border-none print:p-0"
+            className="rounded-xl border shadow-inner print:shadow-none print:border-none print:p-0"
             style={{ 
               backgroundColor: '#ffffff', 
               color: '#111111',
               borderColor: '#e5e7eb'
             }}
           >
-            <pre 
-              className="whitespace-pre-wrap font-serif text-sm leading-relaxed print:text-base"
-              style={{ color: '#111111' }}
-            >
-              {item.letter}
-            </pre>
+            {isEditing ? (
+              <textarea
+                value={item.letter}
+                onChange={(e) => {
+                  const newLetters = [...generatedLetters];
+                  newLetters[index] = { ...item, letter: e.target.value };
+                  setGeneratedLetters(newLetters);
+                }}
+                className="w-full min-h-[600px] p-6 md:p-8 font-serif text-sm leading-relaxed resize-y focus:outline-none focus:ring-2 focus:ring-primary/30 rounded-xl"
+                style={{ 
+                  backgroundColor: '#ffffff', 
+                  color: '#111111',
+                  border: 'none'
+                }}
+              />
+            ) : (
+              <pre 
+                className="whitespace-pre-wrap font-serif text-sm leading-relaxed print:text-base p-6 md:p-8"
+                style={{ color: '#111111' }}
+              >
+                {item.letter}
+              </pre>
+            )}
           </div>
 
           <div className="mt-6 p-4 bg-primary/5 border border-primary/20 rounded-lg">
@@ -603,7 +633,8 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
             </div>
           </div>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 };
