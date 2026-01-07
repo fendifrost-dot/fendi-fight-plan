@@ -1,10 +1,12 @@
-import * as pdfjsLib from 'pdfjs-dist';
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
 
-// Configure the worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.js`;
+// Configure the worker using bundled URL (no CDN, no top-level await)
+pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
 /**
  * Convert a PDF file to an array of base64 image strings (one per page)
+ * Limited to maxPages (default 10) for performance
  */
 export async function pdfToImages(file: File, maxPages = 10): Promise<{ images: string[]; pageCount: number }> {
   const arrayBuffer = await file.arrayBuffer();
@@ -35,7 +37,7 @@ export async function pdfToImages(file: File, maxPages = 10): Promise<{ images: 
     }).promise;
 
     // Convert to JPEG for smaller file size
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
     images.push(dataUrl);
   }
 
