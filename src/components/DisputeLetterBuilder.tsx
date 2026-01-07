@@ -574,8 +574,19 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
             </Button>
           </div>
 
-          <div className="bg-white rounded-xl p-6 border border-border/50 shadow-inner">
-            <pre className="whitespace-pre-wrap font-serif text-foreground text-sm leading-relaxed">
+          {/* PRINT-READY LETTER CONTAINER - Explicit styling to prevent theme inheritance */}
+          <div 
+            className="rounded-xl p-6 md:p-8 border shadow-inner print:shadow-none print:border-none print:p-0"
+            style={{ 
+              backgroundColor: '#ffffff', 
+              color: '#111111',
+              borderColor: '#e5e7eb'
+            }}
+          >
+            <pre 
+              className="whitespace-pre-wrap font-serif text-sm leading-relaxed print:text-base"
+              style={{ color: '#111111' }}
+            >
               {item.letter}
             </pre>
           </div>
