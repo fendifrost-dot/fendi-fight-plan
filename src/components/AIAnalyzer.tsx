@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Upload, FileText, Loader2, AlertCircle, Copy, Check, Sparkles, ChevronRight, AlertTriangle, LogIn, X, Plus, User, MapPin, Briefcase, Phone, Mail, Calendar, Hash, Shield, FileWarning, Edit3, Layers } from "lucide-react";
+import { Upload, FileText, Loader2, AlertCircle, Copy, Check, Sparkles, ChevronRight, AlertTriangle, LogIn, X, Plus, User, MapPin, Briefcase, Phone, Mail, Calendar, Hash, Shield, FileWarning, Edit3, Layers, Scale } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -12,6 +12,7 @@ import { Session } from "@supabase/supabase-js";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { pdfToImages, extractTextFromPdf, detectBureauFromText, isHeicFile, isPdfFile, isSupportedImage } from "@/lib/pdf-utils";
+import DisputeLetterBuilder from "./DisputeLetterBuilder";
 
 // Dispute-grade analysis result interface
 interface DisputeAnalysisResult {
@@ -1429,6 +1430,26 @@ const AIAnalyzer = () => {
                 {renderResultContent(Object.values(results)[0])}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Dispute Letter Builder - shows after analysis is complete */}
+        {hasAnyResults && session?.access_token && (
+          <div className="mt-12 pt-12 border-t border-border/50">
+            <DisputeLetterBuilder
+              extractedData={{
+                fullLegalName: fullLegalName,
+                currentAddress: currentAddress,
+                inaccurateNames: getCombinedResults().inaccurate_names,
+                inaccurateAddresses: getCombinedResults().inaccurate_addresses,
+                derogatoryAccounts: getCombinedResults().derogatory_accounts,
+                inquiries: getCombinedResults().inquiries,
+                collections: getCombinedResults().collections,
+                chargeOffs: getCombinedResults().charge_offs,
+                publicRecords: getCombinedResults().public_records,
+              }}
+              accessToken={session.access_token}
+            />
           </div>
         )}
       </div>
