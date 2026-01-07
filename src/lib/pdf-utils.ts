@@ -1,16 +1,25 @@
-import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
-import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
+// Lazy-load pdfjs to avoid top-level await in bundle
+let pdfjsLib: typeof import('pdfjs-dist') | null = null;
 
-// Configure the worker using bundled URL (no CDN, no top-level await)
-pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+async function getPdfJs() {
+  if (!pdfjsLib) {
+    // Dynamic import avoids top-level await build issue
+    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    const workerUrl = (await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url')).default;
+    pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+    pdfjsLib = pdfjs as unknown as typeof import('pdfjs-dist');
+  }
+  return pdfjsLib;
+}
 
 /**
  * Convert a PDF file to an array of base64 image strings (one per page)
  * Limited to maxPages (default 10) for performance
  */
 export async function pdfToImages(file: File, maxPages = 10): Promise<{ images: string[]; pageCount: number }> {
+  const pdfjs = await getPdfJs();
   const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
   
   const pageCount = pdf.numPages;
   const pagesToRender = Math.min(pageCount, maxPages);
@@ -68,8 +77,9 @@ export function detectBureauFromText(text: string): 'experian' | 'equifax' | 'tr
  */
 export async function extractTextFromPdf(file: File): Promise<string> {
   try {
+    const pdfjs = await getPdfJs();
     const arrayBuffer = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
     
     // Get first page text for detection
     const page = await pdf.getPage(1);
