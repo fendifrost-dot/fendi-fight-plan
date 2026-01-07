@@ -191,33 +191,59 @@ const AIAnalyzer = () => {
         isProcessing: true,
       }]);
 
-      // Process file
+      // Process file with timeout
       try {
         if (isPdfFile(file)) {
-          // Extract text for bureau detection
-          const text = await extractTextFromPdf(file);
-          const detectedBureau = detectBureauFromText(text);
-          
-          // Convert PDF to images
-          const { images, pageCount } = await pdfToImages(file);
-          
-          setUploadedFiles(prev => prev.map(f => 
-            f.id === fileId 
-              ? { 
-                  ...f, 
-                  images, 
-                  detectedBureau, 
-                  selectedBureau: detectedBureau,
-                  isProcessing: false,
-                  label: pageCount > 10 ? `(First 10 of ${pageCount} pages)` : ''
-                }
-              : f
-          ));
-          
-          if (pageCount > 10) {
+          // Wrap PDF processing in a timeout promise
+          const processPdf = async () => {
+            // Extract text for bureau detection
+            const text = await extractTextFromPdf(file);
+            const detectedBureau = detectBureauFromText(text);
+            
+            // Convert PDF to images (capped at 10 pages in pdfToImages)
+            const { images, pageCount } = await pdfToImages(file);
+            return { images, detectedBureau, pageCount };
+          };
+
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error('PDF processing timed out')), 30000);
+          });
+
+          try {
+            const { images, detectedBureau, pageCount } = await Promise.race([
+              processPdf(),
+              timeoutPromise
+            ]);
+            
+            setUploadedFiles(prev => prev.map(f => 
+              f.id === fileId 
+                ? { 
+                    ...f, 
+                    images, 
+                    detectedBureau, 
+                    selectedBureau: detectedBureau,
+                    isProcessing: false,
+                    label: pageCount > 10 ? `(First 10 of ${pageCount} pages)` : ''
+                  }
+                : f
+            ));
+            
+            if (pageCount > 10) {
+              toast({
+                title: "PDF truncated",
+                description: `Only first 10 pages of ${file.name} will be analyzed.`,
+              });
+            }
+          } catch (timeoutErr) {
+            setUploadedFiles(prev => prev.map(f => 
+              f.id === fileId 
+                ? { ...f, isProcessing: false, error: 'PDF processing slow - try screenshots instead' }
+                : f
+            ));
             toast({
-              title: "PDF truncated",
-              description: `Only first 10 pages of ${file.name} will be analyzed.`,
+              title: "PDF processing slow",
+              description: `${file.name} is taking too long. Try uploading screenshots instead.`,
+              variant: "destructive",
             });
           }
         } else if (isSupportedImage(file)) {
@@ -253,7 +279,7 @@ const AIAnalyzer = () => {
         ));
         toast({
           title: "Processing failed",
-          description: `Failed to process ${file.name}. Please try again.`,
+          description: `Failed to process ${file.name}. Try uploading screenshots instead.`,
           variant: "destructive",
         });
       }
@@ -375,6 +401,10 @@ const AIAnalyzer = () => {
     setError(null);
     setResults({});
 
+    // AbortController for 60s timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+
     try {
       if (!session?.access_token) {
         setError("Please log in to use the analyzer");
@@ -420,6 +450,7 @@ const AIAnalyzer = () => {
             responseText,
             hasIdentityDocs: identityDocs || undefined,
           }),
+          signal: controller.signal,
         });
 
         const data = await response.json();
@@ -445,6 +476,7 @@ const AIAnalyzer = () => {
               bureau: group.bureau,
               hasIdentityDocs: identityDocs || undefined,
             }),
+            signal: controller.signal,
           });
 
           const data = await response.json();
@@ -457,14 +489,24 @@ const AIAnalyzer = () => {
       setResults(newResults);
       setActiveTab(Object.keys(newResults).length > 1 ? "combined" : Object.keys(newResults)[0] || "combined");
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Something went wrong";
-      setError(message);
-      toast({
-        title: "Analysis failed",
-        description: message,
-        variant: "destructive",
-      });
+      if (err instanceof Error && err.name === 'AbortError') {
+        setError("Analysis timed out after 60 seconds. Try uploading fewer pages or use screenshots instead.");
+        toast({
+          title: "Request timed out",
+          description: "Analysis took too long. Try uploading screenshots instead of PDFs.",
+          variant: "destructive",
+        });
+      } else {
+        const message = err instanceof Error ? err.message : "Something went wrong";
+        setError(message);
+        toast({
+          title: "Analysis failed",
+          description: message,
+          variant: "destructive",
+        });
+      }
     } finally {
+      clearTimeout(timeoutId);
       setIsAnalyzing(false);
     }
   };
