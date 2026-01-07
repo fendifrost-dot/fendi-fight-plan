@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Upload, FileText, Loader2, AlertCircle, Copy, Check, Sparkles, ChevronRight, AlertTriangle, LogIn, X, Plus, Download, User, MapPin, Briefcase, Phone, Mail, Calendar, Hash, Shield } from "lucide-react";
+import { Upload, FileText, Loader2, AlertCircle, Copy, Check, Sparkles, ChevronRight, AlertTriangle, LogIn, X, Plus, User, MapPin, Briefcase, Phone, Mail, Calendar, Hash, Shield, FileWarning, Edit3, Layers } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -10,24 +10,31 @@ import { cn } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
 import { Session } from "@supabase/supabase-js";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { pdfToImages, extractTextFromPdf, detectBureauFromText, isHeicFile, isPdfFile, isSupportedImage } from "@/lib/pdf-utils";
 
 // Dispute-grade analysis result interface
 interface DisputeAnalysisResult {
+  bureau?: string;
   inaccurate_names: {
     reported_name: string;
     mismatch_reason: string;
+    source?: string;
   }[];
   inaccurate_addresses: {
     reported_address: string;
     linked_to_derogatory: boolean;
+    source?: string;
   }[];
   inaccurate_employers: {
     reported_employer: string;
+    source?: string;
   }[];
   extra_identifier_mismatches: {
     field: string;
     reported_value: string;
     status: string;
+    source?: string;
   }[];
   derogatory_accounts: {
     creditor_name: string;
@@ -36,6 +43,7 @@ interface DisputeAnalysisResult {
     derogatory_triggers: string[];
     status_as_reported: string;
     confidence: "high" | "medium" | "low";
+    source?: string;
   }[];
   late_payment_summary: {
     severity: "30-day" | "60-day" | "90-day";
@@ -43,6 +51,7 @@ interface DisputeAnalysisResult {
       creditor_name: string;
       account_number: string;
       months_detected: string;
+      source?: string;
     }[];
   }[];
   collections: {
@@ -50,27 +59,44 @@ interface DisputeAnalysisResult {
     account_number: string;
     original_creditor: string;
     balance: string;
+    source?: string;
   }[];
   charge_offs: {
     creditor_name: string;
     account_number: string;
     date_charged_off: string;
     balance: string;
+    source?: string;
   }[];
   public_records: {
     type: string;
     court_jurisdiction: string;
     filing_date: string;
     status: string;
+    source?: string;
   }[];
   inquiries: {
     creditor_name: string;
     date: string;
     type: string;
+    source?: string;
   }[];
   summary: string;
   next_steps: string[];
   warnings: string[];
+}
+
+// File mapping for multi-bureau uploads
+interface UploadedFile {
+  id: string;
+  file: File;
+  name: string;
+  images: string[]; // Base64 images (converted from PDF or direct upload)
+  detectedBureau: 'experian' | 'equifax' | 'transunion' | 'unknown';
+  selectedBureau: 'experian' | 'equifax' | 'transunion' | 'unknown';
+  label: string;
+  isProcessing: boolean;
+  error?: string;
 }
 
 const AIAnalyzer = () => {
@@ -83,16 +109,15 @@ const AIAnalyzer = () => {
   const [email, setEmail] = useState("");
   const [ssnLast4, setSsnLast4] = useState("");
   
-  // Upload fields
+  // Upload fields - multi-file with bureau mapping
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [responseText, setResponseText] = useState("");
-  const [responseImages, setResponseImages] = useState<string[]>([]);
-  const [imageNames, setImageNames] = useState<string[]>([]);
-  const [bureau, setBureau] = useState("");
   const [identityDocs, setIdentityDocs] = useState("");
   
   // State
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [result, setResult] = useState<DisputeAnalysisResult | null>(null);
+  const [results, setResults] = useState<Record<string, DisputeAnalysisResult>>({});
+  const [activeTab, setActiveTab] = useState<string>("combined");
   const [error, setError] = useState<string | null>(null);
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
   const [session, setSession] = useState<Session | null>(null);
@@ -114,54 +139,188 @@ const AIAnalyzer = () => {
     return () => subscription.unsubscribe();
   }, []);
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const generateFileId = () => Math.random().toString(36).substring(2, 9);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     const maxFiles = 10;
-    const maxSize = 10 * 1024 * 1024; // 10MB per file
+    const maxSize = 20 * 1024 * 1024; // 20MB per file
     
-    if (responseImages.length + files.length > maxFiles) {
+    const currentFileCount = uploadedFiles.length;
+    if (currentFileCount + files.length > maxFiles) {
       toast({
         title: "Too many files",
-        description: `Maximum ${maxFiles} images allowed`,
+        description: `Maximum ${maxFiles} files allowed`,
         variant: "destructive",
       });
       return;
     }
 
-    files.forEach(file => {
+    for (const file of files) {
+      // Check HEIC
+      if (isHeicFile(file)) {
+        toast({
+          title: "HEIC not supported",
+          description: `${file.name}: Please convert to JPG or PNG before uploading.`,
+          variant: "destructive",
+        });
+        continue;
+      }
+
+      // Check file size
       if (file.size > maxSize) {
         toast({
           title: "File too large",
-          description: `${file.name} exceeds 10MB limit`,
+          description: `${file.name} exceeds 20MB limit`,
           variant: "destructive",
         });
-        return;
+        continue;
       }
 
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        setResponseImages(prev => [...prev, event.target?.result as string]);
-        setImageNames(prev => [...prev, file.name]);
-        setResponseText("");
-      };
-      reader.readAsDataURL(file);
-    });
-  };
+      const fileId = generateFileId();
+      
+      // Add file with processing state
+      setUploadedFiles(prev => [...prev, {
+        id: fileId,
+        file,
+        name: file.name,
+        images: [],
+        detectedBureau: 'unknown',
+        selectedBureau: 'unknown',
+        label: '',
+        isProcessing: true,
+      }]);
 
-  const removeImage = (index: number) => {
-    setResponseImages(prev => prev.filter((_, i) => i !== index));
-    setImageNames(prev => prev.filter((_, i) => i !== index));
-  };
+      // Process file
+      try {
+        if (isPdfFile(file)) {
+          // Extract text for bureau detection
+          const text = await extractTextFromPdf(file);
+          const detectedBureau = detectBureauFromText(text);
+          
+          // Convert PDF to images
+          const { images, pageCount } = await pdfToImages(file);
+          
+          setUploadedFiles(prev => prev.map(f => 
+            f.id === fileId 
+              ? { 
+                  ...f, 
+                  images, 
+                  detectedBureau, 
+                  selectedBureau: detectedBureau,
+                  isProcessing: false,
+                  label: pageCount > 10 ? `(First 10 of ${pageCount} pages)` : ''
+                }
+              : f
+          ));
+          
+          if (pageCount > 10) {
+            toast({
+              title: "PDF truncated",
+              description: `Only first 10 pages of ${file.name} will be analyzed.`,
+            });
+          }
+        } else if (isSupportedImage(file)) {
+          // Read as base64
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            const base64 = event.target?.result as string;
+            setUploadedFiles(prev => prev.map(f => 
+              f.id === fileId 
+                ? { ...f, images: [base64], isProcessing: false }
+                : f
+            ));
+          };
+          reader.readAsDataURL(file);
+        } else {
+          setUploadedFiles(prev => prev.map(f => 
+            f.id === fileId 
+              ? { ...f, isProcessing: false, error: 'Unsupported file format' }
+              : f
+          ));
+          toast({
+            title: "Unsupported format",
+            description: `${file.name}: Please upload PNG, JPG, GIF, WebP, or PDF.`,
+            variant: "destructive",
+          });
+        }
+      } catch (err) {
+        console.error('File processing error:', err);
+        setUploadedFiles(prev => prev.map(f => 
+          f.id === fileId 
+            ? { ...f, isProcessing: false, error: 'Failed to process file' }
+            : f
+        ));
+        toast({
+          title: "Processing failed",
+          description: `Failed to process ${file.name}. Please try again.`,
+          variant: "destructive",
+        });
+      }
+    }
 
-  const clearAllImages = () => {
-    setResponseImages([]);
-    setImageNames([]);
+    setResponseText("");
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
   };
 
-  const handleAnalyze = async () => {
+  const updateFileBureau = (fileId: string, bureau: 'experian' | 'equifax' | 'transunion' | 'unknown') => {
+    setUploadedFiles(prev => prev.map(f => 
+      f.id === fileId ? { ...f, selectedBureau: bureau } : f
+    ));
+  };
+
+  const updateFileLabel = (fileId: string, label: string) => {
+    setUploadedFiles(prev => prev.map(f => 
+      f.id === fileId ? { ...f, label } : f
+    ));
+  };
+
+  const removeFile = (fileId: string) => {
+    setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
+  };
+
+  const clearAllFiles = () => {
+    setUploadedFiles([]);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
+  // Validate bureau assignments
+  const validateBureauAssignments = (): { valid: boolean; message?: string } => {
+    const unknownFiles = uploadedFiles.filter(f => f.selectedBureau === 'unknown');
+    if (unknownFiles.length > 0) {
+      return { 
+        valid: false, 
+        message: `Please select a bureau for: ${unknownFiles.map(f => f.name).join(', ')}` 
+      };
+    }
+
+    // Check for duplicate bureaus without labels
+    const bureauGroups = uploadedFiles.reduce((acc, f) => {
+      if (!acc[f.selectedBureau]) acc[f.selectedBureau] = [];
+      acc[f.selectedBureau].push(f);
+      return acc;
+    }, {} as Record<string, UploadedFile[]>);
+
+    for (const [bureau, files] of Object.entries(bureauGroups)) {
+      if (files.length > 1) {
+        const unlabeledFiles = files.filter(f => !f.label.trim());
+        if (unlabeledFiles.length > 0) {
+          return {
+            valid: false,
+            message: `Multiple ${bureau.charAt(0).toUpperCase() + bureau.slice(1)} files detected. Please add labels to distinguish them (e.g., "Jan 2026", "v1").`
+          };
+        }
+      }
+    }
+
+    return { valid: true };
+  };
+
+  const handleAnalyze = async (selectedFileIds?: string[]) => {
     // Validate required fields
     if (!fullLegalName.trim()) {
       toast({
@@ -188,10 +347,25 @@ const AIAnalyzer = () => {
       return;
     }
 
-    if (!responseText && responseImages.length === 0) {
+    const filesToAnalyze = selectedFileIds 
+      ? uploadedFiles.filter(f => selectedFileIds.includes(f.id))
+      : uploadedFiles;
+
+    if (!responseText && filesToAnalyze.length === 0) {
       toast({
         title: "No input provided",
-        description: "Please upload images or paste the credit report text",
+        description: "Please upload files or paste the credit report text",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Validate bureau assignments
+    const validation = validateBureauAssignments();
+    if (!validation.valid) {
+      toast({
+        title: "Bureau assignment required",
+        description: validation.message,
         variant: "destructive",
       });
       return;
@@ -199,7 +373,7 @@ const AIAnalyzer = () => {
 
     setIsAnalyzing(true);
     setError(null);
-    setResult(null);
+    setResults({});
 
     try {
       if (!session?.access_token) {
@@ -213,38 +387,75 @@ const AIAnalyzer = () => {
         return;
       }
 
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-response`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          // Questionnaire data (ground truth)
-          questionnaire: {
-            fullLegalName: fullLegalName.trim(),
-            currentAddress: currentAddress.trim(),
-            currentEmployer: currentEmployer.trim(),
-            dateOfBirth: dateOfBirth || undefined,
-            phoneNumber: phoneNumber || undefined,
-            email: email || undefined,
-            ssnLast4: ssnLast4 || undefined,
+      const questionnaire = {
+        fullLegalName: fullLegalName.trim(),
+        currentAddress: currentAddress.trim(),
+        currentEmployer: currentEmployer.trim(),
+        dateOfBirth: dateOfBirth || undefined,
+        phoneNumber: phoneNumber || undefined,
+        email: email || undefined,
+        ssnLast4: ssnLast4 || undefined,
+      };
+
+      const newResults: Record<string, DisputeAnalysisResult> = {};
+
+      // Group files by bureau
+      const bureauGroups = filesToAnalyze.reduce((acc, f) => {
+        const key = f.label ? `${f.selectedBureau}_${f.label}` : f.selectedBureau;
+        if (!acc[key]) acc[key] = { bureau: f.selectedBureau, label: f.label, images: [] };
+        acc[key].images.push(...f.images);
+        return acc;
+      }, {} as Record<string, { bureau: string; label: string; images: string[] }>);
+
+      // If only text input, analyze as single request
+      if (responseText && Object.keys(bureauGroups).length === 0) {
+        const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-response`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${session.access_token}`,
           },
-          // Report data
-          responseText: responseText || undefined,
-          responseImages: responseImages.length > 0 ? responseImages : undefined,
-          bureau: bureau || undefined,
-          hasIdentityDocs: identityDocs || undefined,
-        }),
-      });
+          body: JSON.stringify({
+            questionnaire,
+            responseText,
+            hasIdentityDocs: identityDocs || undefined,
+          }),
+        });
 
-      const data = await response.json();
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Analysis failed");
+        
+        newResults['text'] = { ...data, bureau: 'Text Input' };
+      } else {
+        // Analyze each bureau group
+        for (const [key, group] of Object.entries(bureauGroups)) {
+          const displayName = group.label 
+            ? `${group.bureau.charAt(0).toUpperCase() + group.bureau.slice(1)} (${group.label})`
+            : group.bureau.charAt(0).toUpperCase() + group.bureau.slice(1);
 
-      if (!response.ok) {
-        throw new Error(data.error || "Analysis failed");
+          const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-response`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${session.access_token}`,
+            },
+            body: JSON.stringify({
+              questionnaire,
+              responseImages: group.images,
+              bureau: group.bureau,
+              hasIdentityDocs: identityDocs || undefined,
+            }),
+          });
+
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || `Analysis failed for ${displayName}`);
+          
+          newResults[key] = { ...data, bureau: displayName };
+        }
       }
 
-      setResult(data);
+      setResults(newResults);
+      setActiveTab(Object.keys(newResults).length > 1 ? "combined" : Object.keys(newResults)[0] || "combined");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Something went wrong";
       setError(message);
@@ -258,6 +469,109 @@ const AIAnalyzer = () => {
     }
   };
 
+  // Combine results from all bureaus with source tags
+  const getCombinedResults = (): DisputeAnalysisResult => {
+    const combined: DisputeAnalysisResult = {
+      inaccurate_names: [],
+      inaccurate_addresses: [],
+      inaccurate_employers: [],
+      extra_identifier_mismatches: [],
+      derogatory_accounts: [],
+      late_payment_summary: [],
+      collections: [],
+      charge_offs: [],
+      public_records: [],
+      inquiries: [],
+      summary: "",
+      next_steps: [],
+      warnings: [],
+    };
+
+    const seenNames = new Set<string>();
+    const seenAddresses = new Set<string>();
+    const seenEmployers = new Set<string>();
+
+    for (const [, result] of Object.entries(results)) {
+      const source = result.bureau || 'Unknown';
+
+      // Dedupe names
+      for (const item of result.inaccurate_names) {
+        const key = item.reported_name.toLowerCase();
+        if (!seenNames.has(key)) {
+          seenNames.add(key);
+          combined.inaccurate_names.push({ ...item, source });
+        }
+      }
+
+      // Dedupe addresses
+      for (const item of result.inaccurate_addresses) {
+        const key = item.reported_address.toLowerCase();
+        if (!seenAddresses.has(key)) {
+          seenAddresses.add(key);
+          combined.inaccurate_addresses.push({ ...item, source });
+        }
+      }
+
+      // Dedupe employers
+      for (const item of result.inaccurate_employers) {
+        const key = item.reported_employer.toLowerCase();
+        if (!seenEmployers.has(key)) {
+          seenEmployers.add(key);
+          combined.inaccurate_employers.push({ ...item, source });
+        }
+      }
+
+      // Add all identifiers with source
+      combined.extra_identifier_mismatches.push(
+        ...result.extra_identifier_mismatches.map(i => ({ ...i, source }))
+      );
+
+      // Add all derogatory accounts with source
+      combined.derogatory_accounts.push(
+        ...result.derogatory_accounts.map(a => ({ ...a, source }))
+      );
+
+      // Merge late payment summaries
+      for (const severity of result.late_payment_summary) {
+        let existing = combined.late_payment_summary.find(s => s.severity === severity.severity);
+        if (!existing) {
+          existing = { severity: severity.severity, accounts: [] };
+          combined.late_payment_summary.push(existing);
+        }
+        existing.accounts.push(...severity.accounts.map(a => ({ ...a, source })));
+      }
+
+      // Add all collections
+      combined.collections.push(...result.collections.map(c => ({ ...c, source })));
+
+      // Add all charge-offs
+      combined.charge_offs.push(...result.charge_offs.map(c => ({ ...c, source })));
+
+      // Add all public records
+      combined.public_records.push(...result.public_records.map(p => ({ ...p, source })));
+
+      // Add all inquiries
+      combined.inquiries.push(...result.inquiries.map(i => ({ ...i, source })));
+
+      // Combine summaries
+      if (result.summary) {
+        combined.summary += (combined.summary ? '\n\n' : '') + `[${source}] ${result.summary}`;
+      }
+
+      // Combine next steps (dedupe)
+      for (const step of result.next_steps) {
+        if (!combined.next_steps.includes(step)) {
+          combined.next_steps.push(step);
+        }
+      }
+
+      // Combine warnings
+      combined.warnings.push(...result.warnings.map(w => `[${source}] ${w}`));
+    }
+
+    return combined;
+  };
+
   const copySection = async (sectionName: string, content: string) => {
     await navigator.clipboard.writeText(content);
     setCopiedSection(sectionName);
@@ -268,16 +582,14 @@ const AIAnalyzer = () => {
     setTimeout(() => setCopiedSection(null), 2000);
   };
 
-  const copyAllResults = async () => {
-    if (!result) return;
-    
-    let fullText = "CREDIT REPORT DISPUTE ANALYSIS\n";
+  const copyAllResults = async (result: DisputeAnalysisResult, bureauName?: string) => {
+    let fullText = `CREDIT REPORT DISPUTE ANALYSIS${bureauName ? ` - ${bureauName}` : ''}\n`;
     fullText += "=".repeat(50) + "\n\n";
     
     if (result.inaccurate_names.length > 0) {
       fullText += "INACCURATE NAMES:\n";
       result.inaccurate_names.forEach(item => {
-        fullText += `• "${item.reported_name}" - ${item.mismatch_reason}\n`;
+        fullText += `• "${item.reported_name}" - ${item.mismatch_reason}${item.source ? ` [${item.source}]` : ''}\n`;
       });
       fullText += "\n";
     }
@@ -285,7 +597,7 @@ const AIAnalyzer = () => {
     if (result.inaccurate_addresses.length > 0) {
       fullText += "INACCURATE ADDRESSES:\n";
       result.inaccurate_addresses.forEach(item => {
-        fullText += `• ${item.reported_address}${item.linked_to_derogatory ? " [LINKED TO DEROGATORY]" : ""}\n`;
+        fullText += `• ${item.reported_address}${item.linked_to_derogatory ? " [LINKED TO DEROGATORY]" : ""}${item.source ? ` [${item.source}]` : ""}\n`;
       });
       fullText += "\n";
     }
@@ -293,15 +605,7 @@ const AIAnalyzer = () => {
     if (result.inaccurate_employers.length > 0) {
       fullText += "INACCURATE EMPLOYERS:\n";
       result.inaccurate_employers.forEach(item => {
-        fullText += `• ${item.reported_employer}\n`;
-      });
-      fullText += "\n";
-    }
-    
-    if (result.extra_identifier_mismatches.length > 0) {
-      fullText += "EXTRA IDENTIFIER MISMATCHES:\n";
-      result.extra_identifier_mismatches.forEach(item => {
-        fullText += `• ${item.field}: "${item.reported_value}" - ${item.status}\n`;
+        fullText += `• ${item.reported_employer}${item.source ? ` [${item.source}]` : ''}\n`;
       });
       fullText += "\n";
     }
@@ -309,55 +613,25 @@ const AIAnalyzer = () => {
     if (result.derogatory_accounts.length > 0) {
       fullText += "DEROGATORY ACCOUNTS:\n";
       result.derogatory_accounts.forEach(item => {
-        fullText += `• ${item.creditor_name} (${item.account_number})\n`;
-        fullText += `  Date Opened: ${item.date_opened}\n`;
+        fullText += `• ${item.creditor_name} (${item.account_number})${item.source ? ` [${item.source}]` : ''}\n`;
         fullText += `  Triggers: ${item.derogatory_triggers.join(", ")}\n`;
         fullText += `  Status: ${item.status_as_reported} | Confidence: ${item.confidence}\n`;
       });
       fullText += "\n";
     }
-    
-    if (result.late_payment_summary.length > 0) {
-      fullText += "LATE PAYMENT SUMMARY:\n";
-      result.late_payment_summary.forEach(severity => {
-        fullText += `\n${severity.severity.toUpperCase()} LATES:\n`;
-        severity.accounts.forEach(acc => {
-          fullText += `• ${acc.creditor_name} (${acc.account_number}) - ${acc.months_detected}\n`;
-        });
-      });
-      fullText += "\n";
-    }
-    
+
     if (result.collections.length > 0) {
       fullText += "COLLECTIONS:\n";
       result.collections.forEach(item => {
-        fullText += `• ${item.creditor_name} (${item.account_number}) - Balance: ${item.balance}\n`;
-        if (item.original_creditor) fullText += `  Original Creditor: ${item.original_creditor}\n`;
+        fullText += `• ${item.creditor_name} (${item.account_number}) - Balance: ${item.balance}${item.source ? ` [${item.source}]` : ''}\n`;
       });
       fullText += "\n";
     }
-    
-    if (result.charge_offs.length > 0) {
-      fullText += "CHARGE-OFFS:\n";
-      result.charge_offs.forEach(item => {
-        fullText += `• ${item.creditor_name} (${item.account_number}) - Date: ${item.date_charged_off}, Balance: ${item.balance}\n`;
-      });
-      fullText += "\n";
-    }
-    
-    if (result.public_records.length > 0) {
-      fullText += "PUBLIC RECORDS:\n";
-      result.public_records.forEach(item => {
-        fullText += `• ${item.type} - ${item.court_jurisdiction}\n`;
-        fullText += `  Filed: ${item.filing_date} | Status: ${item.status}\n`;
-      });
-      fullText += "\n";
-    }
-    
+
     if (result.inquiries.length > 0) {
       fullText += "INQUIRIES:\n";
       result.inquiries.forEach(item => {
-        fullText += `• ${item.creditor_name} - ${item.date} (${item.type})\n`;
+        fullText += `• ${item.creditor_name} - ${item.date} (${item.type})${item.source ? ` [${item.source}]` : ''}\n`;
       });
       fullText += "\n";
     }
@@ -382,17 +656,336 @@ const AIAnalyzer = () => {
     );
   };
 
-  const hasAnyResults = result && (
-    result.inaccurate_names.length > 0 ||
-    result.inaccurate_addresses.length > 0 ||
-    result.inaccurate_employers.length > 0 ||
-    result.extra_identifier_mismatches.length > 0 ||
-    result.derogatory_accounts.length > 0 ||
-    result.late_payment_summary.length > 0 ||
-    result.collections.length > 0 ||
-    result.charge_offs.length > 0 ||
-    result.public_records.length > 0 ||
-    result.inquiries.length > 0
+  const hasAnyResults = Object.keys(results).length > 0;
+  const anyFileProcessing = uploadedFiles.some(f => f.isProcessing);
+  const hasUnknownBureau = uploadedFiles.some(f => f.selectedBureau === 'unknown');
+
+  const renderResultContent = (result: DisputeAnalysisResult, showSource = false) => (
+    <div className="space-y-6">
+      {/* Summary */}
+      {result.summary && (
+        <div className="card-elevated rounded-xl border border-border/50 p-6">
+          <h4 className="text-lg font-serif font-semibold text-foreground mb-3">Summary</h4>
+          <p className="text-muted-foreground leading-relaxed whitespace-pre-line">{result.summary}</p>
+        </div>
+      )}
+
+      {/* Warnings */}
+      {result.warnings && result.warnings.length > 0 && (
+        <div className="bg-warning/10 border border-warning/30 rounded-xl p-6">
+          <h4 className="text-lg font-serif font-semibold text-warning mb-3 flex items-center gap-2">
+            <AlertTriangle className="w-5 h-5" />
+            Warnings
+          </h4>
+          <ul className="space-y-2">
+            {result.warnings.map((warning, i) => (
+              <li key={i} className="text-warning/90 flex items-start gap-2">
+                <ChevronRight className="w-4 h-4 flex-shrink-0 mt-1" />
+                <span>{warning}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Inaccurate Names */}
+      {result.inaccurate_names && result.inaccurate_names.length > 0 && (
+        <ResultCard
+          title="Inaccurate Names"
+          count={result.inaccurate_names.length}
+          onCopy={() => copySection("Inaccurate Names", result.inaccurate_names.map(n => `${n.reported_name}: ${n.mismatch_reason}`).join("\n"))}
+          isCopied={copiedSection === "Inaccurate Names"}
+        >
+          {result.inaccurate_names.map((item, i) => (
+            <div key={i} className="flex items-start justify-between p-3 bg-muted/30 rounded-lg">
+              <div>
+                <p className="font-medium text-foreground">"{item.reported_name}"</p>
+                <p className="text-sm text-destructive">{item.mismatch_reason}</p>
+                {showSource && item.source && (
+                  <span className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded mt-1 inline-block">{item.source}</span>
+                )}
+              </div>
+            </div>
+          ))}
+        </ResultCard>
+      )}
+
+      {/* Inaccurate Addresses */}
+      {result.inaccurate_addresses && result.inaccurate_addresses.length > 0 && (
+        <ResultCard
+          title="Inaccurate Addresses"
+          count={result.inaccurate_addresses.length}
+          onCopy={() => copySection("Inaccurate Addresses", result.inaccurate_addresses.map(a => a.reported_address).join("\n"))}
+          isCopied={copiedSection === "Inaccurate Addresses"}
+        >
+          {result.inaccurate_addresses.map((item, i) => (
+            <div key={i} className="p-3 bg-muted/30 rounded-lg">
+              <p className="font-medium text-foreground">{item.reported_address}</p>
+              <div className="flex flex-wrap gap-2 mt-1">
+                {item.linked_to_derogatory && (
+                  <span className="text-xs px-2 py-0.5 bg-destructive/20 text-destructive rounded">
+                    Linked to derogatory items
+                  </span>
+                )}
+                {showSource && item.source && (
+                  <span className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded">{item.source}</span>
+                )}
+              </div>
+            </div>
+          ))}
+        </ResultCard>
+      )}
+
+      {/* Inaccurate Employers */}
+      {result.inaccurate_employers && result.inaccurate_employers.length > 0 && (
+        <ResultCard
+          title="Inaccurate Employers"
+          count={result.inaccurate_employers.length}
+          onCopy={() => copySection("Inaccurate Employers", result.inaccurate_employers.map(e => e.reported_employer).join("\n"))}
+          isCopied={copiedSection === "Inaccurate Employers"}
+        >
+          {result.inaccurate_employers.map((item, i) => (
+            <div key={i} className="p-3 bg-muted/30 rounded-lg flex items-center justify-between">
+              <p className="font-medium text-foreground">{item.reported_employer}</p>
+              {showSource && item.source && (
+                <span className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded">{item.source}</span>
+              )}
+            </div>
+          ))}
+        </ResultCard>
+      )}
+
+      {/* Extra Identifier Mismatches */}
+      {result.extra_identifier_mismatches && result.extra_identifier_mismatches.length > 0 && (
+        <ResultCard
+          title="Extra Identifier Mismatches"
+          count={result.extra_identifier_mismatches.length}
+          onCopy={() => copySection("Identifier Mismatches", result.extra_identifier_mismatches.map(e => `${e.field}: ${e.reported_value}`).join("\n"))}
+          isCopied={copiedSection === "Identifier Mismatches"}
+        >
+          {result.extra_identifier_mismatches.map((item, i) => (
+            <div key={i} className="p-3 bg-muted/30 rounded-lg">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">{item.field}:</span>
+                <span className="font-medium text-foreground">"{item.reported_value}"</span>
+                {showSource && item.source && (
+                  <span className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded">{item.source}</span>
+                )}
+              </div>
+              <p className="text-sm text-destructive mt-1">{item.status}</p>
+            </div>
+          ))}
+        </ResultCard>
+      )}
+
+      {/* Derogatory Accounts */}
+      {result.derogatory_accounts && result.derogatory_accounts.length > 0 && (
+        <ResultCard
+          title="Derogatory Accounts"
+          count={result.derogatory_accounts.length}
+          variant="destructive"
+          onCopy={() => copySection("Derogatory Accounts", result.derogatory_accounts.map(a => `${a.creditor_name} (${a.account_number})`).join("\n"))}
+          isCopied={copiedSection === "Derogatory Accounts"}
+        >
+          {result.derogatory_accounts.map((item, i) => (
+            <div key={i} className="p-4 bg-muted/30 rounded-lg space-y-2">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="font-semibold text-foreground">{item.creditor_name}</p>
+                  <p className="text-sm text-muted-foreground font-mono">{item.account_number}</p>
+                </div>
+                <div className="flex flex-col items-end gap-1">
+                  {getConfidenceBadge(item.confidence)}
+                  {showSource && item.source && (
+                    <span className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded">{item.source}</span>
+                  )}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div>
+                  <span className="text-muted-foreground">Date Opened: </span>
+                  <span className="text-foreground">{item.date_opened}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Status: </span>
+                  <span className="text-foreground">{item.status_as_reported}</span>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {item.derogatory_triggers.map((trigger, ti) => (
+                  <span key={ti} className="px-2 py-0.5 text-xs bg-destructive/20 text-destructive rounded">
+                    {trigger}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </ResultCard>
+      )}
+
+      {/* Late Payment Summary */}
+      {result.late_payment_summary && result.late_payment_summary.length > 0 && (
+        <ResultCard
+          title="Late Payment Summary"
+          count={result.late_payment_summary.reduce((acc, s) => acc + s.accounts.length, 0)}
+          variant="warning"
+          onCopy={() => copySection("Late Payments", result.late_payment_summary.flatMap(s => s.accounts.map(a => `${s.severity}: ${a.creditor_name}`)).join("\n"))}
+          isCopied={copiedSection === "Late Payments"}
+        >
+          {result.late_payment_summary.map((severity, si) => (
+            <div key={si} className="space-y-2">
+              <h5 className="font-semibold text-warning uppercase text-sm">{severity.severity} Lates</h5>
+              {severity.accounts.map((acc, ai) => (
+                <div key={ai} className="p-3 bg-muted/30 rounded-lg">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <p className="font-medium text-foreground">{acc.creditor_name}</p>
+                      <p className="text-sm text-muted-foreground font-mono">{acc.account_number}</p>
+                    </div>
+                    {showSource && acc.source && (
+                      <span className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded">{acc.source}</span>
+                    )}
+                  </div>
+                  <p className="text-sm text-warning mt-1">{acc.months_detected}</p>
+                </div>
+              ))}
+            </div>
+          ))}
+        </ResultCard>
+      )}
+
+      {/* Collections */}
+      {result.collections && result.collections.length > 0 && (
+        <ResultCard
+          title="Collections"
+          count={result.collections.length}
+          variant="destructive"
+          onCopy={() => copySection("Collections", result.collections.map(c => `${c.creditor_name} - ${c.balance}`).join("\n"))}
+          isCopied={copiedSection === "Collections"}
+        >
+          {result.collections.map((item, i) => (
+            <div key={i} className="p-3 bg-muted/30 rounded-lg">
+              <div className="flex justify-between items-start">
+                <div>
+                  <p className="font-medium text-foreground">{item.creditor_name}</p>
+                  <p className="text-sm text-muted-foreground font-mono">{item.account_number}</p>
+                </div>
+                {showSource && item.source && (
+                  <span className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded">{item.source}</span>
+                )}
+              </div>
+              {item.original_creditor && (
+                <p className="text-sm text-muted-foreground">Original: {item.original_creditor}</p>
+              )}
+              <p className="text-sm text-destructive font-semibold mt-1">Balance: {item.balance}</p>
+            </div>
+          ))}
+        </ResultCard>
+      )}
+
+      {/* Charge-offs */}
+      {result.charge_offs && result.charge_offs.length > 0 && (
+        <ResultCard
+          title="Charge-Offs"
+          count={result.charge_offs.length}
+          variant="destructive"
+          onCopy={() => copySection("Charge-Offs", result.charge_offs.map(c => `${c.creditor_name} - ${c.balance}`).join("\n"))}
+          isCopied={copiedSection === "Charge-Offs"}
+        >
+          {result.charge_offs.map((item, i) => (
+            <div key={i} className="p-3 bg-muted/30 rounded-lg">
+              <div className="flex justify-between items-start">
+                <p className="font-medium text-foreground">{item.creditor_name}</p>
+                {showSource && item.source && (
+                  <span className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded">{item.source}</span>
+                )}
+              </div>
+              <p className="text-sm text-muted-foreground font-mono">{item.account_number}</p>
+              <div className="flex gap-4 text-sm mt-1">
+                <span className="text-muted-foreground">Charged Off: {item.date_charged_off}</span>
+                <span className="text-destructive font-semibold">Balance: {item.balance}</span>
+              </div>
+            </div>
+          ))}
+        </ResultCard>
+      )}
+
+      {/* Public Records */}
+      {result.public_records && result.public_records.length > 0 && (
+        <ResultCard
+          title="Public Records"
+          count={result.public_records.length}
+          variant="destructive"
+          onCopy={() => copySection("Public Records", result.public_records.map(p => `${p.type} - ${p.filing_date}`).join("\n"))}
+          isCopied={copiedSection === "Public Records"}
+        >
+          {result.public_records.map((item, i) => (
+            <div key={i} className="p-3 bg-muted/30 rounded-lg">
+              <div className="flex justify-between items-start">
+                <p className="font-semibold text-foreground">{item.type}</p>
+                {showSource && item.source && (
+                  <span className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded">{item.source}</span>
+                )}
+              </div>
+              <p className="text-sm text-muted-foreground">{item.court_jurisdiction}</p>
+              <div className="flex gap-4 text-sm mt-1">
+                <span className="text-muted-foreground">Filed: {item.filing_date}</span>
+                <span className="text-foreground">Status: {item.status}</span>
+              </div>
+            </div>
+          ))}
+        </ResultCard>
+      )}
+
+      {/* Inquiries */}
+      {result.inquiries && result.inquiries.length > 0 && (
+        <ResultCard
+          title="Inquiries"
+          count={result.inquiries.length}
+          onCopy={() => copySection("Inquiries", result.inquiries.map(i => `${i.creditor_name} - ${i.date}`).join("\n"))}
+          isCopied={copiedSection === "Inquiries"}
+        >
+          {result.inquiries.map((item, i) => (
+            <div key={i} className="p-3 bg-muted/30 rounded-lg flex items-center justify-between">
+              <div>
+                <p className="font-medium text-foreground">{item.creditor_name}</p>
+                <p className="text-sm text-muted-foreground">{item.date}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                {showSource && item.source && (
+                  <span className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded">{item.source}</span>
+                )}
+                <span className={cn(
+                  "px-2 py-0.5 text-xs rounded",
+                  item.type === "hard" 
+                    ? "bg-destructive/20 text-destructive" 
+                    : "bg-muted text-muted-foreground"
+                )}>
+                  {item.type}
+                </span>
+              </div>
+            </div>
+          ))}
+        </ResultCard>
+      )}
+
+      {/* Next Steps */}
+      {result.next_steps && result.next_steps.length > 0 && (
+        <div className="card-elevated rounded-xl border border-border/50 p-6">
+          <h4 className="text-lg font-serif font-semibold text-foreground mb-4">Next Steps</h4>
+          <ol className="space-y-3">
+            {result.next_steps.map((step, i) => (
+              <li key={i} className="flex items-start gap-3">
+                <span className="w-6 h-6 rounded-full bg-primary/20 text-primary text-sm font-bold flex items-center justify-center flex-shrink-0 mt-0.5">
+                  {i + 1}
+                </span>
+                <span className="text-muted-foreground">{step}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+    </div>
   );
 
   return (
@@ -408,7 +1001,7 @@ const AIAnalyzer = () => {
             Credit Report Analyzer
           </h2>
           <p className="text-muted-foreground text-lg max-w-2xl mx-auto">
-            Upload your credit report. Get a dispute-ready checklist of inaccuracies and derogatory items.
+            Upload your credit reports from all three bureaus. Get a dispute-ready checklist of inaccuracies and derogatory items.
           </p>
         </div>
 
@@ -557,152 +1150,178 @@ const AIAnalyzer = () => {
                 Credit Report Upload
               </h3>
               <p className="text-sm text-muted-foreground">
-                Upload PDF pages, screenshots, or paste text. Multiple images supported (up to 10).
+                Upload PDFs or images of your credit reports. Supports Experian, Equifax, and TransUnion.
               </p>
               
-              {/* Multi-image upload */}
-              <div className="space-y-4">
-                <div 
-                  className={cn(
-                    "border-2 border-dashed rounded-xl p-6 text-center transition-all cursor-pointer",
-                    responseImages.length > 0 
-                      ? "border-primary/50 bg-primary/5" 
-                      : "border-border hover:border-primary/30 hover:bg-muted/30"
-                  )}
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*,.pdf"
-                    multiple
-                    onChange={handleImageUpload}
-                    className="hidden"
-                  />
-                  
-                  {responseImages.length > 0 ? (
-                    <div className="space-y-4">
-                      <div className="flex flex-wrap gap-2 justify-center">
-                        {imageNames.map((name, index) => (
-                          <div 
-                            key={index}
-                            className="flex items-center gap-2 px-3 py-1.5 bg-muted/50 rounded-full text-sm"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <FileText className="w-4 h-4 text-primary" />
-                            <span className="max-w-[150px] truncate">{name}</span>
-                            <button 
-                              onClick={() => removeImage(index)}
-                              className="text-muted-foreground hover:text-destructive"
-                            >
-                              <X className="w-4 h-4" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="flex justify-center gap-2">
-                        <Button 
-                          variant="outline" 
-                          size="sm"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            fileInputRef.current?.click();
-                          }}
-                        >
-                          <Plus className="w-4 h-4 mr-1" />
-                          Add More
-                        </Button>
-                        <Button 
-                          variant="outline" 
-                          size="sm"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            clearAllImages();
-                          }}
-                        >
-                          Clear All
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      <Upload className="w-8 h-8 mx-auto text-muted-foreground" />
-                      <p className="text-muted-foreground">
-                        Click to upload credit report pages
-                      </p>
-                      <p className="text-sm text-muted-foreground/70">
-                        PNG, JPG, PDF up to 10MB each (max 10 files)
-                      </p>
-                    </div>
-                  )}
-                </div>
-
-                {/* Divider */}
-                {responseImages.length === 0 && (
-                  <>
-                    <div className="flex items-center gap-4">
-                      <div className="flex-1 h-px bg-border" />
-                      <span className="text-sm text-muted-foreground">OR</span>
-                      <div className="flex-1 h-px bg-border" />
-                    </div>
-
-                    <Textarea
-                      placeholder="Paste the credit report text here..."
-                      value={responseText}
-                      onChange={(e) => setResponseText(e.target.value)}
-                      className="min-h-[150px] bg-muted/30 border-border/50 focus:border-primary/50 resize-none"
-                    />
-                  </>
+              {/* Upload Area */}
+              <div 
+                className={cn(
+                  "border-2 border-dashed rounded-xl p-6 text-center transition-all cursor-pointer",
+                  uploadedFiles.length > 0 
+                    ? "border-primary/50 bg-primary/5" 
+                    : "border-border hover:border-primary/30 hover:bg-muted/30"
                 )}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/jpg,image/gif,image/webp,application/pdf"
+                  multiple
+                  onChange={handleFileUpload}
+                  className="hidden"
+                />
+                
+                <div className="space-y-2">
+                  <Upload className="w-8 h-8 mx-auto text-muted-foreground" />
+                  <p className="text-muted-foreground">
+                    Click to upload credit report files
+                  </p>
+                  <p className="text-sm text-muted-foreground/70">
+                    PDF, PNG, JPG, WebP up to 20MB each (max 10 files)
+                  </p>
+                </div>
               </div>
 
-              {/* Additional options */}
-              <div className="grid sm:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label className="text-muted-foreground">Bureau (if known)</Label>
-                  <Select value={bureau} onValueChange={setBureau}>
-                    <SelectTrigger className="bg-muted/30 border-border/50">
-                      <SelectValue placeholder="Select bureau" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="experian">Experian</SelectItem>
-                      <SelectItem value="equifax">Equifax</SelectItem>
-                      <SelectItem value="transunion">TransUnion</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
+              {/* File Mapping Table */}
+              {uploadedFiles.length > 0 && (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-medium text-foreground flex items-center gap-2">
+                      <Layers className="w-4 h-4" />
+                      Uploaded Files ({uploadedFiles.length})
+                    </h4>
+                    <Button variant="ghost" size="sm" onClick={clearAllFiles}>
+                      Clear All
+                    </Button>
+                  </div>
 
-                <div className="space-y-2">
-                  <Label className="text-muted-foreground">Identity Theft Docs Available</Label>
-                  <Select value={identityDocs} onValueChange={setIdentityDocs}>
-                    <SelectTrigger className="bg-muted/30 border-border/50">
-                      <SelectValue placeholder="Select documentation" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="ftc">FTC Report Only</SelectItem>
-                      <SelectItem value="police">Police Report Only</SelectItem>
-                      <SelectItem value="both">Both FTC & Police</SelectItem>
-                      <SelectItem value="none">None Yet</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <div className="border border-border/50 rounded-lg overflow-hidden">
+                    <div className="grid grid-cols-[1fr,auto,auto,auto] gap-2 p-3 bg-muted/30 text-sm font-medium text-muted-foreground border-b border-border/50">
+                      <span>File Name</span>
+                      <span className="w-32 text-center">Bureau</span>
+                      <span className="w-32 text-center">Label</span>
+                      <span className="w-10"></span>
+                    </div>
+                    
+                    {uploadedFiles.map((file) => (
+                      <div key={file.id} className="grid grid-cols-[1fr,auto,auto,auto] gap-2 p-3 items-center border-b border-border/30 last:border-b-0">
+                        <div className="flex items-center gap-2 min-w-0">
+                          {file.isProcessing ? (
+                            <Loader2 className="w-4 h-4 text-primary animate-spin flex-shrink-0" />
+                          ) : file.error ? (
+                            <FileWarning className="w-4 h-4 text-destructive flex-shrink-0" />
+                          ) : (
+                            <FileText className="w-4 h-4 text-primary flex-shrink-0" />
+                          )}
+                          <span className="truncate text-sm">{file.name}</span>
+                          {file.images.length > 1 && (
+                            <span className="text-xs text-muted-foreground">({file.images.length} pages)</span>
+                          )}
+                        </div>
+                        
+                        <Select 
+                          value={file.selectedBureau} 
+                          onValueChange={(v) => updateFileBureau(file.id, v as any)}
+                          disabled={file.isProcessing}
+                        >
+                          <SelectTrigger className={cn(
+                            "w-32 h-8 text-sm",
+                            file.selectedBureau === 'unknown' && "border-warning text-warning"
+                          )}>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="experian">Experian</SelectItem>
+                            <SelectItem value="equifax">Equifax</SelectItem>
+                            <SelectItem value="transunion">TransUnion</SelectItem>
+                            <SelectItem value="unknown">Unknown</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        
+                        <Input
+                          placeholder="e.g., Jan 2026"
+                          value={file.label}
+                          onChange={(e) => updateFileLabel(file.id, e.target.value)}
+                          className="w-32 h-8 text-sm"
+                          disabled={file.isProcessing}
+                        />
+                        
+                        <Button 
+                          variant="ghost" 
+                          size="icon" 
+                          className="w-8 h-8"
+                          onClick={() => removeFile(file.id)}
+                        >
+                          <X className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+
+                  {hasUnknownBureau && (
+                    <div className="flex items-center gap-2 text-sm text-warning">
+                      <AlertTriangle className="w-4 h-4" />
+                      <span>Please select a bureau for files marked "Unknown" before analyzing.</span>
+                    </div>
+                  )}
                 </div>
+              )}
+
+              {/* Divider for text input */}
+              {uploadedFiles.length === 0 && (
+                <>
+                  <div className="flex items-center gap-4">
+                    <div className="flex-1 h-px bg-border" />
+                    <span className="text-sm text-muted-foreground">OR paste text</span>
+                    <div className="flex-1 h-px bg-border" />
+                  </div>
+
+                  <Textarea
+                    placeholder="Paste the credit report text here..."
+                    value={responseText}
+                    onChange={(e) => setResponseText(e.target.value)}
+                    className="min-h-[150px] bg-muted/30 border-border/50 focus:border-primary/50 resize-none"
+                  />
+                </>
+              )}
+
+              {/* Additional options */}
+              <div className="space-y-2">
+                <Label className="text-muted-foreground">Identity Theft Docs Available</Label>
+                <Select value={identityDocs} onValueChange={setIdentityDocs}>
+                  <SelectTrigger className="bg-muted/30 border-border/50">
+                    <SelectValue placeholder="Select documentation" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ftc">FTC Report Only</SelectItem>
+                    <SelectItem value="police">Police Report Only</SelectItem>
+                    <SelectItem value="both">Both FTC & Police</SelectItem>
+                    <SelectItem value="none">None Yet</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
 
               {/* Analyze button */}
               <Button
-                onClick={handleAnalyze}
-                disabled={isAnalyzing || (!responseText && responseImages.length === 0) || !fullLegalName || !currentAddress || !currentEmployer}
+                onClick={() => handleAnalyze()}
+                disabled={isAnalyzing || anyFileProcessing || (!responseText && uploadedFiles.length === 0) || !fullLegalName || !currentAddress || !currentEmployer || hasUnknownBureau}
                 className="w-full py-6 text-lg font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 {isAnalyzing ? (
                   <>
                     <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                    Analyzing Credit Report...
+                    Analyzing Credit Reports...
+                  </>
+                ) : anyFileProcessing ? (
+                  <>
+                    <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                    Processing Files...
                   </>
                 ) : (
                   <>
                     <Sparkles className="w-5 h-5 mr-2" />
-                    Generate Dispute Analysis
+                    Analyze All Reports
                   </>
                 )}
               </Button>
@@ -718,297 +1337,60 @@ const AIAnalyzer = () => {
           </div>
         )}
 
-        {/* Results */}
-        {result && (
+        {/* Results with Tabs */}
+        {hasAnyResults && (
           <div className="mt-8 space-y-6 animate-slide-up">
-            {/* Header with copy all button */}
             <div className="flex items-center justify-between">
               <h3 className="text-2xl font-serif font-bold text-foreground">
                 Dispute Analysis Results
               </h3>
-              {hasAnyResults && (
-                <Button variant="outline" onClick={copyAllResults}>
-                  <Copy className="w-4 h-4 mr-2" />
-                  Copy All
-                </Button>
-              )}
             </div>
 
-            {/* Summary */}
-            {result.summary && (
-              <div className="card-elevated rounded-xl border border-border/50 p-6">
-                <h4 className="text-lg font-serif font-semibold text-foreground mb-3">Summary</h4>
-                <p className="text-muted-foreground leading-relaxed">{result.summary}</p>
-              </div>
-            )}
-
-            {/* Warnings */}
-            {result.warnings && result.warnings.length > 0 && (
-              <div className="bg-warning/10 border border-warning/30 rounded-xl p-6">
-                <h4 className="text-lg font-serif font-semibold text-warning mb-3 flex items-center gap-2">
-                  <AlertTriangle className="w-5 h-5" />
-                  Warnings
-                </h4>
-                <ul className="space-y-2">
-                  {result.warnings.map((warning, i) => (
-                    <li key={i} className="text-warning/90 flex items-start gap-2">
-                      <ChevronRight className="w-4 h-4 flex-shrink-0 mt-1" />
-                      <span>{warning}</span>
-                    </li>
+            {Object.keys(results).length > 1 ? (
+              <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+                <TabsList className="w-full flex flex-wrap h-auto gap-1 bg-muted/30 p-1">
+                  <TabsTrigger value="combined" className="flex-1 min-w-[120px]">
+                    <Layers className="w-4 h-4 mr-2" />
+                    Combined
+                  </TabsTrigger>
+                  {Object.entries(results).map(([key, result]) => (
+                    <TabsTrigger key={key} value={key} className="flex-1 min-w-[100px]">
+                      {result.bureau || key}
+                    </TabsTrigger>
                   ))}
-                </ul>
-              </div>
-            )}
+                </TabsList>
 
-            {/* Inaccurate Names */}
-            {result.inaccurate_names && result.inaccurate_names.length > 0 && (
-              <ResultCard
-                title="Inaccurate Names"
-                count={result.inaccurate_names.length}
-                onCopy={() => copySection("Inaccurate Names", result.inaccurate_names.map(n => `${n.reported_name}: ${n.mismatch_reason}`).join("\n"))}
-                isCopied={copiedSection === "Inaccurate Names"}
-              >
-                {result.inaccurate_names.map((item, i) => (
-                  <div key={i} className="flex items-start justify-between p-3 bg-muted/30 rounded-lg">
-                    <div>
-                      <p className="font-medium text-foreground">"{item.reported_name}"</p>
-                      <p className="text-sm text-destructive">{item.mismatch_reason}</p>
+                <TabsContent value="combined" className="mt-6">
+                  <div className="flex justify-end mb-4">
+                    <Button variant="outline" onClick={() => copyAllResults(getCombinedResults(), "Combined")}>
+                      <Copy className="w-4 h-4 mr-2" />
+                      Copy All
+                    </Button>
+                  </div>
+                  {renderResultContent(getCombinedResults(), true)}
+                </TabsContent>
+
+                {Object.entries(results).map(([key, result]) => (
+                  <TabsContent key={key} value={key} className="mt-6">
+                    <div className="flex justify-end mb-4">
+                      <Button variant="outline" onClick={() => copyAllResults(result, result.bureau)}>
+                        <Copy className="w-4 h-4 mr-2" />
+                        Copy All
+                      </Button>
                     </div>
-                  </div>
+                    {renderResultContent(result)}
+                  </TabsContent>
                 ))}
-              </ResultCard>
-            )}
-
-            {/* Inaccurate Addresses */}
-            {result.inaccurate_addresses && result.inaccurate_addresses.length > 0 && (
-              <ResultCard
-                title="Inaccurate Addresses"
-                count={result.inaccurate_addresses.length}
-                onCopy={() => copySection("Inaccurate Addresses", result.inaccurate_addresses.map(a => `${a.reported_address}${a.linked_to_derogatory ? " [LINKED TO DEROGATORY]" : ""}`).join("\n"))}
-                isCopied={copiedSection === "Inaccurate Addresses"}
-              >
-                {result.inaccurate_addresses.map((item, i) => (
-                  <div key={i} className="flex items-start justify-between p-3 bg-muted/30 rounded-lg">
-                    <div>
-                      <p className="font-medium text-foreground">{item.reported_address}</p>
-                      {item.linked_to_derogatory && (
-                        <span className="text-xs px-2 py-0.5 bg-destructive/20 text-destructive rounded">
-                          Linked to derogatory items
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </ResultCard>
-            )}
-
-            {/* Inaccurate Employers */}
-            {result.inaccurate_employers && result.inaccurate_employers.length > 0 && (
-              <ResultCard
-                title="Inaccurate Employers"
-                count={result.inaccurate_employers.length}
-                onCopy={() => copySection("Inaccurate Employers", result.inaccurate_employers.map(e => e.reported_employer).join("\n"))}
-                isCopied={copiedSection === "Inaccurate Employers"}
-              >
-                {result.inaccurate_employers.map((item, i) => (
-                  <div key={i} className="p-3 bg-muted/30 rounded-lg">
-                    <p className="font-medium text-foreground">{item.reported_employer}</p>
-                  </div>
-                ))}
-              </ResultCard>
-            )}
-
-            {/* Extra Identifier Mismatches */}
-            {result.extra_identifier_mismatches && result.extra_identifier_mismatches.length > 0 && (
-              <ResultCard
-                title="Extra Identifier Mismatches"
-                count={result.extra_identifier_mismatches.length}
-                onCopy={() => copySection("Identifier Mismatches", result.extra_identifier_mismatches.map(e => `${e.field}: ${e.reported_value} - ${e.status}`).join("\n"))}
-                isCopied={copiedSection === "Identifier Mismatches"}
-              >
-                {result.extra_identifier_mismatches.map((item, i) => (
-                  <div key={i} className="p-3 bg-muted/30 rounded-lg">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm text-muted-foreground">{item.field}:</span>
-                      <span className="font-medium text-foreground">"{item.reported_value}"</span>
-                    </div>
-                    <p className="text-sm text-destructive mt-1">{item.status}</p>
-                  </div>
-                ))}
-              </ResultCard>
-            )}
-
-            {/* Derogatory Accounts */}
-            {result.derogatory_accounts && result.derogatory_accounts.length > 0 && (
-              <ResultCard
-                title="Derogatory Accounts"
-                count={result.derogatory_accounts.length}
-                variant="destructive"
-                onCopy={() => copySection("Derogatory Accounts", result.derogatory_accounts.map(a => `${a.creditor_name} (${a.account_number}) - ${a.derogatory_triggers.join(", ")}`).join("\n"))}
-                isCopied={copiedSection === "Derogatory Accounts"}
-              >
-                {result.derogatory_accounts.map((item, i) => (
-                  <div key={i} className="p-4 bg-muted/30 rounded-lg space-y-2">
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <p className="font-semibold text-foreground">{item.creditor_name}</p>
-                        <p className="text-sm text-muted-foreground font-mono">{item.account_number}</p>
-                      </div>
-                      {getConfidenceBadge(item.confidence)}
-                    </div>
-                    <div className="grid grid-cols-2 gap-2 text-sm">
-                      <div>
-                        <span className="text-muted-foreground">Date Opened: </span>
-                        <span className="text-foreground">{item.date_opened}</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">Status: </span>
-                        <span className="text-foreground">{item.status_as_reported}</span>
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5 mt-2">
-                      {item.derogatory_triggers.map((trigger, ti) => (
-                        <span key={ti} className="px-2 py-0.5 text-xs bg-destructive/20 text-destructive rounded">
-                          {trigger}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </ResultCard>
-            )}
-
-            {/* Late Payment Summary */}
-            {result.late_payment_summary && result.late_payment_summary.length > 0 && (
-              <ResultCard
-                title="Late Payment Summary"
-                count={result.late_payment_summary.reduce((acc, s) => acc + s.accounts.length, 0)}
-                variant="warning"
-                onCopy={() => copySection("Late Payments", result.late_payment_summary.flatMap(s => s.accounts.map(a => `${s.severity}: ${a.creditor_name} - ${a.months_detected}`)).join("\n"))}
-                isCopied={copiedSection === "Late Payments"}
-              >
-                {result.late_payment_summary.map((severity, si) => (
-                  <div key={si} className="space-y-2">
-                    <h5 className="font-semibold text-warning uppercase text-sm">{severity.severity} Lates</h5>
-                    {severity.accounts.map((acc, ai) => (
-                      <div key={ai} className="p-3 bg-muted/30 rounded-lg">
-                        <p className="font-medium text-foreground">{acc.creditor_name}</p>
-                        <p className="text-sm text-muted-foreground font-mono">{acc.account_number}</p>
-                        <p className="text-sm text-warning mt-1">{acc.months_detected}</p>
-                      </div>
-                    ))}
-                  </div>
-                ))}
-              </ResultCard>
-            )}
-
-            {/* Collections */}
-            {result.collections && result.collections.length > 0 && (
-              <ResultCard
-                title="Collections"
-                count={result.collections.length}
-                variant="destructive"
-                onCopy={() => copySection("Collections", result.collections.map(c => `${c.creditor_name} (${c.account_number}) - ${c.balance}`).join("\n"))}
-                isCopied={copiedSection === "Collections"}
-              >
-                {result.collections.map((item, i) => (
-                  <div key={i} className="p-3 bg-muted/30 rounded-lg">
-                    <p className="font-medium text-foreground">{item.creditor_name}</p>
-                    <p className="text-sm text-muted-foreground font-mono">{item.account_number}</p>
-                    {item.original_creditor && (
-                      <p className="text-sm text-muted-foreground">Original: {item.original_creditor}</p>
-                    )}
-                    <p className="text-sm text-destructive font-semibold mt-1">Balance: {item.balance}</p>
-                  </div>
-                ))}
-              </ResultCard>
-            )}
-
-            {/* Charge-offs */}
-            {result.charge_offs && result.charge_offs.length > 0 && (
-              <ResultCard
-                title="Charge-Offs"
-                count={result.charge_offs.length}
-                variant="destructive"
-                onCopy={() => copySection("Charge-Offs", result.charge_offs.map(c => `${c.creditor_name} - ${c.date_charged_off} - ${c.balance}`).join("\n"))}
-                isCopied={copiedSection === "Charge-Offs"}
-              >
-                {result.charge_offs.map((item, i) => (
-                  <div key={i} className="p-3 bg-muted/30 rounded-lg">
-                    <p className="font-medium text-foreground">{item.creditor_name}</p>
-                    <p className="text-sm text-muted-foreground font-mono">{item.account_number}</p>
-                    <div className="flex gap-4 text-sm mt-1">
-                      <span className="text-muted-foreground">Charged Off: {item.date_charged_off}</span>
-                      <span className="text-destructive font-semibold">Balance: {item.balance}</span>
-                    </div>
-                  </div>
-                ))}
-              </ResultCard>
-            )}
-
-            {/* Public Records */}
-            {result.public_records && result.public_records.length > 0 && (
-              <ResultCard
-                title="Public Records"
-                count={result.public_records.length}
-                variant="destructive"
-                onCopy={() => copySection("Public Records", result.public_records.map(p => `${p.type} - ${p.court_jurisdiction} - ${p.filing_date}`).join("\n"))}
-                isCopied={copiedSection === "Public Records"}
-              >
-                {result.public_records.map((item, i) => (
-                  <div key={i} className="p-3 bg-muted/30 rounded-lg">
-                    <p className="font-semibold text-foreground">{item.type}</p>
-                    <p className="text-sm text-muted-foreground">{item.court_jurisdiction}</p>
-                    <div className="flex gap-4 text-sm mt-1">
-                      <span className="text-muted-foreground">Filed: {item.filing_date}</span>
-                      <span className="text-foreground">Status: {item.status}</span>
-                    </div>
-                  </div>
-                ))}
-              </ResultCard>
-            )}
-
-            {/* Inquiries */}
-            {result.inquiries && result.inquiries.length > 0 && (
-              <ResultCard
-                title="Inquiries"
-                count={result.inquiries.length}
-                onCopy={() => copySection("Inquiries", result.inquiries.map(i => `${i.creditor_name} - ${i.date} (${i.type})`).join("\n"))}
-                isCopied={copiedSection === "Inquiries"}
-              >
-                {result.inquiries.map((item, i) => (
-                  <div key={i} className="p-3 bg-muted/30 rounded-lg flex items-center justify-between">
-                    <div>
-                      <p className="font-medium text-foreground">{item.creditor_name}</p>
-                      <p className="text-sm text-muted-foreground">{item.date}</p>
-                    </div>
-                    <span className={cn(
-                      "px-2 py-0.5 text-xs rounded",
-                      item.type === "hard" 
-                        ? "bg-destructive/20 text-destructive" 
-                        : "bg-muted text-muted-foreground"
-                    )}>
-                      {item.type}
-                    </span>
-                  </div>
-                ))}
-              </ResultCard>
-            )}
-
-            {/* Next Steps */}
-            {result.next_steps && result.next_steps.length > 0 && (
-              <div className="card-elevated rounded-xl border border-border/50 p-6">
-                <h4 className="text-lg font-serif font-semibold text-foreground mb-4">Next Steps</h4>
-                <ol className="space-y-3">
-                  {result.next_steps.map((step, i) => (
-                    <li key={i} className="flex items-start gap-3">
-                      <span className="w-6 h-6 rounded-full bg-primary/20 text-primary text-sm font-bold flex items-center justify-center flex-shrink-0 mt-0.5">
-                        {i + 1}
-                      </span>
-                      <span className="text-muted-foreground">{step}</span>
-                    </li>
-                  ))}
-                </ol>
+              </Tabs>
+            ) : (
+              <div>
+                <div className="flex justify-end mb-4">
+                  <Button variant="outline" onClick={() => copyAllResults(Object.values(results)[0])}>
+                    <Copy className="w-4 h-4 mr-2" />
+                    Copy All
+                  </Button>
+                </div>
+                {renderResultContent(Object.values(results)[0])}
               </div>
             )}
           </div>
