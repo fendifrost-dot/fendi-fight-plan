@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import mammoth from "mammoth";
 import AppNavigation from "@/components/AppNavigation";
 import Footer from "@/components/Footer";
 import { Button } from "@/components/ui/button";
@@ -21,7 +22,9 @@ import {
   Calendar,
   Scale,
   ArrowRight,
-  Import
+  Import,
+  File,
+  X
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -56,22 +59,39 @@ const statusConfig = {
   reinsertion: { label: "Reinsertion", color: "bg-red-500/20 text-red-400 border-red-500/30" },
 };
 
-// Upload Dropzone Component
-const UploadDropzone = ({ onFileSelect }: { onFileSelect: (file: File) => void }) => {
+// Bureau Response Upload Dropzone (PDF/Images only for OCR)
+interface BureauResponseUploadProps {
+  onFileSelect: (file: File) => void;
+  selectedFile: File | null;
+  onClear: () => void;
+}
+
+const BureauResponseUpload = ({ onFileSelect, selectedFile, onClear }: BureauResponseUploadProps) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+
+  const validTypes = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+  const validExtensions = '.pdf,.png,.jpg,.jpeg,.webp';
 
   const handleClick = () => {
     fileInputRef.current?.click();
   };
 
+  const validateFile = (file: File): boolean => {
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error("File size exceeds 10MB limit.");
+      return false;
+    }
+    if (!validTypes.includes(file.type)) {
+      toast.error("Bureau responses must be PDF or image files (PNG, JPG, WebP).");
+      return false;
+    }
+    return true;
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      if (file.size > 10 * 1024 * 1024) {
-        toast.error("File size exceeds 10MB limit.");
-        return;
-      }
+    if (file && validateFile(file)) {
       onFileSelect(file);
     }
   };
@@ -90,19 +110,29 @@ const UploadDropzone = ({ onFileSelect }: { onFileSelect: (file: File) => void }
     e.preventDefault();
     setIsDragging(false);
     const file = e.dataTransfer.files?.[0];
-    if (file) {
-      if (file.size > 10 * 1024 * 1024) {
-        toast.error("File size exceeds 10MB limit.");
-        return;
-      }
-      const validTypes = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg'];
-      if (!validTypes.includes(file.type)) {
-        toast.error("Please upload a PDF, PNG, or JPG file.");
-        return;
-      }
+    if (file && validateFile(file)) {
       onFileSelect(file);
     }
   };
+
+  if (selectedFile) {
+    return (
+      <div className="border border-border rounded-lg p-4 flex items-center justify-between bg-muted/30">
+        <div className="flex items-center gap-3">
+          <File className="w-8 h-8 text-primary" />
+          <div>
+            <p className="font-medium text-sm">{selectedFile.name}</p>
+            <p className="text-xs text-muted-foreground">
+              {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
+            </p>
+          </div>
+        </div>
+        <Button variant="ghost" size="sm" onClick={onClear} className="text-muted-foreground hover:text-destructive">
+          <X className="w-4 h-4" />
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -112,31 +142,217 @@ const UploadDropzone = ({ onFileSelect }: { onFileSelect: (file: File) => void }
       onDrop={handleDrop}
       role="button"
       tabIndex={0}
-      aria-label="Upload bureau response file"
+      aria-label="Upload bureau response file (PDF or images only)"
       onKeyDown={(e) => e.key === 'Enter' && handleClick()}
-      className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer ${
+      className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors cursor-pointer ${
         isDragging 
           ? 'border-primary bg-primary/5' 
           : 'border-border hover:border-primary/50'
       }`}
     >
-      <Upload className="w-10 h-10 mx-auto text-muted-foreground mb-4" />
-      <p className="text-muted-foreground mb-2">
-        Drag and drop your response letter here, or click to browse
+      <Upload className="w-8 h-8 mx-auto text-muted-foreground mb-3" />
+      <p className="text-sm text-muted-foreground mb-2">
+        Drag and drop bureau response here, or click to browse
       </p>
-      <Button type="button" variant="outline" className="mt-2" onClick={(e) => { e.stopPropagation(); handleClick(); }}>
+      <Button type="button" variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); handleClick(); }}>
         Choose File
       </Button>
-      <p className="text-xs text-muted-foreground mt-3">
-        Supports PDF, PNG, JPG (max 10MB)
+      <p className="text-xs text-muted-foreground mt-2">
+        PDF, PNG, JPG, WebP only (max 10MB)
       </p>
       <input
         ref={fileInputRef}
         type="file"
         className="hidden"
-        accept=".pdf,.png,.jpg,.jpeg"
+        accept={validExtensions}
         onChange={handleFileChange}
       />
+    </div>
+  );
+};
+
+// Prior Dispute Letter Upload (DOCX/PDF/TXT for text extraction)
+interface PriorLetterUploadProps {
+  onTextExtracted: (text: string) => void;
+  onFileSelect: (file: File) => void;
+  selectedFile: File | null;
+  onClear: () => void;
+  extractedText: string;
+  onTextChange: (text: string) => void;
+  isExtracting: boolean;
+}
+
+const PriorLetterUpload = ({ 
+  onTextExtracted, 
+  onFileSelect, 
+  selectedFile, 
+  onClear, 
+  extractedText,
+  onTextChange,
+  isExtracting 
+}: PriorLetterUploadProps) => {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [extractionError, setExtractionError] = useState<string | null>(null);
+
+  const validExtensions = '.docx,.pdf,.txt';
+
+  const handleClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const extractTextFromFile = async (file: File) => {
+    setExtractionError(null);
+    
+    try {
+      if (file.name.endsWith('.txt')) {
+        const text = await file.text();
+        onTextExtracted(text);
+        toast.success("Text extracted from file.");
+      } else if (file.name.endsWith('.docx')) {
+        const arrayBuffer = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        if (result.value.trim()) {
+          onTextExtracted(result.value);
+          toast.success("Text extracted from DOCX file.");
+        } else {
+          setExtractionError("DOCX file appears to be empty or unreadable.");
+          toast.error("Could not extract text from DOCX. Please paste the letter text manually.");
+        }
+      } else if (file.type === 'application/pdf') {
+        // For PDF, we'll show a message to paste text manually
+        setExtractionError("PDF text extraction not available for prior letters. Please paste the letter text below.");
+        toast.info("Please paste your prior letter text in the textarea below.");
+      }
+    } catch (error) {
+      console.error("Text extraction error:", error);
+      setExtractionError("Failed to extract text. Please paste the letter content manually.");
+      toast.error("Failed to extract text from file.");
+    }
+  };
+
+  const validateFile = (file: File): boolean => {
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error("File size exceeds 10MB limit.");
+      return false;
+    }
+    const validTypes = [
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/pdf',
+      'text/plain'
+    ];
+    const isValidType = validTypes.includes(file.type) || 
+                       file.name.endsWith('.docx') || 
+                       file.name.endsWith('.pdf') || 
+                       file.name.endsWith('.txt');
+    if (!isValidType) {
+      toast.error("Prior letters must be DOCX, PDF, or TXT files.");
+      return false;
+    }
+    return true;
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && validateFile(file)) {
+      onFileSelect(file);
+      await extractTextFromFile(file);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file && validateFile(file)) {
+      onFileSelect(file);
+      await extractTextFromFile(file);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      {selectedFile ? (
+        <div className="border border-border rounded-lg p-4 flex items-center justify-between bg-muted/30">
+          <div className="flex items-center gap-3">
+            <FileText className="w-8 h-8 text-primary" />
+            <div>
+              <p className="font-medium text-sm">{selectedFile.name}</p>
+              <p className="text-xs text-muted-foreground">
+                {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
+              </p>
+            </div>
+          </div>
+          <Button variant="ghost" size="sm" onClick={() => { onClear(); setExtractionError(null); }} className="text-muted-foreground hover:text-destructive">
+            <X className="w-4 h-4" />
+          </Button>
+        </div>
+      ) : (
+        <div
+          onClick={handleClick}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          role="button"
+          tabIndex={0}
+          aria-label="Upload prior dispute letter (DOCX, PDF, or TXT)"
+          onKeyDown={(e) => e.key === 'Enter' && handleClick()}
+          className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors cursor-pointer ${
+            isDragging 
+              ? 'border-primary bg-primary/5' 
+              : 'border-border hover:border-primary/50'
+          }`}
+        >
+          <FileText className="w-8 h-8 mx-auto text-muted-foreground mb-3" />
+          <p className="text-sm text-muted-foreground mb-2">
+            Drag and drop your prior dispute letter, or click to browse
+          </p>
+          <Button type="button" variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); handleClick(); }}>
+            Choose File
+          </Button>
+          <p className="text-xs text-muted-foreground mt-2">
+            DOCX, PDF, TXT (max 10MB)
+          </p>
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            accept={validExtensions}
+            onChange={handleFileChange}
+          />
+        </div>
+      )}
+
+      {isExtracting && (
+        <p className="text-sm text-muted-foreground animate-pulse">Extracting text...</p>
+      )}
+
+      {extractionError && (
+        <p className="text-sm text-amber-500">{extractionError}</p>
+      )}
+
+      <div className="space-y-2">
+        <Label className="text-sm">
+          {selectedFile ? "Extracted / Pasted Letter Text" : "Or paste letter text directly"}
+        </Label>
+        <Textarea
+          placeholder="Paste your prior dispute letter content here..."
+          value={extractedText}
+          onChange={(e) => onTextChange(e.target.value)}
+          rows={5}
+          className="text-sm"
+        />
+      </div>
     </div>
   );
 };
@@ -146,7 +362,15 @@ const Disputes = () => {
   const [activeTab, setActiveTab] = useState("timeline");
   const [showAddCase, setShowAddCase] = useState(false);
   const [importedAnalyzerData, setImportedAnalyzerData] = useState(false);
-  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  
+  // Bureau response upload state
+  const [bureauResponseFile, setBureauResponseFile] = useState<File | null>(null);
+  const [bureauResponseText, setBureauResponseText] = useState("");
+  
+  // Prior letter upload state
+  const [priorLetterFile, setPriorLetterFile] = useState<File | null>(null);
+  const [priorLetterText, setPriorLetterText] = useState("");
+  const [isExtractingText, setIsExtractingText] = useState(false);
 
   // New case form state
   const [newCase, setNewCase] = useState<Partial<DisputeCase>>({
@@ -155,9 +379,21 @@ const Disputes = () => {
     sentDate: new Date().toISOString().split("T")[0],
   });
 
-  const handleResponseFileSelect = (file: File) => {
-    setUploadedFile(file);
-    toast.success(`File "${file.name}" selected for analysis.`);
+  const handleBureauResponseFileSelect = (file: File) => {
+    setBureauResponseFile(file);
+    toast.success(`Bureau response "${file.name}" selected for analysis.`);
+  };
+
+  const handlePriorLetterFileSelect = (file: File) => {
+    setPriorLetterFile(file);
+    setIsExtractingText(true);
+    // Extraction happens in the component, we just track the loading state
+    setTimeout(() => setIsExtractingText(false), 100);
+  };
+
+  const handlePriorLetterTextExtracted = (text: string) => {
+    setPriorLetterText(text);
+    setIsExtractingText(false);
   };
 
   // Load persisted state
@@ -464,6 +700,7 @@ const Disputes = () => {
 
             {/* Upload Response Tab */}
             <TabsContent value="upload" className="space-y-6">
+              {/* Bureau Response Upload Section */}
               <Card>
                 <CardHeader>
                   <CardTitle className="font-serif flex items-center gap-2">
@@ -471,17 +708,26 @@ const Disputes = () => {
                     Upload Bureau Response
                   </CardTitle>
                   <CardDescription>
-                    Upload the response letter you received from a credit bureau for analysis and scenario classification.
+                    Upload the response letter you received from a credit bureau for OCR extraction and scenario classification.
+                    <span className="block mt-1 text-xs font-medium text-amber-500">
+                      Accepts: PDF, PNG, JPG, WebP only
+                    </span>
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <UploadDropzone onFileSelect={handleResponseFileSelect} />
+                  <BureauResponseUpload 
+                    onFileSelect={handleBureauResponseFileSelect}
+                    selectedFile={bureauResponseFile}
+                    onClear={() => setBureauResponseFile(null)}
+                  />
 
                   <div className="space-y-2">
                     <Label>Or paste response text</Label>
                     <Textarea
                       placeholder="Paste the text content of the bureau's response here..."
-                      rows={6}
+                      value={bureauResponseText}
+                      onChange={(e) => setBureauResponseText(e.target.value)}
+                      rows={5}
                     />
                   </div>
 
@@ -501,9 +747,39 @@ const Disputes = () => {
                     </Select>
                   </div>
 
-                  <Button className="bg-primary text-primary-foreground">
+                  <Button 
+                    className="bg-primary text-primary-foreground"
+                    disabled={!bureauResponseFile && !bureauResponseText.trim()}
+                  >
                     Analyze Response
                   </Button>
+                </CardContent>
+              </Card>
+
+              {/* Prior Dispute Letter Upload Section */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="font-serif flex items-center gap-2">
+                    <FileText className="w-5 h-5 text-primary" />
+                    Upload Prior Dispute Letter
+                  </CardTitle>
+                  <CardDescription>
+                    Upload your previously sent dispute letter for reference when generating follow-up actions.
+                    <span className="block mt-1 text-xs font-medium text-amber-500">
+                      Accepts: DOCX, PDF, TXT
+                    </span>
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <PriorLetterUpload
+                    onTextExtracted={handlePriorLetterTextExtracted}
+                    onFileSelect={handlePriorLetterFileSelect}
+                    selectedFile={priorLetterFile}
+                    onClear={() => { setPriorLetterFile(null); setPriorLetterText(""); }}
+                    extractedText={priorLetterText}
+                    onTextChange={setPriorLetterText}
+                    isExtracting={isExtractingText}
+                  />
                 </CardContent>
               </Card>
 
