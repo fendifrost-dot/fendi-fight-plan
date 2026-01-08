@@ -14,28 +14,37 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { pdfToImages, extractTextFromPdf, detectBureauFromText, isHeicFile, isPdfFile, isSupportedImage } from "@/lib/pdf-utils";
 import DisputeLetterBuilder from "./DisputeLetterBuilder";
 
-// Dispute-grade analysis result interface
+// Bureau type for multi-bureau support
+type BureauName = 'experian' | 'equifax' | 'transunion';
+
+// Dispute-grade analysis result interface with per-bureau status
 interface DisputeAnalysisResult {
   bureau?: string;
+  is_multi_bureau_report?: boolean;
+  detected_bureaus?: BureauName[];
   inaccurate_names: {
     reported_name: string;
     mismatch_reason: string;
     source?: string;
+    bureaus?: BureauName[];
   }[];
   inaccurate_addresses: {
     reported_address: string;
     linked_to_derogatory: boolean;
     source?: string;
+    bureaus?: BureauName[];
   }[];
   inaccurate_employers: {
     reported_employer: string;
     source?: string;
+    bureaus?: BureauName[];
   }[];
   extra_identifier_mismatches: {
     field: string;
     reported_value: string;
     status: string;
     source?: string;
+    bureaus?: BureauName[];
   }[];
   derogatory_accounts: {
     creditor_name: string;
@@ -45,6 +54,8 @@ interface DisputeAnalysisResult {
     status_as_reported: string;
     confidence: "high" | "medium" | "low" | "incomplete";
     source?: string;
+    bureaus?: BureauName[];
+    bureau_status?: Record<BureauName, string>;
   }[];
   late_payment_summary: {
     severity: "30-day" | "60-day" | "90-day";
@@ -53,6 +64,7 @@ interface DisputeAnalysisResult {
       account_number: string;
       months_detected: string;
       source?: string;
+      bureaus?: BureauName[];
     }[];
   }[];
   collections: {
@@ -61,6 +73,7 @@ interface DisputeAnalysisResult {
     original_creditor: string;
     balance: string;
     source?: string;
+    bureaus?: BureauName[];
   }[];
   charge_offs: {
     creditor_name: string;
@@ -68,6 +81,7 @@ interface DisputeAnalysisResult {
     date_charged_off: string;
     balance: string;
     source?: string;
+    bureaus?: BureauName[];
   }[];
   public_records: {
     type: string;
@@ -75,12 +89,14 @@ interface DisputeAnalysisResult {
     filing_date: string;
     status: string;
     source?: string;
+    bureaus?: BureauName[];
   }[];
   inquiries: {
     creditor_name: string;
     date: string;
     type: string;
     source?: string;
+    bureaus?: BureauName[];
   }[];
   summary: string;
   next_steps: string[];
@@ -93,8 +109,8 @@ interface UploadedFile {
   file: File;
   name: string;
   images: string[]; // Base64 images (converted from PDF or direct upload)
-  detectedBureau: 'experian' | 'equifax' | 'transunion' | 'unknown';
-  selectedBureau: 'experian' | 'equifax' | 'transunion' | 'unknown';
+  detectedBureau: 'experian' | 'equifax' | 'transunion' | 'multi-bureau' | 'unknown';
+  selectedBureau: 'experian' | 'equifax' | 'transunion' | 'multi-bureau' | 'unknown';
   label: string; // UI-only metadata - NEVER sent to AI per invariant
   isProcessing: boolean;
   processingStatus?: string; // Read-only status for display (e.g., "21 pages processed")
@@ -284,7 +300,7 @@ const AIAnalyzer = () => {
     }
   };
 
-  const updateFileBureau = (fileId: string, bureau: 'experian' | 'equifax' | 'transunion' | 'unknown') => {
+  const updateFileBureau = (fileId: string, bureau: 'experian' | 'equifax' | 'transunion' | 'multi-bureau' | 'unknown') => {
     setUploadedFiles(prev => prev.map(f => 
       f.id === fileId ? { ...f, selectedBureau: bureau } : f
     ));
@@ -848,6 +864,46 @@ const AIAnalyzer = () => {
                   <span className="text-foreground">{item.status_as_reported}</span>
                 </div>
               </div>
+              
+              {/* Per-bureau status for multi-bureau reports */}
+              {item.bureau_status && Object.keys(item.bureau_status).length > 0 && (
+                <div className="mt-2 p-2 bg-background/50 rounded border border-border/50">
+                  <p className="text-xs text-muted-foreground mb-1.5 font-medium">Status by Bureau:</p>
+                  <div className="grid grid-cols-3 gap-2 text-xs">
+                    {(['experian', 'equifax', 'transunion'] as const).map(bureau => (
+                      item.bureau_status?.[bureau] && (
+                        <div key={bureau} className="flex flex-col">
+                          <span className="text-muted-foreground capitalize">{bureau}</span>
+                          <span className={cn(
+                            "font-medium",
+                            item.bureau_status[bureau]?.toLowerCase().includes('late') || 
+                            item.bureau_status[bureau]?.toLowerCase().includes('derogatory') ||
+                            item.bureau_status[bureau]?.toLowerCase().includes('charge') 
+                              ? "text-destructive" 
+                              : item.bureau_status[bureau]?.toLowerCase().includes('not reported')
+                                ? "text-muted-foreground"
+                                : "text-foreground"
+                          )}>
+                            {item.bureau_status[bureau]}
+                          </span>
+                        </div>
+                      )
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {/* Bureau tags */}
+              {item.bureaus && item.bureaus.length > 0 && !item.bureau_status && (
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {item.bureaus.map((bureau, bi) => (
+                    <span key={bi} className="px-1.5 py-0.5 text-xs bg-primary/10 text-primary rounded capitalize">
+                      {bureau}
+                    </span>
+                  ))}
+                </div>
+              )}
+              
               <div className="flex flex-wrap gap-1.5 mt-2">
                 {item.derogatory_triggers.map((trigger, ti) => (
                   <span key={ti} className="px-2 py-0.5 text-xs bg-destructive/20 text-destructive rounded">
@@ -1187,7 +1243,7 @@ const AIAnalyzer = () => {
                 Credit Report Upload
               </h3>
               <p className="text-sm text-muted-foreground">
-                Upload PDFs or images of your credit reports. Supports Experian, Equifax, and TransUnion.
+                Upload PDFs or images of your credit reports. Supports Experian, Equifax, TransUnion, and multi-bureau reports (PrivacyGuard, IdentityIQ, etc.).
               </p>
               
               {/* Upload Area */}
@@ -1269,6 +1325,7 @@ const AIAnalyzer = () => {
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
+                            <SelectItem value="multi-bureau">Multi-Bureau (PrivacyGuard, etc.)</SelectItem>
                             <SelectItem value="experian">Experian</SelectItem>
                             <SelectItem value="equifax">Equifax</SelectItem>
                             <SelectItem value="transunion">TransUnion</SelectItem>

@@ -58,15 +58,45 @@ export async function pdfToImages(file: File): Promise<{ images: string[]; pageC
 }
 
 /**
- * Detect bureau from text content
+ * Detect bureau from text content - supports multi-bureau reports like PrivacyGuard
  */
-export function detectBureauFromText(text: string): 'experian' | 'equifax' | 'transunion' | 'unknown' {
+export function detectBureauFromText(text: string): 'experian' | 'equifax' | 'transunion' | 'multi-bureau' | 'unknown' {
   const lowerText = text.toLowerCase();
   
-  // Check for explicit bureau names
-  if (lowerText.includes('experian')) return 'experian';
-  if (lowerText.includes('equifax')) return 'equifax';
-  if (lowerText.includes('transunion') || lowerText.includes('trans union')) return 'transunion';
+  // Check for multi-bureau report indicators first (PrivacyGuard, IdentityIQ, etc.)
+  const multiBureauIndicators = [
+    'privacyguard',
+    'identityiq',
+    'smartcredit',
+    'myscoreiq',
+    'credit monitoring',
+    '3-bureau',
+    'three bureau',
+    '3 bureau'
+  ];
+  
+  // Check for side-by-side column headers
+  const hasExperian = lowerText.includes('experian');
+  const hasEquifax = lowerText.includes('equifax');
+  const hasTransunion = lowerText.includes('transunion') || lowerText.includes('trans union');
+  
+  // If multiple bureaus mentioned OR multi-bureau service detected, it's a combined report
+  const bureauCount = [hasExperian, hasEquifax, hasTransunion].filter(Boolean).length;
+  
+  if (bureauCount >= 2) {
+    return 'multi-bureau';
+  }
+  
+  for (const indicator of multiBureauIndicators) {
+    if (lowerText.includes(indicator)) {
+      return 'multi-bureau';
+    }
+  }
+  
+  // Check for single bureau reports
+  if (hasExperian && !hasEquifax && !hasTransunion) return 'experian';
+  if (hasEquifax && !hasExperian && !hasTransunion) return 'equifax';
+  if (hasTransunion && !hasExperian && !hasEquifax) return 'transunion';
   
   // Check for bureau-specific identifiers
   if (lowerText.includes('experian credit report') || lowerText.includes('www.experian.com')) return 'experian';
