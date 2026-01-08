@@ -1,409 +1,453 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import mammoth from "mammoth";
 import AppNavigation from "@/components/AppNavigation";
 import Footer from "@/components/Footer";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { 
   Upload, 
   FileText, 
-  Clock, 
   AlertTriangle, 
   CheckCircle2, 
   XCircle, 
   Download,
-  Plus,
-  Calendar,
   Scale,
-  ArrowRight,
   Import,
   File,
-  X
+  X,
+  Lock,
+  ChevronRight,
+  Shield,
+  Loader2,
+  Copy,
+  Check,
+  Pencil,
+  Eye,
+  FileCheck,
+  HelpCircle
 } from "lucide-react";
 import { toast } from "sonner";
+import { supabase } from "@/integrations/supabase/client";
+import { Session } from "@supabase/supabase-js";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
-const DISPUTES_STORAGE_KEY = "dispute-engine-state";
+const DISPUTES_STORAGE_KEY = "dispute-engine-state-v2";
 
-interface DisputeCase {
-  id: string;
-  bureau: "Experian" | "Equifax" | "TransUnion";
-  accountName: string;
-  disputeType: string;
-  status: "pending" | "no_response" | "verified" | "partial" | "deleted" | "frivolous" | "reinsertion";
-  sentDate: string;
-  responseDate?: string;
-  notes: string;
-  priorLetterContent?: string;
-  responseContent?: string;
+// Bureau data
+const BUREAU_DATA = {
+  experian: {
+    legalName: "Experian Information Solutions, Inc.",
+    address: "P.O. Box 4500",
+    cityStateZip: "Allen, TX 75013",
+  },
+  equifax: {
+    legalName: "Equifax Information Services LLC",
+    address: "P.O. Box 740256",
+    cityStateZip: "Atlanta, GA 30374",
+  },
+  transunion: {
+    legalName: "TransUnion LLC",
+    address: "P.O. Box 2000",
+    cityStateZip: "Chester, PA 19016",
+  },
+} as const;
+
+type BureauKey = keyof typeof BUREAU_DATA;
+
+// Analysis result from AI
+interface AnalysisResult {
+  bureau: BureauKey;
+  outcome: "verified" | "partial" | "deleted" | "no_response" | "frivolous" | "reinsertion";
+  itemsVerified: string[];
+  itemsDeleted: string[];
+  legalImplications: string[];
+  nextSteps: string[];
+  rawSummary: string;
 }
 
+// Outcome confirmation answers
+interface OutcomeConfirmation {
+  receivedResponse: boolean | null;
+  responseWithin30Days: boolean | null;
+  allItemsAddressed: boolean | null;
+  anyReinsertions: boolean | null;
+  notes: string;
+}
+
+// Survey answers (from DisputeLetterBuilder)
+interface DisputeSurvey {
+  isFraudulent: boolean;
+  isIdentityTheft: boolean;
+  hasPoliceReport: boolean;
+  hasFtcReport: boolean;
+  wasDataBreach: boolean;
+  wasReinserted: boolean;
+  reinsertedDetails: string;
+  hadCreditorRelationship: boolean;
+  belongsToAnotherPerson: boolean;
+  hasPersonalInfoErrors: boolean;
+  hasPreviousDisputes: boolean;
+  additionalFacts: string;
+}
+
+// Consumer info
+interface ConsumerInfo {
+  fullName: string;
+  addressLine1: string;
+  addressLine2: string;
+  cityStateZip: string;
+}
+
+// Uploaded file reference
+interface UploadedFile {
+  id: string;
+  name: string;
+  type: "bureau_response" | "prior_letter" | "supporting_doc";
+  size: number;
+  extractedText?: string;
+}
+
+// Persisted state
 interface PersistedState {
-  cases: DisputeCase[];
-  importedAnalyzerData: boolean;
+  // Section 1: Evidence
+  bureauResponseFiles: UploadedFile[];
+  bureauResponseText: string;
+  priorLetterFiles: UploadedFile[];
+  priorLetterText: string;
+  supportingDocFiles: UploadedFile[];
+  
+  // Section 2: Analysis
+  analysisResult: AnalysisResult | null;
+  isAnalyzed: boolean;
+  
+  // Section 3: Outcome Confirmation
+  outcomeConfirmation: OutcomeConfirmation;
+  
+  // Section 4: Legal Survey
+  survey: DisputeSurvey;
+  
+  // Section 5 & 6: Generated Letter
+  selectedBureau: BureauKey | null;
+  generatedLetter: string;
+  consumerInfo: ConsumerInfo;
+  
+  // Imported data
+  importedAnalyzerData: any | null;
+  
   lastUpdated: string;
 }
 
-const statusConfig = {
-  pending: { label: "Pending Response", color: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30" },
-  no_response: { label: "No Response (30+ days)", color: "bg-orange-500/20 text-orange-400 border-orange-500/30" },
-  verified: { label: "Verified", color: "bg-red-500/20 text-red-400 border-red-500/30" },
-  partial: { label: "Partial Deletion", color: "bg-blue-500/20 text-blue-400 border-blue-500/30" },
-  deleted: { label: "Deleted", color: "bg-green-500/20 text-green-400 border-green-500/30" },
-  frivolous: { label: "Frivolous Claim", color: "bg-purple-500/20 text-purple-400 border-purple-500/30" },
-  reinsertion: { label: "Reinsertion", color: "bg-red-500/20 text-red-400 border-red-500/30" },
+const defaultOutcomeConfirmation: OutcomeConfirmation = {
+  receivedResponse: null,
+  responseWithin30Days: null,
+  allItemsAddressed: null,
+  anyReinsertions: null,
+  notes: "",
 };
 
-// Bureau Response Upload Dropzone (PDF/Images only for OCR)
-interface BureauResponseUploadProps {
-  onFileSelect: (file: File) => void;
-  selectedFile: File | null;
-  onClear: () => void;
-}
-
-const BureauResponseUpload = ({ onFileSelect, selectedFile, onClear }: BureauResponseUploadProps) => {
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [isDragging, setIsDragging] = useState(false);
-
-  const validTypes = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
-  const validExtensions = '.pdf,.png,.jpg,.jpeg,.webp';
-
-  const handleClick = () => {
-    fileInputRef.current?.click();
-  };
-
-  const validateFile = (file: File): boolean => {
-    if (file.size > 10 * 1024 * 1024) {
-      toast.error("File size exceeds 10MB limit.");
-      return false;
-    }
-    if (!validTypes.includes(file.type)) {
-      toast.error("Bureau responses must be PDF or image files (PNG, JPG, WebP).");
-      return false;
-    }
-    return true;
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file && validateFile(file)) {
-      onFileSelect(file);
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file && validateFile(file)) {
-      onFileSelect(file);
-    }
-  };
-
-  if (selectedFile) {
-    return (
-      <div className="border border-border rounded-lg p-4 flex items-center justify-between bg-muted/30">
-        <div className="flex items-center gap-3">
-          <File className="w-8 h-8 text-primary" />
-          <div>
-            <p className="font-medium text-sm">{selectedFile.name}</p>
-            <p className="text-xs text-muted-foreground">
-              {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
-            </p>
-          </div>
-        </div>
-        <Button variant="ghost" size="sm" onClick={onClear} className="text-muted-foreground hover:text-destructive">
-          <X className="w-4 h-4" />
-        </Button>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      onClick={handleClick}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-      role="button"
-      tabIndex={0}
-      aria-label="Upload bureau response file (PDF or images only)"
-      onKeyDown={(e) => e.key === 'Enter' && handleClick()}
-      className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors cursor-pointer ${
-        isDragging 
-          ? 'border-primary bg-primary/5' 
-          : 'border-border hover:border-primary/50'
-      }`}
-    >
-      <Upload className="w-8 h-8 mx-auto text-muted-foreground mb-3" />
-      <p className="text-sm text-muted-foreground mb-2">
-        Drag and drop bureau response here, or click to browse
-      </p>
-      <Button type="button" variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); handleClick(); }}>
-        Choose File
-      </Button>
-      <p className="text-xs text-muted-foreground mt-2">
-        PDF, PNG, JPG, WebP only (max 10MB)
-      </p>
-      <input
-        ref={fileInputRef}
-        type="file"
-        className="hidden"
-        accept={validExtensions}
-        onChange={handleFileChange}
-      />
-    </div>
-  );
+const defaultSurvey: DisputeSurvey = {
+  isFraudulent: false,
+  isIdentityTheft: false,
+  hasPoliceReport: false,
+  hasFtcReport: false,
+  wasDataBreach: false,
+  wasReinserted: false,
+  reinsertedDetails: "",
+  hadCreditorRelationship: false,
+  belongsToAnotherPerson: false,
+  hasPersonalInfoErrors: false,
+  hasPreviousDisputes: false,
+  additionalFacts: "",
 };
 
-// Prior Dispute Letter Upload (DOCX/PDF/TXT for text extraction)
-interface PriorLetterUploadProps {
-  onTextExtracted: (text: string) => void;
-  onFileSelect: (file: File) => void;
-  selectedFile: File | null;
-  onClear: () => void;
-  extractedText: string;
-  onTextChange: (text: string) => void;
-  isExtracting: boolean;
+const defaultConsumerInfo: ConsumerInfo = {
+  fullName: "",
+  addressLine1: "",
+  addressLine2: "",
+  cityStateZip: "",
+};
+
+const getDefaultState = (): PersistedState => ({
+  bureauResponseFiles: [],
+  bureauResponseText: "",
+  priorLetterFiles: [],
+  priorLetterText: "",
+  supportingDocFiles: [],
+  analysisResult: null,
+  isAnalyzed: false,
+  outcomeConfirmation: defaultOutcomeConfirmation,
+  survey: defaultSurvey,
+  selectedBureau: null,
+  generatedLetter: "",
+  consumerInfo: defaultConsumerInfo,
+  importedAnalyzerData: null,
+  lastUpdated: new Date().toISOString(),
+});
+
+// Survey questions configuration
+const surveyQuestions = [
+  {
+    key: "isFraudulent" as const,
+    question: "Do you assert that any of the disputed items are fraudulent?",
+    tooltip: "Fraud claims trigger heightened investigation requirements under FCRA §611.",
+  },
+  {
+    key: "isIdentityTheft" as const,
+    question: "Do you consider yourself a victim of identity theft?",
+    tooltip: "Identity theft triggers FCRA §605B blocking rights and additional protections.",
+  },
+  {
+    key: "hasPoliceReport" as const,
+    question: "Have you filed a police report related to any of these items?",
+    tooltip: "Police reports are NOT legally required but strengthen claims.",
+  },
+  {
+    key: "hasFtcReport" as const,
+    question: "Have you filed an FTC Identity Theft Report?",
+    tooltip: "An FTC report at identitytheft.gov provides legal documentation.",
+  },
+  {
+    key: "wasDataBreach" as const,
+    question: "Have you been exposed to a known data breach?",
+    tooltip: "Data breaches trigger heightened duty of care.",
+  },
+  {
+    key: "wasReinserted" as const,
+    question: "Have any disputed items been previously removed and later reinserted?",
+    tooltip: "Reinsertion requires certification and notice under FCRA §611(a)(5).",
+    hasDetails: true,
+    detailsKey: "reinsertedDetails" as const,
+    detailsPlaceholder: "Provide dates, bureau, and items that were reinserted...",
+  },
+  {
+    key: "hadCreditorRelationship" as const,
+    question: "Have you ever had a contractual relationship with any listed creditors?",
+    tooltip: "No relationship = accounts cannot lawfully be associated with you.",
+  },
+  {
+    key: "belongsToAnotherPerson" as const,
+    question: "Do any disputed items belong to another person with a similar name?",
+    tooltip: "Mixed files are a common bureau error and a strong dispute argument.",
+  },
+  {
+    key: "hasPersonalInfoErrors" as const,
+    question: "Are there inaccuracies in your personal info (name, address, employer)?",
+    tooltip: "Identifier errors undermine the accuracy of associated account data.",
+  },
+  {
+    key: "hasPreviousDisputes" as const,
+    question: "Have you previously disputed any of these items with the bureaus?",
+    tooltip: "Prior disputes without proper investigation = FCRA violation.",
+  },
+];
+
+// ============= UPLOAD COMPONENTS =============
+
+interface FileDropzoneProps {
+  onFileSelect: (file: File, extractedText?: string) => void;
+  accept: string;
+  label: string;
+  description: string;
+  icon: React.ReactNode;
+  disabled?: boolean;
+  extractText?: boolean;
 }
 
-const PriorLetterUpload = ({ 
-  onTextExtracted, 
-  onFileSelect, 
-  selectedFile, 
-  onClear, 
-  extractedText,
-  onTextChange,
-  isExtracting 
-}: PriorLetterUploadProps) => {
+const FileDropzone = ({ onFileSelect, accept, label, description, icon, disabled, extractText }: FileDropzoneProps) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [extractionError, setExtractionError] = useState<string | null>(null);
-
-  const validExtensions = '.docx,.pdf,.txt';
+  const [isExtracting, setIsExtracting] = useState(false);
 
   const handleClick = () => {
-    fileInputRef.current?.click();
+    if (!disabled) fileInputRef.current?.click();
   };
 
-  const extractTextFromFile = async (file: File) => {
-    setExtractionError(null);
-    
-    try {
-      if (file.name.endsWith('.txt')) {
-        const text = await file.text();
-        onTextExtracted(text);
-        toast.success("Text extracted from file.");
-      } else if (file.name.endsWith('.docx')) {
-        const arrayBuffer = await file.arrayBuffer();
-        const result = await mammoth.extractRawText({ arrayBuffer });
-        if (result.value.trim()) {
-          onTextExtracted(result.value);
-          toast.success("Text extracted from DOCX file.");
-        } else {
-          setExtractionError("DOCX file appears to be empty or unreadable.");
-          toast.error("Could not extract text from DOCX. Please paste the letter text manually.");
+  const processFile = async (file: File) => {
+    if (extractText && (file.name.endsWith('.docx') || file.name.endsWith('.txt'))) {
+      setIsExtracting(true);
+      try {
+        let text = "";
+        if (file.name.endsWith('.txt')) {
+          text = await file.text();
+        } else if (file.name.endsWith('.docx')) {
+          const arrayBuffer = await file.arrayBuffer();
+          const result = await mammoth.extractRawText({ arrayBuffer });
+          text = result.value;
         }
-      } else if (file.type === 'application/pdf') {
-        // For PDF, we'll show a message to paste text manually
-        setExtractionError("PDF text extraction not available for prior letters. Please paste the letter text below.");
-        toast.info("Please paste your prior letter text in the textarea below.");
+        onFileSelect(file, text);
+      } catch (err) {
+        console.error("Text extraction error:", err);
+        onFileSelect(file);
+        toast.error("Could not extract text. Paste content manually.");
+      } finally {
+        setIsExtracting(false);
       }
-    } catch (error) {
-      console.error("Text extraction error:", error);
-      setExtractionError("Failed to extract text. Please paste the letter content manually.");
-      toast.error("Failed to extract text from file.");
+    } else {
+      onFileSelect(file);
     }
-  };
-
-  const validateFile = (file: File): boolean => {
-    if (file.size > 10 * 1024 * 1024) {
-      toast.error("File size exceeds 10MB limit.");
-      return false;
-    }
-    const validTypes = [
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'application/pdf',
-      'text/plain'
-    ];
-    const isValidType = validTypes.includes(file.type) || 
-                       file.name.endsWith('.docx') || 
-                       file.name.endsWith('.pdf') || 
-                       file.name.endsWith('.txt');
-    if (!isValidType) {
-      toast.error("Prior letters must be DOCX, PDF, or TXT files.");
-      return false;
-    }
-    return true;
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file && validateFile(file)) {
-      onFileSelect(file);
-      await extractTextFromFile(file);
+    if (file) {
+      if (file.size > 10 * 1024 * 1024) {
+        toast.error("File size exceeds 10MB limit.");
+        return;
+      }
+      await processFile(file);
     }
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
+    if (disabled) return;
     const file = e.dataTransfer.files?.[0];
-    if (file && validateFile(file)) {
-      onFileSelect(file);
-      await extractTextFromFile(file);
+    if (file) {
+      if (file.size > 10 * 1024 * 1024) {
+        toast.error("File size exceeds 10MB limit.");
+        return;
+      }
+      await processFile(file);
     }
   };
 
   return (
-    <div className="space-y-3">
-      {selectedFile ? (
-        <div className="border border-border rounded-lg p-4 flex items-center justify-between bg-muted/30">
-          <div className="flex items-center gap-3">
-            <FileText className="w-8 h-8 text-primary" />
-            <div>
-              <p className="font-medium text-sm">{selectedFile.name}</p>
-              <p className="text-xs text-muted-foreground">
-                {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
-              </p>
-            </div>
-          </div>
-          <Button variant="ghost" size="sm" onClick={() => { onClear(); setExtractionError(null); }} className="text-muted-foreground hover:text-destructive">
-            <X className="w-4 h-4" />
-          </Button>
-        </div>
+    <div
+      onClick={handleClick}
+      onDragOver={(e) => { e.preventDefault(); if (!disabled) setIsDragging(true); }}
+      onDragLeave={(e) => { e.preventDefault(); setIsDragging(false); }}
+      onDrop={handleDrop}
+      role="button"
+      tabIndex={disabled ? -1 : 0}
+      aria-label={label}
+      onKeyDown={(e) => e.key === 'Enter' && !disabled && handleClick()}
+      className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+        disabled 
+          ? 'opacity-50 cursor-not-allowed border-border/50' 
+          : isDragging 
+            ? 'border-primary bg-primary/5 cursor-pointer' 
+            : 'border-border hover:border-primary/50 cursor-pointer'
+      }`}
+    >
+      {isExtracting ? (
+        <Loader2 className="w-8 h-8 mx-auto text-primary animate-spin mb-3" />
       ) : (
-        <div
-          onClick={handleClick}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          role="button"
-          tabIndex={0}
-          aria-label="Upload prior dispute letter (DOCX, PDF, or TXT)"
-          onKeyDown={(e) => e.key === 'Enter' && handleClick()}
-          className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors cursor-pointer ${
-            isDragging 
-              ? 'border-primary bg-primary/5' 
-              : 'border-border hover:border-primary/50'
-          }`}
-        >
-          <FileText className="w-8 h-8 mx-auto text-muted-foreground mb-3" />
-          <p className="text-sm text-muted-foreground mb-2">
-            Drag and drop your prior dispute letter, or click to browse
-          </p>
-          <Button type="button" variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); handleClick(); }}>
-            Choose File
-          </Button>
-          <p className="text-xs text-muted-foreground mt-2">
-            DOCX, PDF, TXT (max 10MB)
-          </p>
-          <input
-            ref={fileInputRef}
-            type="file"
-            className="hidden"
-            accept={validExtensions}
-            onChange={handleFileChange}
-          />
-        </div>
+        <div className="w-8 h-8 mx-auto text-muted-foreground mb-3">{icon}</div>
       )}
-
-      {isExtracting && (
-        <p className="text-sm text-muted-foreground animate-pulse">Extracting text...</p>
-      )}
-
-      {extractionError && (
-        <p className="text-sm text-amber-500">{extractionError}</p>
-      )}
-
-      <div className="space-y-2">
-        <Label className="text-sm">
-          {selectedFile ? "Extracted / Pasted Letter Text" : "Or paste letter text directly"}
-        </Label>
-        <Textarea
-          placeholder="Paste your prior dispute letter content here..."
-          value={extractedText}
-          onChange={(e) => onTextChange(e.target.value)}
-          rows={5}
-          className="text-sm"
-        />
-      </div>
+      <p className="text-sm text-muted-foreground mb-2">{label}</p>
+      <Button type="button" variant="outline" size="sm" disabled={disabled || isExtracting} onClick={(e) => { e.stopPropagation(); handleClick(); }}>
+        {isExtracting ? "Extracting..." : "Choose File"}
+      </Button>
+      <p className="text-xs text-muted-foreground mt-2">{description}</p>
+      <input
+        ref={fileInputRef}
+        type="file"
+        className="hidden"
+        accept={accept}
+        onChange={handleFileChange}
+        disabled={disabled}
+      />
     </div>
   );
 };
 
+interface FileListProps {
+  files: UploadedFile[];
+  onRemove: (id: string) => void;
+  disabled?: boolean;
+}
+
+const FileList = ({ files, onRemove, disabled }: FileListProps) => {
+  if (files.length === 0) return null;
+  
+  return (
+    <div className="space-y-2 mt-3">
+      {files.map((f) => (
+        <div key={f.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border border-border">
+          <div className="flex items-center gap-3">
+            {disabled ? <Lock className="w-4 h-4 text-muted-foreground" /> : <File className="w-4 h-4 text-primary" />}
+            <div>
+              <p className="text-sm font-medium">{f.name}</p>
+              <p className="text-xs text-muted-foreground">{(f.size / 1024 / 1024).toFixed(2)} MB</p>
+            </div>
+          </div>
+          {!disabled && (
+            <Button variant="ghost" size="sm" onClick={() => onRemove(f.id)} className="text-muted-foreground hover:text-destructive">
+              <X className="w-4 h-4" />
+            </Button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// ============= SECTION COMPONENTS =============
+
+interface SectionHeaderProps {
+  number: number;
+  title: string;
+  icon: React.ReactNode;
+  unlocked: boolean;
+  completed?: boolean;
+}
+
+const SectionHeader = ({ number, title, icon, unlocked, completed }: SectionHeaderProps) => (
+  <div className="flex items-center gap-3 mb-4">
+    <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold ${
+      completed 
+        ? 'bg-green-500/20 text-green-400 border border-green-500/30' 
+        : unlocked 
+          ? 'bg-primary/20 text-primary border border-primary/30' 
+          : 'bg-muted text-muted-foreground border border-border'
+    }`}>
+      {completed ? <CheckCircle2 className="w-5 h-5" /> : number}
+    </div>
+    <div className="flex items-center gap-2">
+      <span className={unlocked ? 'text-foreground' : 'text-muted-foreground'}>{icon}</span>
+      <h3 className={`text-lg font-serif font-semibold ${unlocked ? 'text-foreground' : 'text-muted-foreground'}`}>
+        {title}
+      </h3>
+    </div>
+    {!unlocked && <Lock className="w-4 h-4 text-muted-foreground ml-auto" />}
+  </div>
+);
+
+// ============= MAIN COMPONENT =============
+
 const Disputes = () => {
-  const [cases, setCases] = useState<DisputeCase[]>([]);
-  const [activeTab, setActiveTab] = useState("timeline");
-  const [showAddCase, setShowAddCase] = useState(false);
-  const [importedAnalyzerData, setImportedAnalyzerData] = useState(false);
-  
-  // Bureau response upload state
-  const [bureauResponseFile, setBureauResponseFile] = useState<File | null>(null);
-  const [bureauResponseText, setBureauResponseText] = useState("");
-  
-  // Prior letter upload state
-  const [priorLetterFile, setPriorLetterFile] = useState<File | null>(null);
-  const [priorLetterText, setPriorLetterText] = useState("");
-  const [isExtractingText, setIsExtractingText] = useState(false);
+  const [session, setSession] = useState<Session | null>(null);
+  const [state, setState] = useState<PersistedState>(getDefaultState);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [copied, setCopied] = useState(false);
 
-  // New case form state
-  const [newCase, setNewCase] = useState<Partial<DisputeCase>>({
-    bureau: "Experian",
-    status: "pending",
-    sentDate: new Date().toISOString().split("T")[0],
-  });
-
-  const handleBureauResponseFileSelect = (file: File) => {
-    setBureauResponseFile(file);
-    toast.success(`Bureau response "${file.name}" selected for analysis.`);
-  };
-
-  const handlePriorLetterFileSelect = (file: File) => {
-    setPriorLetterFile(file);
-    setIsExtractingText(true);
-    // Extraction happens in the component, we just track the loading state
-    setTimeout(() => setIsExtractingText(false), 100);
-  };
-
-  const handlePriorLetterTextExtracted = (text: string) => {
-    setPriorLetterText(text);
-    setIsExtractingText(false);
-  };
+  // Auth
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_, session) => setSession(session));
+    return () => subscription.unsubscribe();
+  }, []);
 
   // Load persisted state
   useEffect(() => {
     try {
       const saved = localStorage.getItem(DISPUTES_STORAGE_KEY);
       if (saved) {
-        const parsed: PersistedState = JSON.parse(saved);
-        setCases(parsed.cases || []);
-        setImportedAnalyzerData(parsed.importedAnalyzerData || false);
+        const parsed = JSON.parse(saved) as PersistedState;
+        setState(parsed);
       }
     } catch (e) {
       console.error("Failed to load dispute engine state:", e);
@@ -412,13 +456,37 @@ const Disputes = () => {
 
   // Auto-save state
   useEffect(() => {
-    const state: PersistedState = {
-      cases,
-      importedAnalyzerData,
-      lastUpdated: new Date().toISOString(),
-    };
-    localStorage.setItem(DISPUTES_STORAGE_KEY, JSON.stringify(state));
-  }, [cases, importedAnalyzerData]);
+    const toSave = { ...state, lastUpdated: new Date().toISOString() };
+    localStorage.setItem(DISPUTES_STORAGE_KEY, JSON.stringify(toSave));
+  }, [state]);
+
+  // Populate consumer info from imported data
+  useEffect(() => {
+    if (state.importedAnalyzerData && !state.consumerInfo.fullName) {
+      const data = state.importedAnalyzerData;
+      setState(prev => ({
+        ...prev,
+        consumerInfo: {
+          fullName: data.fullLegalName || "",
+          addressLine1: data.currentAddress?.split(',')[0] || "",
+          addressLine2: "",
+          cityStateZip: data.currentAddress?.split(',').slice(1).join(',').trim() || "",
+        }
+      }));
+    }
+  }, [state.importedAnalyzerData, state.consumerInfo.fullName]);
+
+  // ============= STATE CHECKS =============
+  const hasEvidence = state.bureauResponseFiles.length > 0 || state.bureauResponseText.trim().length > 0;
+  const isEvidenceLocked = state.isAnalyzed;
+  const canAnalyze = hasEvidence && !state.isAnalyzed;
+  const canConfirmOutcome = state.isAnalyzed;
+  const isOutcomeConfirmed = state.outcomeConfirmation.receivedResponse !== null;
+  const canShowSurvey = isOutcomeConfirmed;
+  const canGenerate = canShowSurvey && state.selectedBureau && state.consumerInfo.fullName.trim();
+  const hasGeneratedLetter = state.generatedLetter.length > 0;
+
+  // ============= HANDLERS =============
 
   const handleImportFromAnalyzer = () => {
     try {
@@ -427,464 +495,762 @@ const Disputes = () => {
         toast.error("No analyzer data found. Run the Credit Report Analyzer first.");
         return;
       }
-      
       const parsed = JSON.parse(analyzerData);
-      if (parsed.analysisResults) {
-        setImportedAnalyzerData(true);
-        toast.success("Imported analyzer data successfully! You can now create disputes based on the findings.");
+      if (parsed.analysisResults || parsed.questionnaire) {
+        setState(prev => ({
+          ...prev,
+          importedAnalyzerData: parsed,
+          consumerInfo: {
+            fullName: parsed.questionnaire?.fullLegalName || prev.consumerInfo.fullName,
+            addressLine1: parsed.questionnaire?.currentAddress?.split(',')[0] || prev.consumerInfo.addressLine1,
+            addressLine2: prev.consumerInfo.addressLine2,
+            cityStateZip: parsed.questionnaire?.currentAddress?.split(',').slice(1).join(',').trim() || prev.consumerInfo.cityStateZip,
+          }
+        }));
+        toast.success("Imported analyzer data successfully!");
       } else {
-        toast.error("No analysis results found in analyzer data.");
+        toast.error("No analysis results found.");
       }
     } catch (e) {
       toast.error("Failed to import analyzer data.");
     }
   };
 
-  const handleAddCase = () => {
-    if (!newCase.accountName || !newCase.disputeType) {
-      toast.error("Please fill in all required fields.");
+  const addFile = (type: "bureau_response" | "prior_letter" | "supporting_doc", file: File, extractedText?: string) => {
+    const newFile: UploadedFile = {
+      id: crypto.randomUUID(),
+      name: file.name,
+      type,
+      size: file.size,
+      extractedText,
+    };
+    
+    setState(prev => {
+      if (type === "bureau_response") {
+        return { ...prev, bureauResponseFiles: [...prev.bureauResponseFiles, newFile] };
+      } else if (type === "prior_letter") {
+        return { 
+          ...prev, 
+          priorLetterFiles: [...prev.priorLetterFiles, newFile],
+          priorLetterText: extractedText || prev.priorLetterText,
+        };
+      } else {
+        return { ...prev, supportingDocFiles: [...prev.supportingDocFiles, newFile] };
+      }
+    });
+    toast.success(`${file.name} added.`);
+  };
+
+  const removeFile = (type: "bureau_response" | "prior_letter" | "supporting_doc", id: string) => {
+    setState(prev => {
+      if (type === "bureau_response") {
+        return { ...prev, bureauResponseFiles: prev.bureauResponseFiles.filter(f => f.id !== id) };
+      } else if (type === "prior_letter") {
+        return { ...prev, priorLetterFiles: prev.priorLetterFiles.filter(f => f.id !== id) };
+      } else {
+        return { ...prev, supportingDocFiles: prev.supportingDocFiles.filter(f => f.id !== id) };
+      }
+    });
+  };
+
+  const handleAnalyze = async () => {
+    if (!session?.access_token) {
+      toast.error("Please log in to analyze responses.");
       return;
     }
 
-    const caseToAdd: DisputeCase = {
-      id: crypto.randomUUID(),
-      bureau: newCase.bureau as DisputeCase["bureau"],
-      accountName: newCase.accountName,
-      disputeType: newCase.disputeType,
-      status: newCase.status as DisputeCase["status"],
-      sentDate: newCase.sentDate || new Date().toISOString().split("T")[0],
-      notes: newCase.notes || "",
-      priorLetterContent: newCase.priorLetterContent,
-    };
+    setIsAnalyzing(true);
 
-    setCases((prev) => [...prev, caseToAdd]);
-    setNewCase({
-      bureau: "Experian",
-      status: "pending",
-      sentDate: new Date().toISOString().split("T")[0],
-    });
-    setShowAddCase(false);
-    toast.success("Dispute case added to timeline.");
+    try {
+      // For now, simulate analysis - this would call an edge function
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Mock analysis result
+      const mockResult: AnalysisResult = {
+        bureau: "experian",
+        outcome: "verified",
+        itemsVerified: ["Capital One Visa - Late payment verified"],
+        itemsDeleted: [],
+        legalImplications: [
+          "Bureau claims verification but may not have obtained Method of Verification (MoV)",
+          "FCRA §611(a)(6) requires bureaus to provide MoV upon request",
+          "Failure to investigate properly is a willful violation under §616",
+        ],
+        nextSteps: [
+          "Demand Method of Verification (MoV) from the bureau",
+          "If MoV not provided within 15 days, file CFPB complaint",
+          "Consider BBB complaint and State Attorney General escalation",
+        ],
+        rawSummary: "The bureau has verified the disputed item without providing adequate proof of investigation. This is a common tactic. Demand the Method of Verification to expose procedural failures.",
+      };
+
+      setState(prev => ({
+        ...prev,
+        analysisResult: mockResult,
+        isAnalyzed: true,
+        selectedBureau: mockResult.bureau,
+      }));
+
+      toast.success("Response analyzed. Review findings below.");
+    } catch (err) {
+      toast.error("Analysis failed. Please try again.");
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
-  const updateCaseStatus = (caseId: string, status: DisputeCase["status"]) => {
-    setCases((prev) =>
-      prev.map((c) =>
-        c.id === caseId
-          ? { ...c, status, responseDate: status !== "pending" ? new Date().toISOString().split("T")[0] : undefined }
-          : c
-      )
-    );
-    toast.success("Case status updated.");
+  const handleGenerateLetter = async () => {
+    if (!session?.access_token || !state.selectedBureau) {
+      toast.error("Please log in and select a bureau.");
+      return;
+    }
+
+    if (!state.consumerInfo.fullName.trim() || !state.consumerInfo.addressLine1.trim()) {
+      toast.error("Please complete your contact information.");
+      return;
+    }
+
+    setIsGenerating(true);
+
+    try {
+      const bureau = BUREAU_DATA[state.selectedBureau];
+      
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-dispute-letter`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          survey: state.survey,
+          extractedData: state.importedAnalyzerData?.analysisResults || {
+            inaccurateNames: [],
+            inaccurateAddresses: [],
+            derogatoryAccounts: state.analysisResult?.itemsVerified.map(item => ({
+              creditor_name: item.split(' - ')[0],
+              account_number: "Unknown",
+              date_opened: "Unknown",
+              derogatory_triggers: [item.split(' - ')[1] || "Disputed item"],
+            })) || [],
+            inquiries: [],
+            collections: [],
+            chargeOffs: [],
+            publicRecords: [],
+          },
+          consumerInfo: state.consumerInfo,
+          bureau: {
+            key: state.selectedBureau,
+            legalName: bureau.legalName,
+            address: bureau.address,
+            cityStateZip: bureau.cityStateZip,
+          },
+          analysisContext: state.analysisResult,
+          priorLetterText: state.priorLetterText,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to generate letter");
+      }
+
+      setState(prev => ({ ...prev, generatedLetter: data.letter }));
+      toast.success("Letter generated successfully!");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Generation failed.");
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
-  const deleteCase = (caseId: string) => {
-    setCases((prev) => prev.filter((c) => c.id !== caseId));
-    toast.success("Case removed from timeline.");
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(state.generatedLetter);
+    setCopied(true);
+    toast.success("Letter copied to clipboard");
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleReset = () => {
+    if (confirm("Reset all data and start over?")) {
+      localStorage.removeItem(DISPUTES_STORAGE_KEY);
+      setState(getDefaultState());
+      toast.success("Engine reset.");
+    }
+  };
+
+  const updateOutcome = <K extends keyof OutcomeConfirmation>(key: K, value: OutcomeConfirmation[K]) => {
+    setState(prev => ({
+      ...prev,
+      outcomeConfirmation: { ...prev.outcomeConfirmation, [key]: value }
+    }));
+  };
+
+  const updateSurvey = <K extends keyof DisputeSurvey>(key: K, value: DisputeSurvey[K]) => {
+    setState(prev => ({
+      ...prev,
+      survey: { ...prev.survey, [key]: value }
+    }));
+  };
+
+  const updateConsumerInfo = <K extends keyof ConsumerInfo>(key: K, value: string) => {
+    setState(prev => ({
+      ...prev,
+      consumerInfo: { ...prev.consumerInfo, [key]: value }
+    }));
   };
 
   return (
-    <main className="min-h-screen bg-background">
-      <AppNavigation />
+    <TooltipProvider>
+      <main className="min-h-screen bg-background">
+        <AppNavigation />
 
-      {/* Hero Section */}
-      <section className="py-12 px-4 border-b border-border">
-        <div className="container mx-auto max-w-6xl text-center">
-          <div className="flex items-center justify-center gap-3 mb-4">
-            <Scale className="w-10 h-10 text-primary" />
+        {/* Hero */}
+        <section className="py-10 px-4 border-b border-border">
+          <div className="container mx-auto max-w-4xl text-center">
+            <div className="flex items-center justify-center gap-3 mb-4">
+              <Scale className="w-10 h-10 text-primary" />
+            </div>
+            <h1 className="text-3xl md:text-4xl font-serif font-bold text-gold-gradient mb-3">
+              Dispute & Response Engine
+            </h1>
+            <p className="text-muted-foreground max-w-2xl mx-auto mb-6">
+              A state-driven legal case file. Complete each section to unlock the next.
+            </p>
+
+            <div className="flex items-center justify-center gap-3 flex-wrap">
+              <Button variant="outline" size="sm" onClick={handleImportFromAnalyzer}>
+                <Import className="w-4 h-4 mr-2" />
+                Import from Analyzer
+              </Button>
+              {state.importedAnalyzerData && (
+                <Badge variant="outline" className="border-green-500/30 text-green-400">
+                  <CheckCircle2 className="w-3 h-3 mr-1" />
+                  Data Imported
+                </Badge>
+              )}
+              <Button variant="ghost" size="sm" onClick={handleReset} className="text-muted-foreground">
+                Reset
+              </Button>
+            </div>
           </div>
-          <h1 className="text-4xl md:text-5xl font-serif font-bold text-gold-gradient mb-4">
-            Dispute & Response Engine
-          </h1>
-          <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-            Track your dispute lifecycle, analyze bureau responses, classify scenarios, 
-            and generate next-step letters with legal precision.
-          </p>
+        </section>
 
-          {/* Import from Analyzer */}
-          <div className="mt-8">
-            <Button
-              onClick={handleImportFromAnalyzer}
-              variant="outline"
-              className="border-primary/30 hover:border-primary/60"
-            >
-              <Import className="w-4 h-4 mr-2" />
-              Import from Credit Report Analyzer
-            </Button>
-            {importedAnalyzerData && (
-              <Badge variant="outline" className="ml-3 border-green-500/30 text-green-400">
-                <CheckCircle2 className="w-3 h-3 mr-1" />
-                Analyzer Data Imported
-              </Badge>
-            )}
-          </div>
-        </div>
-      </section>
+        {/* Main Content */}
+        <section className="py-8 px-4">
+          <div className="container mx-auto max-w-4xl space-y-6">
 
-      {/* Main Content */}
-      <section className="py-8 px-4">
-        <div className="container mx-auto max-w-6xl">
-          <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-            <TabsList className="grid w-full grid-cols-3 mb-8">
-              <TabsTrigger value="timeline" className="flex items-center gap-2">
-                <Clock className="w-4 h-4" />
-                Case Timeline
-              </TabsTrigger>
-              <TabsTrigger value="upload" className="flex items-center gap-2">
-                <Upload className="w-4 h-4" />
-                Upload Response
-              </TabsTrigger>
-              <TabsTrigger value="generate" className="flex items-center gap-2">
-                <FileText className="w-4 h-4" />
-                Generate Letters
-              </TabsTrigger>
-            </TabsList>
-
-            {/* Timeline Tab */}
-            <TabsContent value="timeline" className="space-y-6">
-              <div className="flex items-center justify-between">
-                <h2 className="text-2xl font-serif font-semibold">Your Dispute Cases</h2>
-                <Button onClick={() => setShowAddCase(true)} className="bg-primary text-primary-foreground">
-                  <Plus className="w-4 h-4 mr-2" />
-                  Add New Case
-                </Button>
-              </div>
-
-              {/* Add Case Form */}
-              {showAddCase && (
-                <Card className="border-primary/30">
-                  <CardHeader>
-                    <CardTitle className="font-serif">Add New Dispute Case</CardTitle>
-                    <CardDescription>Track a new dispute you've sent to a credit bureau.</CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <Label>Bureau</Label>
-                        <Select
-                          value={newCase.bureau}
-                          onValueChange={(v) => setNewCase((prev) => ({ ...prev, bureau: v as DisputeCase["bureau"] }))}
-                        >
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="Experian">Experian</SelectItem>
-                            <SelectItem value="Equifax">Equifax</SelectItem>
-                            <SelectItem value="TransUnion">TransUnion</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Account Name *</Label>
-                        <Input
-                          placeholder="e.g., Capital One Visa"
-                          value={newCase.accountName || ""}
-                          onChange={(e) => setNewCase((prev) => ({ ...prev, accountName: e.target.value }))}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Dispute Type *</Label>
-                        <Input
-                          placeholder="e.g., Not My Account, Wrong Balance"
-                          value={newCase.disputeType || ""}
-                          onChange={(e) => setNewCase((prev) => ({ ...prev, disputeType: e.target.value }))}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Date Sent</Label>
-                        <Input
-                          type="date"
-                          value={newCase.sentDate || ""}
-                          onChange={(e) => setNewCase((prev) => ({ ...prev, sentDate: e.target.value }))}
-                        />
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Notes</Label>
+            {/* SECTION 1: Evidence Locker */}
+            <Card className={isEvidenceLocked ? "border-green-500/30" : "border-border"}>
+              <CardHeader>
+                <SectionHeader 
+                  number={1} 
+                  title="Evidence Locker" 
+                  icon={<Shield className="w-5 h-5" />}
+                  unlocked={true}
+                  completed={isEvidenceLocked}
+                />
+                <CardDescription>
+                  {isEvidenceLocked 
+                    ? "Evidence locked after analysis. Files are read-only." 
+                    : "Upload all evidence before proceeding to analysis."}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {/* Bureau Response */}
+                <div>
+                  <Label className="text-sm font-medium mb-2 block">Bureau Response(s)</Label>
+                  <FileDropzone
+                    onFileSelect={(file) => addFile("bureau_response", file)}
+                    accept=".pdf,.png,.jpg,.jpeg,.webp"
+                    label="Drop bureau response here or click to browse"
+                    description="PDF, PNG, JPG, WebP (max 10MB)"
+                    icon={<Upload className="w-8 h-8" />}
+                    disabled={isEvidenceLocked}
+                  />
+                  <FileList 
+                    files={state.bureauResponseFiles} 
+                    onRemove={(id) => removeFile("bureau_response", id)} 
+                    disabled={isEvidenceLocked}
+                  />
+                  {!isEvidenceLocked && (
+                    <div className="mt-3">
+                      <Label className="text-xs text-muted-foreground">Or paste response text</Label>
                       <Textarea
-                        placeholder="Any additional notes about this dispute..."
-                        value={newCase.notes || ""}
-                        onChange={(e) => setNewCase((prev) => ({ ...prev, notes: e.target.value }))}
+                        placeholder="Paste bureau response text..."
+                        value={state.bureauResponseText}
+                        onChange={(e) => setState(prev => ({ ...prev, bureauResponseText: e.target.value }))}
                         rows={3}
+                        className="mt-1"
                       />
                     </div>
-                    <div className="flex gap-3">
-                      <Button onClick={handleAddCase} className="bg-primary text-primary-foreground">
-                        Add Case
+                  )}
+                </div>
+
+                {/* Prior Letter */}
+                <div>
+                  <Label className="text-sm font-medium mb-2 block">Prior Dispute Letter(s)</Label>
+                  <FileDropzone
+                    onFileSelect={(file, text) => addFile("prior_letter", file, text)}
+                    accept=".docx,.pdf,.txt"
+                    label="Drop prior letter here or click to browse"
+                    description="DOCX, PDF, TXT (max 10MB)"
+                    icon={<FileText className="w-8 h-8" />}
+                    disabled={isEvidenceLocked}
+                    extractText
+                  />
+                  <FileList 
+                    files={state.priorLetterFiles} 
+                    onRemove={(id) => removeFile("prior_letter", id)} 
+                    disabled={isEvidenceLocked}
+                  />
+                  {state.priorLetterText && (
+                    <div className="mt-3 p-3 rounded-lg bg-muted/30 border border-border">
+                      <p className="text-xs text-muted-foreground mb-1">Extracted Text:</p>
+                      <p className="text-sm line-clamp-3">{state.priorLetterText}</p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Supporting Docs */}
+                <div>
+                  <Label className="text-sm font-medium mb-2 block">Supporting Documents</Label>
+                  <FileDropzone
+                    onFileSelect={(file) => addFile("supporting_doc", file)}
+                    accept=".pdf,.png,.jpg,.jpeg,.webp,.docx,.txt"
+                    label="Drop supporting docs (ID, utility bill, FTC report)"
+                    description="Any format (max 10MB)"
+                    icon={<FileCheck className="w-8 h-8" />}
+                    disabled={isEvidenceLocked}
+                  />
+                  <FileList 
+                    files={state.supportingDocFiles} 
+                    onRemove={(id) => removeFile("supporting_doc", id)} 
+                    disabled={isEvidenceLocked}
+                  />
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* SECTION 2: Bureau Response Analysis */}
+            <Card className={!hasEvidence ? "opacity-50" : state.isAnalyzed ? "border-green-500/30" : ""}>
+              <CardHeader>
+                <SectionHeader 
+                  number={2} 
+                  title="Bureau Response Analysis" 
+                  icon={<Scale className="w-5 h-5" />}
+                  unlocked={hasEvidence}
+                  completed={state.isAnalyzed}
+                />
+                <CardDescription>
+                  {state.isAnalyzed 
+                    ? "Analysis complete. Review the outcome below." 
+                    : "Analyze the bureau response to classify outcome and surface legal implications."}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {!state.isAnalyzed ? (
+                  <Button 
+                    onClick={handleAnalyze} 
+                    disabled={!canAnalyze || isAnalyzing}
+                    className="w-full"
+                  >
+                    {isAnalyzing ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Analyzing Response...
+                      </>
+                    ) : (
+                      <>
+                        <ChevronRight className="w-4 h-4 mr-2" />
+                        Analyze Response
+                      </>
+                    )}
+                  </Button>
+                ) : state.analysisResult && (
+                  <div className="space-y-4">
+                    {/* Outcome Badge */}
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm font-medium">Outcome:</span>
+                      <Badge className={
+                        state.analysisResult.outcome === "deleted" ? "bg-green-500/20 text-green-400 border-green-500/30" :
+                        state.analysisResult.outcome === "partial" ? "bg-blue-500/20 text-blue-400 border-blue-500/30" :
+                        state.analysisResult.outcome === "verified" ? "bg-red-500/20 text-red-400 border-red-500/30" :
+                        "bg-orange-500/20 text-orange-400 border-orange-500/30"
+                      }>
+                        {state.analysisResult.outcome.charAt(0).toUpperCase() + state.analysisResult.outcome.slice(1)}
+                      </Badge>
+                    </div>
+
+                    {/* Summary */}
+                    <div className="p-4 rounded-lg bg-muted/30 border border-border">
+                      <p className="text-sm">{state.analysisResult.rawSummary}</p>
+                    </div>
+
+                    {/* Legal Implications */}
+                    <div>
+                      <p className="text-sm font-medium mb-2 flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 text-amber-500" />
+                        Legal Implications
+                      </p>
+                      <ul className="space-y-1">
+                        {state.analysisResult.legalImplications.map((imp, i) => (
+                          <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
+                            <span className="text-primary">•</span>
+                            {imp}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    {/* Next Steps */}
+                    <div>
+                      <p className="text-sm font-medium mb-2">Recommended Next Steps</p>
+                      <ul className="space-y-1">
+                        {state.analysisResult.nextSteps.map((step, i) => (
+                          <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
+                            <span className="text-green-400">{i + 1}.</span>
+                            {step}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* SECTION 3: Outcome Confirmation */}
+            <Card className={!canConfirmOutcome ? "opacity-50" : isOutcomeConfirmed ? "border-green-500/30" : ""}>
+              <CardHeader>
+                <SectionHeader 
+                  number={3} 
+                  title="Outcome Confirmation" 
+                  icon={<CheckCircle2 className="w-5 h-5" />}
+                  unlocked={canConfirmOutcome}
+                  completed={isOutcomeConfirmed}
+                />
+                <CardDescription>Confirm the response behavior with quick yes/no questions.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30">
+                    <span className="text-sm">Did you receive a written response from the bureau?</span>
+                    <div className="flex gap-2">
+                      <Button 
+                        size="sm" 
+                        variant={state.outcomeConfirmation.receivedResponse === true ? "default" : "outline"}
+                        onClick={() => updateOutcome("receivedResponse", true)}
+                        disabled={!canConfirmOutcome}
+                      >
+                        Yes
                       </Button>
-                      <Button variant="outline" onClick={() => setShowAddCase(false)}>
-                        Cancel
+                      <Button 
+                        size="sm" 
+                        variant={state.outcomeConfirmation.receivedResponse === false ? "default" : "outline"}
+                        onClick={() => updateOutcome("receivedResponse", false)}
+                        disabled={!canConfirmOutcome}
+                      >
+                        No
                       </Button>
                     </div>
-                  </CardContent>
-                </Card>
-              )}
+                  </div>
 
-              {/* Cases List */}
-              {cases.length === 0 ? (
-                <Card className="border-dashed">
-                  <CardContent className="py-12 text-center">
-                    <Clock className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                    <p className="text-muted-foreground">
-                      No dispute cases yet. Add your first case to start tracking.
-                    </p>
-                  </CardContent>
-                </Card>
-              ) : (
-                <div className="space-y-4">
-                  {cases.map((c) => (
-                    <Card key={c.id} className="border-border hover:border-primary/30 transition-colors">
-                      <CardContent className="py-4">
-                        <div className="flex items-start justify-between gap-4">
-                          <div className="flex-1">
-                            <div className="flex items-center gap-3 mb-2">
-                              <Badge variant="outline">{c.bureau}</Badge>
-                              <Badge className={statusConfig[c.status].color}>
-                                {statusConfig[c.status].label}
-                              </Badge>
-                            </div>
-                            <h3 className="font-semibold text-lg">{c.accountName}</h3>
-                            <p className="text-sm text-muted-foreground">{c.disputeType}</p>
-                            <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
-                              <span className="flex items-center gap-1">
-                                <Calendar className="w-3 h-3" />
-                                Sent: {c.sentDate}
-                              </span>
-                              {c.responseDate && (
-                                <span className="flex items-center gap-1">
-                                  <ArrowRight className="w-3 h-3" />
-                                  Response: {c.responseDate}
-                                </span>
-                              )}
-                            </div>
-                            {c.notes && (
-                              <p className="mt-2 text-sm text-muted-foreground italic">{c.notes}</p>
-                            )}
-                          </div>
-                          <div className="flex flex-col gap-2">
-                            <Select
-                              value={c.status}
-                              onValueChange={(v) => updateCaseStatus(c.id, v as DisputeCase["status"])}
-                            >
-                              <SelectTrigger className="w-[160px]">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="pending">Pending</SelectItem>
-                                <SelectItem value="no_response">No Response</SelectItem>
-                                <SelectItem value="verified">Verified</SelectItem>
-                                <SelectItem value="partial">Partial Deletion</SelectItem>
-                                <SelectItem value="deleted">Deleted</SelectItem>
-                                <SelectItem value="frivolous">Frivolous</SelectItem>
-                                <SelectItem value="reinsertion">Reinsertion</SelectItem>
-                              </SelectContent>
-                            </Select>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="text-destructive hover:text-destructive"
-                              onClick={() => deleteCase(c.id)}
-                            >
-                              <XCircle className="w-4 h-4 mr-1" />
-                              Remove
-                            </Button>
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ))}
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30">
+                    <span className="text-sm">Was the response received within 30 days?</span>
+                    <div className="flex gap-2">
+                      <Button 
+                        size="sm" 
+                        variant={state.outcomeConfirmation.responseWithin30Days === true ? "default" : "outline"}
+                        onClick={() => updateOutcome("responseWithin30Days", true)}
+                        disabled={!canConfirmOutcome}
+                      >
+                        Yes
+                      </Button>
+                      <Button 
+                        size="sm" 
+                        variant={state.outcomeConfirmation.responseWithin30Days === false ? "default" : "outline"}
+                        onClick={() => updateOutcome("responseWithin30Days", false)}
+                        disabled={!canConfirmOutcome}
+                      >
+                        No
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30">
+                    <span className="text-sm">Were all disputed items addressed?</span>
+                    <div className="flex gap-2">
+                      <Button 
+                        size="sm" 
+                        variant={state.outcomeConfirmation.allItemsAddressed === true ? "default" : "outline"}
+                        onClick={() => updateOutcome("allItemsAddressed", true)}
+                        disabled={!canConfirmOutcome}
+                      >
+                        Yes
+                      </Button>
+                      <Button 
+                        size="sm" 
+                        variant={state.outcomeConfirmation.allItemsAddressed === false ? "default" : "outline"}
+                        onClick={() => updateOutcome("allItemsAddressed", false)}
+                        disabled={!canConfirmOutcome}
+                      >
+                        No
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30">
+                    <span className="text-sm">Were any previously deleted items reinserted?</span>
+                    <div className="flex gap-2">
+                      <Button 
+                        size="sm" 
+                        variant={state.outcomeConfirmation.anyReinsertions === true ? "default" : "outline"}
+                        onClick={() => updateOutcome("anyReinsertions", true)}
+                        disabled={!canConfirmOutcome}
+                      >
+                        Yes
+                      </Button>
+                      <Button 
+                        size="sm" 
+                        variant={state.outcomeConfirmation.anyReinsertions === false ? "default" : "outline"}
+                        onClick={() => updateOutcome("anyReinsertions", false)}
+                        disabled={!canConfirmOutcome}
+                      >
+                        No
+                      </Button>
+                    </div>
+                  </div>
                 </div>
-              )}
-            </TabsContent>
 
-            {/* Upload Response Tab */}
-            <TabsContent value="upload" className="space-y-6">
-              {/* Bureau Response Upload Section */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="font-serif flex items-center gap-2">
-                    <Upload className="w-5 h-5 text-primary" />
-                    Upload Bureau Response
-                  </CardTitle>
-                  <CardDescription>
-                    Upload the response letter you received from a credit bureau for OCR extraction and scenario classification.
-                    <span className="block mt-1 text-xs font-medium text-amber-500">
-                      Accepts: PDF, PNG, JPG, WebP only
-                    </span>
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <BureauResponseUpload 
-                    onFileSelect={handleBureauResponseFileSelect}
-                    selectedFile={bureauResponseFile}
-                    onClear={() => setBureauResponseFile(null)}
+                <div>
+                  <Label className="text-sm">Additional Notes (Optional)</Label>
+                  <Textarea
+                    placeholder="Any observations about the response..."
+                    value={state.outcomeConfirmation.notes}
+                    onChange={(e) => updateOutcome("notes", e.target.value)}
+                    rows={2}
+                    disabled={!canConfirmOutcome}
+                    className="mt-1"
                   />
+                </div>
+              </CardContent>
+            </Card>
 
-                  <div className="space-y-2">
-                    <Label>Or paste response text</Label>
-                    <Textarea
-                      placeholder="Paste the text content of the bureau's response here..."
-                      value={bureauResponseText}
-                      onChange={(e) => setBureauResponseText(e.target.value)}
-                      rows={5}
+            {/* SECTION 4: Legal Strategy Survey */}
+            <Card className={!canShowSurvey ? "opacity-50" : ""}>
+              <CardHeader>
+                <SectionHeader 
+                  number={4} 
+                  title="Legal Strategy Survey" 
+                  icon={<Shield className="w-5 h-5" />}
+                  unlocked={canShowSurvey}
+                />
+                <CardDescription>Answer these questions to strengthen your legal arguments.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {surveyQuestions.map((q) => (
+                  <div key={q.key} className="flex items-start justify-between gap-4 p-3 rounded-lg bg-muted/30">
+                    <div className="flex items-start gap-2 flex-1">
+                      <span className="text-sm">{q.question}</span>
+                      <Tooltip>
+                        <TooltipTrigger>
+                          <HelpCircle className="w-4 h-4 text-muted-foreground" />
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-xs">
+                          <p className="text-xs">{q.tooltip}</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </div>
+                    <Switch
+                      checked={state.survey[q.key] as boolean}
+                      onCheckedChange={(checked) => updateSurvey(q.key, checked)}
+                      disabled={!canShowSurvey}
                     />
                   </div>
+                ))}
 
-                  <div className="space-y-2">
-                    <Label>Link to Existing Case (Optional)</Label>
-                    <Select>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select a case to link this response to" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {cases.map((c) => (
-                          <SelectItem key={c.id} value={c.id}>
-                            {c.bureau} - {c.accountName}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <Button 
-                    className="bg-primary text-primary-foreground"
-                    disabled={!bureauResponseFile && !bureauResponseText.trim()}
-                  >
-                    Analyze Response
-                  </Button>
-                </CardContent>
-              </Card>
-
-              {/* Prior Dispute Letter Upload Section */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="font-serif flex items-center gap-2">
-                    <FileText className="w-5 h-5 text-primary" />
-                    Upload Prior Dispute Letter
-                  </CardTitle>
-                  <CardDescription>
-                    Upload your previously sent dispute letter for reference when generating follow-up actions.
-                    <span className="block mt-1 text-xs font-medium text-amber-500">
-                      Accepts: DOCX, PDF, TXT
-                    </span>
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <PriorLetterUpload
-                    onTextExtracted={handlePriorLetterTextExtracted}
-                    onFileSelect={handlePriorLetterFileSelect}
-                    selectedFile={priorLetterFile}
-                    onClear={() => { setPriorLetterFile(null); setPriorLetterText(""); }}
-                    extractedText={priorLetterText}
-                    onTextChange={setPriorLetterText}
-                    isExtracting={isExtractingText}
+                {state.survey.wasReinserted && (
+                  <Textarea
+                    placeholder="Provide reinsertion details..."
+                    value={state.survey.reinsertedDetails}
+                    onChange={(e) => updateSurvey("reinsertedDetails", e.target.value)}
+                    rows={2}
+                    disabled={!canShowSurvey}
                   />
-                </CardContent>
-              </Card>
+                )}
 
-              {/* Scenario Classification Info */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="font-serif">Response Scenario Classification</CardTitle>
-                  <CardDescription>
-                    The engine will classify bureau responses into these categories:
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/50">
-                      <CheckCircle2 className="w-5 h-5 text-green-400 mt-0.5" />
-                      <div>
-                        <p className="font-medium">Scenario A: Full Deletion</p>
-                        <p className="text-sm text-muted-foreground">Item deleted from credit report</p>
-                      </div>
-                    </div>
-                    <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/50">
-                      <AlertTriangle className="w-5 h-5 text-blue-400 mt-0.5" />
-                      <div>
-                        <p className="font-medium">Scenario B: Partial Deletion</p>
-                        <p className="text-sm text-muted-foreground">Requires MoV demand letter</p>
-                      </div>
-                    </div>
-                    <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/50">
-                      <XCircle className="w-5 h-5 text-red-400 mt-0.5" />
-                      <div>
-                        <p className="font-medium">Scenario C: Full Verification</p>
-                        <p className="text-sm text-muted-foreground">Escalate to CFPB/BBB/AG</p>
-                      </div>
-                    </div>
-                    <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/50">
-                      <Clock className="w-5 h-5 text-orange-400 mt-0.5" />
-                      <div>
-                        <p className="font-medium">No Response (30+ days)</p>
-                        <p className="text-sm text-muted-foreground">FCRA violation - escalate</p>
-                      </div>
-                    </div>
+                <div>
+                  <Label className="text-sm">Additional Facts</Label>
+                  <Textarea
+                    placeholder="Any other relevant facts to include in the letter..."
+                    value={state.survey.additionalFacts}
+                    onChange={(e) => updateSurvey("additionalFacts", e.target.value)}
+                    rows={2}
+                    disabled={!canShowSurvey}
+                    className="mt-1"
+                  />
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* SECTION 5: Generate Next Legal Response */}
+            <Card className={!canShowSurvey ? "opacity-50" : ""}>
+              <CardHeader>
+                <SectionHeader 
+                  number={5} 
+                  title="Generate Next Legal Response" 
+                  icon={<FileText className="w-5 h-5" />}
+                  unlocked={canShowSurvey}
+                />
+                <CardDescription>Your information and bureau will be auto-filled. Zero placeholders.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* Consumer Info */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm">Full Legal Name *</Label>
+                    <input
+                      type="text"
+                      value={state.consumerInfo.fullName}
+                      onChange={(e) => updateConsumerInfo("fullName", e.target.value)}
+                      placeholder="John Michael Smith"
+                      disabled={!canShowSurvey}
+                      className="w-full mt-1 px-3 py-2 bg-muted/30 border border-border rounded-md text-sm"
+                    />
                   </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
+                  <div>
+                    <Label className="text-sm">Street Address *</Label>
+                    <input
+                      type="text"
+                      value={state.consumerInfo.addressLine1}
+                      onChange={(e) => updateConsumerInfo("addressLine1", e.target.value)}
+                      placeholder="123 Main Street"
+                      disabled={!canShowSurvey}
+                      className="w-full mt-1 px-3 py-2 bg-muted/30 border border-border rounded-md text-sm"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-sm">Apt / Suite</Label>
+                    <input
+                      type="text"
+                      value={state.consumerInfo.addressLine2}
+                      onChange={(e) => updateConsumerInfo("addressLine2", e.target.value)}
+                      placeholder="Apt 4B"
+                      disabled={!canShowSurvey}
+                      className="w-full mt-1 px-3 py-2 bg-muted/30 border border-border rounded-md text-sm"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-sm">City, State ZIP *</Label>
+                    <input
+                      type="text"
+                      value={state.consumerInfo.cityStateZip}
+                      onChange={(e) => updateConsumerInfo("cityStateZip", e.target.value)}
+                      placeholder="New York, NY 10001"
+                      disabled={!canShowSurvey}
+                      className="w-full mt-1 px-3 py-2 bg-muted/30 border border-border rounded-md text-sm"
+                    />
+                  </div>
+                </div>
 
-            {/* Generate Letters Tab */}
-            <TabsContent value="generate" className="space-y-6">
-              <Card>
-                <CardHeader>
-                  <CardTitle className="font-serif flex items-center gap-2">
-                    <FileText className="w-5 h-5 text-primary" />
-                    Generate Next-Step Letters
-                  </CardTitle>
-                  <CardDescription>
-                    Based on case status and scenario classification, generate the appropriate follow-up letters and complaints.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  {cases.filter((c) => c.status !== "deleted" && c.status !== "pending").length === 0 ? (
-                    <div className="text-center py-8">
-                      <FileText className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                      <p className="text-muted-foreground">
-                        No cases require follow-up letters yet. Update case statuses to generate appropriate next steps.
-                      </p>
-                    </div>
+                {/* Bureau Selection */}
+                <div>
+                  <Label className="text-sm">Target Bureau</Label>
+                  <div className="flex gap-2 mt-2">
+                    {(Object.keys(BUREAU_DATA) as BureauKey[]).map((key) => (
+                      <Button
+                        key={key}
+                        size="sm"
+                        variant={state.selectedBureau === key ? "default" : "outline"}
+                        onClick={() => setState(prev => ({ ...prev, selectedBureau: key }))}
+                        disabled={!canShowSurvey}
+                      >
+                        {key.charAt(0).toUpperCase() + key.slice(1)}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+
+                <Button 
+                  onClick={handleGenerateLetter} 
+                  disabled={!canGenerate || isGenerating}
+                  className="w-full"
+                  size="lg"
+                >
+                  {isGenerating ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Generating Letter...
+                    </>
                   ) : (
-                    <div className="space-y-4">
-                      {cases
-                        .filter((c) => c.status !== "deleted" && c.status !== "pending")
-                        .map((c) => (
-                          <div key={c.id} className="flex items-center justify-between p-4 rounded-lg bg-muted/50">
-                            <div>
-                              <div className="flex items-center gap-2 mb-1">
-                                <Badge variant="outline">{c.bureau}</Badge>
-                                <Badge className={statusConfig[c.status].color}>
-                                  {statusConfig[c.status].label}
-                                </Badge>
-                              </div>
-                              <p className="font-medium">{c.accountName}</p>
-                              <p className="text-sm text-muted-foreground">
-                                {c.status === "no_response" && "→ Generate FCRA violation letter"}
-                                {c.status === "verified" && "→ Generate CFPB complaint + MoV demand"}
-                                {c.status === "partial" && "→ Generate follow-up MoV demand"}
-                                {c.status === "frivolous" && "→ Generate appeal with documentation"}
-                                {c.status === "reinsertion" && "→ Generate reinsertion violation letter"}
-                              </p>
-                            </div>
-                            <Button variant="outline" className="border-primary/30 hover:border-primary/60">
-                              <Download className="w-4 h-4 mr-2" />
-                              Generate
-                            </Button>
-                          </div>
-                        ))}
+                    <>
+                      <FileText className="w-4 h-4 mr-2" />
+                      Generate Dispute Letter
+                    </>
+                  )}
+                </Button>
+              </CardContent>
+            </Card>
+
+            {/* SECTION 6: Generated Output */}
+            {hasGeneratedLetter && (
+              <Card className="border-primary/30">
+                <CardHeader>
+                  <SectionHeader 
+                    number={6} 
+                    title="Generated Output" 
+                    icon={<FileCheck className="w-5 h-5" />}
+                    unlocked={true}
+                    completed={true}
+                  />
+                  <CardDescription>Your letter is ready. Review, edit if needed, and export.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {/* Action Bar */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Button size="sm" variant="outline" onClick={() => setIsEditing(!isEditing)}>
+                      {isEditing ? <Eye className="w-4 h-4 mr-1" /> : <Pencil className="w-4 h-4 mr-1" />}
+                      {isEditing ? "Preview" : "Edit"}
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={handleCopy}>
+                      {copied ? <Check className="w-4 h-4 mr-1" /> : <Copy className="w-4 h-4 mr-1" />}
+                      {copied ? "Copied" : "Copy"}
+                    </Button>
+                    <Button size="sm" variant="outline">
+                      <Download className="w-4 h-4 mr-1" />
+                      Export PDF
+                    </Button>
+                  </div>
+
+                  {/* Letter Content */}
+                  {isEditing ? (
+                    <Textarea
+                      value={state.generatedLetter}
+                      onChange={(e) => setState(prev => ({ ...prev, generatedLetter: e.target.value }))}
+                      rows={25}
+                      className="font-mono text-sm"
+                    />
+                  ) : (
+                    <div 
+                      className="p-8 rounded-lg border border-border min-h-[400px]"
+                      style={{ backgroundColor: '#ffffff', color: '#111111' }}
+                    >
+                      <pre className="whitespace-pre-wrap font-serif text-sm leading-relaxed">
+                        {state.generatedLetter}
+                      </pre>
                     </div>
                   )}
                 </CardContent>
               </Card>
-            </TabsContent>
-          </Tabs>
-        </div>
-      </section>
+            )}
 
-      <Footer />
-    </main>
+          </div>
+        </section>
+
+        <Footer />
+      </main>
+    </TooltipProvider>
   );
 };
 
