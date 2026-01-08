@@ -207,7 +207,8 @@ PRIVACY: Never output full SSN. Mask as XXX-XX-#### format.`;
 const MAX_IMAGE_SIZE = 15000000; // ~10MB base64 per image
 const MAX_IMAGES = 50; // INVARIANT: No arbitrary page caps - allow full documents
 const MAX_TEXT_LENGTH = 500000; // 500k chars for full reports
-const VALID_BUREAUS = ['experian', 'equifax', 'transunion'];
+const VALID_BUREAUS = ["experian", "equifax", "transunion"] as const;
+const MULTI_BUREAU_SENTINEL = "multi-bureau";
 
 // Rate limiting
 const rateLimitStore = new Map<string, { count: number; resetTime: number }>();
@@ -338,11 +339,28 @@ serve(async (req) => {
       }
     }
 
-    if (bureau && !VALID_BUREAUS.includes(bureau.toLowerCase())) {
-      return new Response(JSON.stringify({ error: "Invalid bureau. Must be Experian, Equifax, or TransUnion" }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (typeof bureau === "string" && bureau.trim()) {
+      const normalizedBureau = bureau.trim().toLowerCase();
+
+      // Only block unknown; allow multi-bureau sentinels for PrivacyGuard-style reports
+      if (normalizedBureau === "unknown") {
+        return new Response(JSON.stringify({ error: "Invalid bureau. Bureau cannot be unknown." }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      if (normalizedBureau !== MULTI_BUREAU_SENTINEL && !VALID_BUREAUS.includes(normalizedBureau as (typeof VALID_BUREAUS)[number])) {
+        return new Response(
+          JSON.stringify({
+            error: "Invalid bureau. Must be Experian, Equifax, TransUnion, or Multi-Bureau",
+          }),
+          {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          },
+        );
+      }
     }
 
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
