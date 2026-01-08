@@ -75,8 +75,10 @@ const Auth = () => {
 
   const handleForgotPassword = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (!forgotPasswordEmail) {
+
+    const targetEmail = forgotPasswordEmail.trim();
+
+    if (!targetEmail) {
       toast({
         title: "Email required",
         description: "Please enter your email address",
@@ -88,7 +90,10 @@ const Auth = () => {
     setForgotPasswordLoading(true);
 
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(forgotPasswordEmail, {
+      // Normalize stored value (used for the confirmation text)
+      setForgotPasswordEmail(targetEmail);
+
+      const { error } = await supabase.auth.resetPasswordForEmail(targetEmail, {
         redirectTo: `${window.location.origin}/reset-password`,
       });
 
@@ -106,8 +111,10 @@ const Auth = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError(null);
-    
-    if (!email || !password) {
+
+    const normalizedEmail = email.trim();
+
+    if (!normalizedEmail || !password) {
       toast({
         title: "Missing fields",
         description: "Please enter both email and password",
@@ -131,7 +138,7 @@ const Auth = () => {
       if (isSignUp) {
         const redirectUrl = `${window.location.origin}/`;
         const { error } = await supabase.auth.signUp({
-          email,
+          email: normalizedEmail,
           password,
           options: {
             emailRedirectTo: redirectUrl,
@@ -151,7 +158,7 @@ const Auth = () => {
         } else {
           // Save email if remember me is checked
           if (rememberMe) {
-            localStorage.setItem(REMEMBERED_EMAIL_KEY, email);
+            localStorage.setItem(REMEMBERED_EMAIL_KEY, normalizedEmail);
           }
           toast({
             title: "Account created",
@@ -160,7 +167,7 @@ const Auth = () => {
         }
       } else {
         const { error } = await supabase.auth.signInWithPassword({
-          email,
+          email: normalizedEmail,
           password,
         });
 
@@ -173,7 +180,7 @@ const Auth = () => {
         } else {
           // Save email if remember me is checked
           if (rememberMe) {
-            localStorage.setItem(REMEMBERED_EMAIL_KEY, email);
+            localStorage.setItem(REMEMBERED_EMAIL_KEY, normalizedEmail);
           } else {
             localStorage.removeItem(REMEMBERED_EMAIL_KEY);
           }
