@@ -13,6 +13,8 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { pdfToImages, extractTextFromPdf, detectBureauFromText, isHeicFile, isPdfFile, isSupportedImage } from "@/lib/pdf-utils";
 import DisputeLetterBuilder from "./DisputeLetterBuilder";
+import { useChunkedAnalysis } from "@/hooks/useChunkedAnalysis";
+import { AnalysisProgress } from "./AnalysisProgress";
 
 // Bureau type for multi-bureau support
 type BureauName = 'experian' | 'equifax' | 'transunion';
@@ -142,6 +144,10 @@ const AIAnalyzer = () => {
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+  
+  // Chunked analysis hook for multi-bureau reports
+  const { progress: chunkedProgress, analyzeChunked, skipPaymentHistory, retrySection, reset: resetChunked } = useChunkedAnalysis();
+  const [documentMap, setDocumentMap] = useState<any>(null);
 
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
@@ -409,10 +415,7 @@ const AIAnalyzer = () => {
     setIsAnalyzing(true);
     setError(null);
     setResults({});
-
-    // AbortController for 60s timeout
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    resetChunked();
 
     try {
       if (!session?.access_token) {
@@ -446,33 +449,12 @@ const AIAnalyzer = () => {
         return acc;
       }, {} as Record<string, { bureau: string; label: string; images: string[] }>);
 
-      // If only text input, analyze as single request
+      // If only text input, analyze as single request (no chunking needed)
       if (responseText && Object.keys(bureauGroups).length === 0) {
-        const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-response`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${session.access_token}`,
-          },
-          body: JSON.stringify({
-            questionnaire,
-            responseText,
-            hasIdentityDocs: identityDocs || undefined,
-          }),
-          signal: controller.signal,
-        });
-
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "Analysis failed");
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 60000);
         
-        newResults['text'] = { ...data, bureau: 'Text Input' };
-      } else {
-        // Analyze each bureau group
-        for (const [key, group] of Object.entries(bureauGroups)) {
-          const displayName = group.label 
-            ? `${group.bureau.charAt(0).toUpperCase() + group.bureau.slice(1)} (${group.label})`
-            : group.bureau.charAt(0).toUpperCase() + group.bureau.slice(1);
-
+        try {
           const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-response`, {
             method: "POST",
             headers: {
@@ -481,17 +463,129 @@ const AIAnalyzer = () => {
             },
             body: JSON.stringify({
               questionnaire,
-              responseImages: group.images,
-              bureau: group.bureau,
+              responseText,
               hasIdentityDocs: identityDocs || undefined,
             }),
             signal: controller.signal,
           });
 
           const data = await response.json();
-          if (!response.ok) throw new Error(data.error || `Analysis failed for ${displayName}`);
+          if (!response.ok) throw new Error(data.error || "Analysis failed");
           
-          newResults[key] = { ...data, bureau: displayName };
+          newResults['text'] = { ...data, bureau: 'Text Input' };
+        } finally {
+          clearTimeout(timeoutId);
+        }
+      } else {
+        // Check if any multi-bureau files with many pages (use chunked analysis)
+        const hasLargeMultiBureau = Object.values(bureauGroups).some(
+          g => g.bureau === 'multi-bureau' && g.images.length > 10
+        );
+
+        if (hasLargeMultiBureau) {
+          // Use chunked analysis for large multi-bureau reports
+          for (const [key, group] of Object.entries(bureauGroups)) {
+            if (group.bureau === 'multi-bureau' && group.images.length > 10) {
+              const displayName = group.label 
+                ? `Multi-Bureau (${group.label})`
+                : 'Multi-Bureau';
+
+              const chunkedResult = await analyzeChunked(
+                group.images,
+                questionnaire,
+                session.access_token
+              );
+
+              if (chunkedResult) {
+                setDocumentMap(chunkedResult.documentMap);
+                const detectedBureaus = (chunkedResult.result.detected_bureaus || []).filter(
+                  (b): b is BureauName => ['experian', 'equifax', 'transunion'].includes(b)
+                );
+                newResults[key] = {
+                  ...chunkedResult.result,
+                  detected_bureaus: detectedBureaus,
+                  bureau: displayName,
+                  summary: `Analyzed ${chunkedResult.documentMap.total_pages} pages across ${detectedBureaus.length || 3} bureaus.`,
+                  next_steps: [
+                    "Review each bureau tab for specific discrepancies",
+                    "Generate dispute letters for inaccurate items",
+                    "Keep documentation of all disputed items"
+                  ],
+                  warnings: chunkedProgress.sectionsFailed.length > 0 
+                    ? [`Some sections had issues: ${chunkedProgress.sectionsFailed.join(', ')}`]
+                    : [],
+                };
+              } else {
+                throw new Error("Chunked analysis failed. Try uploading screenshots instead.");
+              }
+            } else {
+              // Small files or single-bureau: use original endpoint with timeout
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 60000);
+              
+              try {
+                const displayName = group.label 
+                  ? `${group.bureau.charAt(0).toUpperCase() + group.bureau.slice(1)} (${group.label})`
+                  : group.bureau.charAt(0).toUpperCase() + group.bureau.slice(1);
+
+                const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-response`, {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${session.access_token}`,
+                  },
+                  body: JSON.stringify({
+                    questionnaire,
+                    responseImages: group.images,
+                    bureau: group.bureau,
+                    hasIdentityDocs: identityDocs || undefined,
+                  }),
+                  signal: controller.signal,
+                });
+
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || `Analysis failed for ${displayName}`);
+                
+                newResults[key] = { ...data, bureau: displayName };
+              } finally {
+                clearTimeout(timeoutId);
+              }
+            }
+          }
+        } else {
+          // All files are small enough for single requests
+          for (const [key, group] of Object.entries(bureauGroups)) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 60000);
+            
+            try {
+              const displayName = group.label 
+                ? `${group.bureau.charAt(0).toUpperCase() + group.bureau.slice(1)} (${group.label})`
+                : group.bureau.charAt(0).toUpperCase() + group.bureau.slice(1);
+
+              const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-response`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "Authorization": `Bearer ${session.access_token}`,
+                },
+                body: JSON.stringify({
+                  questionnaire,
+                  responseImages: group.images,
+                  bureau: group.bureau,
+                  hasIdentityDocs: identityDocs || undefined,
+                }),
+                signal: controller.signal,
+              });
+
+              const data = await response.json();
+              if (!response.ok) throw new Error(data.error || `Analysis failed for ${displayName}`);
+              
+              newResults[key] = { ...data, bureau: displayName };
+            } finally {
+              clearTimeout(timeoutId);
+            }
+          }
         }
       }
 
@@ -515,7 +609,6 @@ const AIAnalyzer = () => {
         });
       }
     } finally {
-      clearTimeout(timeoutId);
       setIsAnalyzing(false);
     }
   };
