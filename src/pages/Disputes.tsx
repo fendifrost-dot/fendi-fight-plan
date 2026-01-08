@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import AppNavigation from "@/components/AppNavigation";
 import Footer from "@/components/Footer";
 import { Button } from "@/components/ui/button";
@@ -56,11 +56,97 @@ const statusConfig = {
   reinsertion: { label: "Reinsertion", color: "bg-red-500/20 text-red-400 border-red-500/30" },
 };
 
+// Upload Dropzone Component
+const UploadDropzone = ({ onFileSelect }: { onFileSelect: (file: File) => void }) => {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 10 * 1024 * 1024) {
+        toast.error("File size exceeds 10MB limit.");
+        return;
+      }
+      onFileSelect(file);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      if (file.size > 10 * 1024 * 1024) {
+        toast.error("File size exceeds 10MB limit.");
+        return;
+      }
+      const validTypes = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg'];
+      if (!validTypes.includes(file.type)) {
+        toast.error("Please upload a PDF, PNG, or JPG file.");
+        return;
+      }
+      onFileSelect(file);
+    }
+  };
+
+  return (
+    <div
+      onClick={handleClick}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      role="button"
+      tabIndex={0}
+      aria-label="Upload bureau response file"
+      onKeyDown={(e) => e.key === 'Enter' && handleClick()}
+      className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer ${
+        isDragging 
+          ? 'border-primary bg-primary/5' 
+          : 'border-border hover:border-primary/50'
+      }`}
+    >
+      <Upload className="w-10 h-10 mx-auto text-muted-foreground mb-4" />
+      <p className="text-muted-foreground mb-2">
+        Drag and drop your response letter here, or click to browse
+      </p>
+      <Button type="button" variant="outline" className="mt-2" onClick={(e) => { e.stopPropagation(); handleClick(); }}>
+        Choose File
+      </Button>
+      <p className="text-xs text-muted-foreground mt-3">
+        Supports PDF, PNG, JPG (max 10MB)
+      </p>
+      <input
+        ref={fileInputRef}
+        type="file"
+        className="hidden"
+        accept=".pdf,.png,.jpg,.jpeg"
+        onChange={handleFileChange}
+      />
+    </div>
+  );
+};
+
 const Disputes = () => {
   const [cases, setCases] = useState<DisputeCase[]>([]);
   const [activeTab, setActiveTab] = useState("timeline");
   const [showAddCase, setShowAddCase] = useState(false);
   const [importedAnalyzerData, setImportedAnalyzerData] = useState(false);
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
 
   // New case form state
   const [newCase, setNewCase] = useState<Partial<DisputeCase>>({
@@ -68,6 +154,11 @@ const Disputes = () => {
     status: "pending",
     sentDate: new Date().toISOString().split("T")[0],
   });
+
+  const handleResponseFileSelect = (file: File) => {
+    setUploadedFile(file);
+    toast.success(`File "${file.name}" selected for analysis.`);
+  };
 
   // Load persisted state
   useEffect(() => {
@@ -384,16 +475,7 @@ const Disputes = () => {
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="border-2 border-dashed border-border rounded-lg p-8 text-center hover:border-primary/50 transition-colors cursor-pointer">
-                    <Upload className="w-10 h-10 mx-auto text-muted-foreground mb-4" />
-                    <p className="text-muted-foreground mb-2">
-                      Drag and drop your response letter here, or click to browse
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      Supports PDF, PNG, JPG (max 10MB)
-                    </p>
-                    <Input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg" />
-                  </div>
+                  <UploadDropzone onFileSelect={handleResponseFileSelect} />
 
                   <div className="space-y-2">
                     <Label>Or paste response text</Label>
