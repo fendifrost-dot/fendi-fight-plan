@@ -1,0 +1,533 @@
+import { useState, useEffect } from "react";
+import AppNavigation from "@/components/AppNavigation";
+import Footer from "@/components/Footer";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { 
+  Upload, 
+  FileText, 
+  Clock, 
+  AlertTriangle, 
+  CheckCircle2, 
+  XCircle, 
+  Download,
+  Plus,
+  Calendar,
+  Scale,
+  ArrowRight,
+  Import
+} from "lucide-react";
+import { toast } from "sonner";
+
+const DISPUTES_STORAGE_KEY = "dispute-engine-state";
+
+interface DisputeCase {
+  id: string;
+  bureau: "Experian" | "Equifax" | "TransUnion";
+  accountName: string;
+  disputeType: string;
+  status: "pending" | "no_response" | "verified" | "partial" | "deleted" | "frivolous" | "reinsertion";
+  sentDate: string;
+  responseDate?: string;
+  notes: string;
+  priorLetterContent?: string;
+  responseContent?: string;
+}
+
+interface PersistedState {
+  cases: DisputeCase[];
+  importedAnalyzerData: boolean;
+  lastUpdated: string;
+}
+
+const statusConfig = {
+  pending: { label: "Pending Response", color: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30" },
+  no_response: { label: "No Response (30+ days)", color: "bg-orange-500/20 text-orange-400 border-orange-500/30" },
+  verified: { label: "Verified", color: "bg-red-500/20 text-red-400 border-red-500/30" },
+  partial: { label: "Partial Deletion", color: "bg-blue-500/20 text-blue-400 border-blue-500/30" },
+  deleted: { label: "Deleted", color: "bg-green-500/20 text-green-400 border-green-500/30" },
+  frivolous: { label: "Frivolous Claim", color: "bg-purple-500/20 text-purple-400 border-purple-500/30" },
+  reinsertion: { label: "Reinsertion", color: "bg-red-500/20 text-red-400 border-red-500/30" },
+};
+
+const Disputes = () => {
+  const [cases, setCases] = useState<DisputeCase[]>([]);
+  const [activeTab, setActiveTab] = useState("timeline");
+  const [showAddCase, setShowAddCase] = useState(false);
+  const [importedAnalyzerData, setImportedAnalyzerData] = useState(false);
+
+  // New case form state
+  const [newCase, setNewCase] = useState<Partial<DisputeCase>>({
+    bureau: "Experian",
+    status: "pending",
+    sentDate: new Date().toISOString().split("T")[0],
+  });
+
+  // Load persisted state
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(DISPUTES_STORAGE_KEY);
+      if (saved) {
+        const parsed: PersistedState = JSON.parse(saved);
+        setCases(parsed.cases || []);
+        setImportedAnalyzerData(parsed.importedAnalyzerData || false);
+      }
+    } catch (e) {
+      console.error("Failed to load dispute engine state:", e);
+    }
+  }, []);
+
+  // Auto-save state
+  useEffect(() => {
+    const state: PersistedState = {
+      cases,
+      importedAnalyzerData,
+      lastUpdated: new Date().toISOString(),
+    };
+    localStorage.setItem(DISPUTES_STORAGE_KEY, JSON.stringify(state));
+  }, [cases, importedAnalyzerData]);
+
+  const handleImportFromAnalyzer = () => {
+    try {
+      const analyzerData = localStorage.getItem("ai-analyzer-state");
+      if (!analyzerData) {
+        toast.error("No analyzer data found. Run the Credit Report Analyzer first.");
+        return;
+      }
+      
+      const parsed = JSON.parse(analyzerData);
+      if (parsed.analysisResults) {
+        setImportedAnalyzerData(true);
+        toast.success("Imported analyzer data successfully! You can now create disputes based on the findings.");
+      } else {
+        toast.error("No analysis results found in analyzer data.");
+      }
+    } catch (e) {
+      toast.error("Failed to import analyzer data.");
+    }
+  };
+
+  const handleAddCase = () => {
+    if (!newCase.accountName || !newCase.disputeType) {
+      toast.error("Please fill in all required fields.");
+      return;
+    }
+
+    const caseToAdd: DisputeCase = {
+      id: crypto.randomUUID(),
+      bureau: newCase.bureau as DisputeCase["bureau"],
+      accountName: newCase.accountName,
+      disputeType: newCase.disputeType,
+      status: newCase.status as DisputeCase["status"],
+      sentDate: newCase.sentDate || new Date().toISOString().split("T")[0],
+      notes: newCase.notes || "",
+      priorLetterContent: newCase.priorLetterContent,
+    };
+
+    setCases((prev) => [...prev, caseToAdd]);
+    setNewCase({
+      bureau: "Experian",
+      status: "pending",
+      sentDate: new Date().toISOString().split("T")[0],
+    });
+    setShowAddCase(false);
+    toast.success("Dispute case added to timeline.");
+  };
+
+  const updateCaseStatus = (caseId: string, status: DisputeCase["status"]) => {
+    setCases((prev) =>
+      prev.map((c) =>
+        c.id === caseId
+          ? { ...c, status, responseDate: status !== "pending" ? new Date().toISOString().split("T")[0] : undefined }
+          : c
+      )
+    );
+    toast.success("Case status updated.");
+  };
+
+  const deleteCase = (caseId: string) => {
+    setCases((prev) => prev.filter((c) => c.id !== caseId));
+    toast.success("Case removed from timeline.");
+  };
+
+  return (
+    <main className="min-h-screen bg-background">
+      <AppNavigation />
+
+      {/* Hero Section */}
+      <section className="py-12 px-4 border-b border-border">
+        <div className="container mx-auto max-w-6xl text-center">
+          <div className="flex items-center justify-center gap-3 mb-4">
+            <Scale className="w-10 h-10 text-primary" />
+          </div>
+          <h1 className="text-4xl md:text-5xl font-serif font-bold text-gold-gradient mb-4">
+            Dispute & Response Engine
+          </h1>
+          <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
+            Track your dispute lifecycle, analyze bureau responses, classify scenarios, 
+            and generate next-step letters with legal precision.
+          </p>
+
+          {/* Import from Analyzer */}
+          <div className="mt-8">
+            <Button
+              onClick={handleImportFromAnalyzer}
+              variant="outline"
+              className="border-primary/30 hover:border-primary/60"
+            >
+              <Import className="w-4 h-4 mr-2" />
+              Import from Credit Report Analyzer
+            </Button>
+            {importedAnalyzerData && (
+              <Badge variant="outline" className="ml-3 border-green-500/30 text-green-400">
+                <CheckCircle2 className="w-3 h-3 mr-1" />
+                Analyzer Data Imported
+              </Badge>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* Main Content */}
+      <section className="py-8 px-4">
+        <div className="container mx-auto max-w-6xl">
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+            <TabsList className="grid w-full grid-cols-3 mb-8">
+              <TabsTrigger value="timeline" className="flex items-center gap-2">
+                <Clock className="w-4 h-4" />
+                Case Timeline
+              </TabsTrigger>
+              <TabsTrigger value="upload" className="flex items-center gap-2">
+                <Upload className="w-4 h-4" />
+                Upload Response
+              </TabsTrigger>
+              <TabsTrigger value="generate" className="flex items-center gap-2">
+                <FileText className="w-4 h-4" />
+                Generate Letters
+              </TabsTrigger>
+            </TabsList>
+
+            {/* Timeline Tab */}
+            <TabsContent value="timeline" className="space-y-6">
+              <div className="flex items-center justify-between">
+                <h2 className="text-2xl font-serif font-semibold">Your Dispute Cases</h2>
+                <Button onClick={() => setShowAddCase(true)} className="bg-primary text-primary-foreground">
+                  <Plus className="w-4 h-4 mr-2" />
+                  Add New Case
+                </Button>
+              </div>
+
+              {/* Add Case Form */}
+              {showAddCase && (
+                <Card className="border-primary/30">
+                  <CardHeader>
+                    <CardTitle className="font-serif">Add New Dispute Case</CardTitle>
+                    <CardDescription>Track a new dispute you've sent to a credit bureau.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label>Bureau</Label>
+                        <Select
+                          value={newCase.bureau}
+                          onValueChange={(v) => setNewCase((prev) => ({ ...prev, bureau: v as DisputeCase["bureau"] }))}
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="Experian">Experian</SelectItem>
+                            <SelectItem value="Equifax">Equifax</SelectItem>
+                            <SelectItem value="TransUnion">TransUnion</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Account Name *</Label>
+                        <Input
+                          placeholder="e.g., Capital One Visa"
+                          value={newCase.accountName || ""}
+                          onChange={(e) => setNewCase((prev) => ({ ...prev, accountName: e.target.value }))}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Dispute Type *</Label>
+                        <Input
+                          placeholder="e.g., Not My Account, Wrong Balance"
+                          value={newCase.disputeType || ""}
+                          onChange={(e) => setNewCase((prev) => ({ ...prev, disputeType: e.target.value }))}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Date Sent</Label>
+                        <Input
+                          type="date"
+                          value={newCase.sentDate || ""}
+                          onChange={(e) => setNewCase((prev) => ({ ...prev, sentDate: e.target.value }))}
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Notes</Label>
+                      <Textarea
+                        placeholder="Any additional notes about this dispute..."
+                        value={newCase.notes || ""}
+                        onChange={(e) => setNewCase((prev) => ({ ...prev, notes: e.target.value }))}
+                        rows={3}
+                      />
+                    </div>
+                    <div className="flex gap-3">
+                      <Button onClick={handleAddCase} className="bg-primary text-primary-foreground">
+                        Add Case
+                      </Button>
+                      <Button variant="outline" onClick={() => setShowAddCase(false)}>
+                        Cancel
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Cases List */}
+              {cases.length === 0 ? (
+                <Card className="border-dashed">
+                  <CardContent className="py-12 text-center">
+                    <Clock className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                    <p className="text-muted-foreground">
+                      No dispute cases yet. Add your first case to start tracking.
+                    </p>
+                  </CardContent>
+                </Card>
+              ) : (
+                <div className="space-y-4">
+                  {cases.map((c) => (
+                    <Card key={c.id} className="border-border hover:border-primary/30 transition-colors">
+                      <CardContent className="py-4">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-3 mb-2">
+                              <Badge variant="outline">{c.bureau}</Badge>
+                              <Badge className={statusConfig[c.status].color}>
+                                {statusConfig[c.status].label}
+                              </Badge>
+                            </div>
+                            <h3 className="font-semibold text-lg">{c.accountName}</h3>
+                            <p className="text-sm text-muted-foreground">{c.disputeType}</p>
+                            <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
+                              <span className="flex items-center gap-1">
+                                <Calendar className="w-3 h-3" />
+                                Sent: {c.sentDate}
+                              </span>
+                              {c.responseDate && (
+                                <span className="flex items-center gap-1">
+                                  <ArrowRight className="w-3 h-3" />
+                                  Response: {c.responseDate}
+                                </span>
+                              )}
+                            </div>
+                            {c.notes && (
+                              <p className="mt-2 text-sm text-muted-foreground italic">{c.notes}</p>
+                            )}
+                          </div>
+                          <div className="flex flex-col gap-2">
+                            <Select
+                              value={c.status}
+                              onValueChange={(v) => updateCaseStatus(c.id, v as DisputeCase["status"])}
+                            >
+                              <SelectTrigger className="w-[160px]">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="pending">Pending</SelectItem>
+                                <SelectItem value="no_response">No Response</SelectItem>
+                                <SelectItem value="verified">Verified</SelectItem>
+                                <SelectItem value="partial">Partial Deletion</SelectItem>
+                                <SelectItem value="deleted">Deleted</SelectItem>
+                                <SelectItem value="frivolous">Frivolous</SelectItem>
+                                <SelectItem value="reinsertion">Reinsertion</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-destructive hover:text-destructive"
+                              onClick={() => deleteCase(c.id)}
+                            >
+                              <XCircle className="w-4 h-4 mr-1" />
+                              Remove
+                            </Button>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </TabsContent>
+
+            {/* Upload Response Tab */}
+            <TabsContent value="upload" className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="font-serif flex items-center gap-2">
+                    <Upload className="w-5 h-5 text-primary" />
+                    Upload Bureau Response
+                  </CardTitle>
+                  <CardDescription>
+                    Upload the response letter you received from a credit bureau for analysis and scenario classification.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="border-2 border-dashed border-border rounded-lg p-8 text-center hover:border-primary/50 transition-colors cursor-pointer">
+                    <Upload className="w-10 h-10 mx-auto text-muted-foreground mb-4" />
+                    <p className="text-muted-foreground mb-2">
+                      Drag and drop your response letter here, or click to browse
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Supports PDF, PNG, JPG (max 10MB)
+                    </p>
+                    <Input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg" />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Or paste response text</Label>
+                    <Textarea
+                      placeholder="Paste the text content of the bureau's response here..."
+                      rows={6}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Link to Existing Case (Optional)</Label>
+                    <Select>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select a case to link this response to" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {cases.map((c) => (
+                          <SelectItem key={c.id} value={c.id}>
+                            {c.bureau} - {c.accountName}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <Button className="bg-primary text-primary-foreground">
+                    Analyze Response
+                  </Button>
+                </CardContent>
+              </Card>
+
+              {/* Scenario Classification Info */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="font-serif">Response Scenario Classification</CardTitle>
+                  <CardDescription>
+                    The engine will classify bureau responses into these categories:
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/50">
+                      <CheckCircle2 className="w-5 h-5 text-green-400 mt-0.5" />
+                      <div>
+                        <p className="font-medium">Scenario A: Full Deletion</p>
+                        <p className="text-sm text-muted-foreground">Item deleted from credit report</p>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/50">
+                      <AlertTriangle className="w-5 h-5 text-blue-400 mt-0.5" />
+                      <div>
+                        <p className="font-medium">Scenario B: Partial Deletion</p>
+                        <p className="text-sm text-muted-foreground">Requires MoV demand letter</p>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/50">
+                      <XCircle className="w-5 h-5 text-red-400 mt-0.5" />
+                      <div>
+                        <p className="font-medium">Scenario C: Full Verification</p>
+                        <p className="text-sm text-muted-foreground">Escalate to CFPB/BBB/AG</p>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/50">
+                      <Clock className="w-5 h-5 text-orange-400 mt-0.5" />
+                      <div>
+                        <p className="font-medium">No Response (30+ days)</p>
+                        <p className="text-sm text-muted-foreground">FCRA violation - escalate</p>
+                      </div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            {/* Generate Letters Tab */}
+            <TabsContent value="generate" className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="font-serif flex items-center gap-2">
+                    <FileText className="w-5 h-5 text-primary" />
+                    Generate Next-Step Letters
+                  </CardTitle>
+                  <CardDescription>
+                    Based on case status and scenario classification, generate the appropriate follow-up letters and complaints.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {cases.filter((c) => c.status !== "deleted" && c.status !== "pending").length === 0 ? (
+                    <div className="text-center py-8">
+                      <FileText className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                      <p className="text-muted-foreground">
+                        No cases require follow-up letters yet. Update case statuses to generate appropriate next steps.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {cases
+                        .filter((c) => c.status !== "deleted" && c.status !== "pending")
+                        .map((c) => (
+                          <div key={c.id} className="flex items-center justify-between p-4 rounded-lg bg-muted/50">
+                            <div>
+                              <div className="flex items-center gap-2 mb-1">
+                                <Badge variant="outline">{c.bureau}</Badge>
+                                <Badge className={statusConfig[c.status].color}>
+                                  {statusConfig[c.status].label}
+                                </Badge>
+                              </div>
+                              <p className="font-medium">{c.accountName}</p>
+                              <p className="text-sm text-muted-foreground">
+                                {c.status === "no_response" && "→ Generate FCRA violation letter"}
+                                {c.status === "verified" && "→ Generate CFPB complaint + MoV demand"}
+                                {c.status === "partial" && "→ Generate follow-up MoV demand"}
+                                {c.status === "frivolous" && "→ Generate appeal with documentation"}
+                                {c.status === "reinsertion" && "→ Generate reinsertion violation letter"}
+                              </p>
+                            </div>
+                            <Button variant="outline" className="border-primary/30 hover:border-primary/60">
+                              <Download className="w-4 h-4 mr-2" />
+                              Generate
+                            </Button>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+          </Tabs>
+        </div>
+      </section>
+
+      <Footer />
+    </main>
+  );
+};
+
+export default Disputes;
