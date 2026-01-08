@@ -14,6 +14,8 @@ const ResetPassword = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
+  const [isCheckingLink, setIsCheckingLink] = useState(true);
+  const [hasRecoverySession, setHasRecoverySession] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -29,14 +31,57 @@ const ResetPassword = () => {
   const canSubmit = isPasswordStrong && passwordsMatch;
 
   useEffect(() => {
-    // Check if we have the recovery token in the URL
-    const hashParams = new URLSearchParams(window.location.hash.substring(1));
-    const accessToken = hashParams.get("access_token");
-    const type = hashParams.get("type");
+    let cancelled = false;
 
-    if (type !== "recovery" || !accessToken) {
-      setError("Invalid or expired reset link. Please request a new one.");
-    }
+    const finalize = (ok: boolean, message?: string) => {
+      if (cancelled) return;
+      setHasRecoverySession(ok);
+      if (!ok) setError(message ?? "Invalid or expired reset link. Please request a new one.");
+      setIsCheckingLink(false);
+    };
+
+    const run = async () => {
+      try {
+        const url = new URL(window.location.href);
+        const code = url.searchParams.get("code");
+
+        const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+        const type = hashParams.get("type");
+        const accessToken = hashParams.get("access_token");
+        const refreshToken = hashParams.get("refresh_token");
+
+        // PKCE flow (most common for password recovery in modern setups)
+        if (code) {
+          const { error } = await supabase.auth.exchangeCodeForSession(code);
+          // Remove code from URL to prevent replays on refresh
+          url.searchParams.delete("code");
+          window.history.replaceState({}, document.title, url.pathname + (url.searchParams.toString() ? `?${url.searchParams.toString()}` : "") + url.hash);
+          if (error) throw error;
+        }
+
+        // Implicit flow (hash tokens)
+        if (!code && type === "recovery" && accessToken && refreshToken) {
+          const { error } = await supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken,
+          });
+          if (error) throw error;
+        }
+
+        // Whether the library detected the session automatically or via exchange/setSession,
+        // ensure we actually have a session before allowing password update.
+        const { data } = await supabase.auth.getSession();
+        finalize(!!data.session);
+      } catch {
+        finalize(false);
+      }
+    };
+
+    run();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -120,7 +165,20 @@ const ResetPassword = () => {
     );
   }
 
-  if (error && !password) {
+  if (isCheckingLink) {
+    return (
+      <div className="min-h-screen bg-background flex flex-col">
+        <main className="flex-1 flex items-center justify-center p-4">
+          <div className="w-full max-w-md text-center space-y-4">
+            <Loader2 className="w-8 h-8 animate-spin mx-auto text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">Validating reset link…</p>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  if (!hasRecoverySession) {
     return (
       <div className="min-h-screen bg-background flex flex-col">
         <header className="p-4">
@@ -142,7 +200,7 @@ const ResetPassword = () => {
               Invalid Reset Link
             </h1>
             <p className="text-muted-foreground">
-              {error}
+              {error ?? "Invalid or expired reset link. Please request a new one."}
             </p>
             <Button onClick={() => navigate("/auth")} variant="default">
               Request New Reset Link
