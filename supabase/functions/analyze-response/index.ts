@@ -421,8 +421,10 @@ Parse payment history grids/charts carefully for late payments.`;
       });
     }
 
-    // Use gemini-2.5-pro for complex multi-image analysis
-    const model = responseImages && responseImages.length > 1 ? "google/gemini-2.5-pro" : "google/gemini-2.5-flash";
+    // Model selection
+    // NOTE: Google provider is currently rejecting requests with "Budget 0" thinking-mode errors.
+    // Use an OpenAI multimodal model via Lovable AI gateway for stable image+text analysis.
+    const model = "openai/gpt-5-mini";
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
