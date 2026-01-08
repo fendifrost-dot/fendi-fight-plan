@@ -107,7 +107,8 @@ export function detectBureauFromText(text: string): 'experian' | 'equifax' | 'tr
 }
 
 /**
- * Extract text from first page of PDF for bureau detection
+ * Extract text from first few pages of PDF for bureau detection
+ * Multi-bureau reports often have cover pages, so we check first 3 pages
  */
 export async function extractTextFromPdf(file: File): Promise<string> {
   try {
@@ -115,14 +116,20 @@ export async function extractTextFromPdf(file: File): Promise<string> {
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
     
-    // Get first page text for detection
-    const page = await pdf.getPage(1);
-    const textContent = await page.getTextContent();
-    const text = textContent.items
-      .map((item: any) => item.str)
-      .join(' ');
+    // Extract text from first 3 pages (or fewer if doc is shorter)
+    const pagesToCheck = Math.min(pdf.numPages, 3);
+    const textParts: string[] = [];
     
-    return text;
+    for (let i = 1; i <= pagesToCheck; i++) {
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items
+        .map((item: any) => item.str)
+        .join(' ');
+      textParts.push(pageText);
+    }
+    
+    return textParts.join(' ');
   } catch {
     return '';
   }
