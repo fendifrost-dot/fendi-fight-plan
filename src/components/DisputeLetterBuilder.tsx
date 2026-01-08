@@ -1,5 +1,5 @@
-import { useState, useMemo } from "react";
-import { FileText, Loader2, Copy, Check, AlertTriangle, Scale, Shield, HelpCircle, User, MapPin, Building2, Pencil, Eye } from "lucide-react";
+import { useState, useMemo, useEffect, useCallback } from "react";
+import { FileText, Loader2, Copy, Check, AlertTriangle, Scale, Shield, HelpCircle, User, MapPin, Building2, Pencil, Eye, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -14,6 +14,9 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+
+// Storage key for persistence
+const STORAGE_KEY = "dispute_letter_builder_state";
 
 // HARDCODED BUREAU DATA (NON-NEGOTIABLE)
 const BUREAU_DATA = {
@@ -79,6 +82,15 @@ interface ExtractedData {
   publicRecords: { type: string; court_jurisdiction: string; filing_date: string; status: string; source?: string }[];
 }
 
+// Persisted state interface
+interface PersistedState {
+  consumerInfo: ConsumerInfo;
+  selectedBureaus: BureauKey[];
+  survey: DisputeSurvey;
+  generatedLetters: { bureau: BureauKey; letter: string }[];
+  timestamp: number;
+}
+
 interface DisputeLetterBuilderProps {
   extractedData: ExtractedData;
   accessToken: string;
@@ -140,6 +152,33 @@ const surveyQuestions = [
   },
 ];
 
+// Helper to load persisted state from localStorage
+const loadPersistedState = (): PersistedState | null => {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (!stored) return null;
+    const parsed = JSON.parse(stored) as PersistedState;
+    // Check if data is less than 24 hours old
+    if (Date.now() - parsed.timestamp > 24 * 60 * 60 * 1000) {
+      localStorage.removeItem(STORAGE_KEY);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+// Helper to save state to localStorage
+const savePersistedState = (state: Omit<PersistedState, 'timestamp'>) => {
+  try {
+    const toSave: PersistedState = { ...state, timestamp: Date.now() };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+  } catch {
+    // Silently fail if storage is full or unavailable
+  }
+};
+
 const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuilderProps) => {
   const { toast } = useToast();
 
@@ -158,37 +197,93 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
 
   const parsedAddr = parseAddress(extractedData.currentAddress || '');
 
-  // Consumer info state - pre-populated from extracted data
-  const [consumerInfo, setConsumerInfo] = useState<ConsumerInfo>({
-    fullName: extractedData.fullLegalName || '',
-    addressLine1: parsedAddr.line1,
-    addressLine2: '',
-    cityStateZip: parsedAddr.cityStateZip,
+  // Load persisted state on initial render
+  const persistedState = useMemo(() => loadPersistedState(), []);
+
+  // Consumer info state - prefer persisted, then extracted data
+  const [consumerInfo, setConsumerInfo] = useState<ConsumerInfo>(() => {
+    if (persistedState?.consumerInfo) return persistedState.consumerInfo;
+    return {
+      fullName: extractedData.fullLegalName || '',
+      addressLine1: parsedAddr.line1,
+      addressLine2: '',
+      cityStateZip: parsedAddr.cityStateZip,
+    };
   });
 
-  // Bureau selection
-  const [selectedBureaus, setSelectedBureaus] = useState<BureauKey[]>([]);
+  // Bureau selection - prefer persisted
+  const [selectedBureaus, setSelectedBureaus] = useState<BureauKey[]>(
+    () => persistedState?.selectedBureaus || []
+  );
 
-  const [survey, setSurvey] = useState<DisputeSurvey>({
-    isFraudulent: false,
-    isIdentityTheft: false,
-    hasPoliceReport: false,
-    hasFtcReport: false,
-    wasDataBreach: false,
-    wasReinserted: false,
-    reinsertedDetails: "",
-    hadCreditorRelationship: false,
-    belongsToAnotherPerson: false,
-    hasPersonalInfoErrors: false,
-    hasPreviousDisputes: false,
-    additionalFacts: "",
+  const [survey, setSurvey] = useState<DisputeSurvey>(() => {
+    if (persistedState?.survey) return persistedState.survey;
+    return {
+      isFraudulent: false,
+      isIdentityTheft: false,
+      hasPoliceReport: false,
+      hasFtcReport: false,
+      wasDataBreach: false,
+      wasReinserted: false,
+      reinsertedDetails: "",
+      hadCreditorRelationship: false,
+      belongsToAnotherPerson: false,
+      hasPersonalInfoErrors: false,
+      hasPreviousDisputes: false,
+      additionalFacts: "",
+    };
   });
 
   const [isGenerating, setIsGenerating] = useState(false);
-  const [generatedLetters, setGeneratedLetters] = useState<{ bureau: BureauKey; letter: string }[]>([]);
+  const [generatedLetters, setGeneratedLetters] = useState<{ bureau: BureauKey; letter: string }[]>(
+    () => persistedState?.generatedLetters || []
+  );
   const [error, setError] = useState<string | null>(null);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
+
+  // Auto-save state to localStorage on every change
+  useEffect(() => {
+    savePersistedState({
+      consumerInfo,
+      selectedBureaus,
+      survey,
+      generatedLetters,
+    });
+  }, [consumerInfo, selectedBureaus, survey, generatedLetters]);
+
+  // Clear persisted state
+  const clearSession = useCallback(() => {
+    localStorage.removeItem(STORAGE_KEY);
+    setConsumerInfo({
+      fullName: extractedData.fullLegalName || '',
+      addressLine1: parsedAddr.line1,
+      addressLine2: '',
+      cityStateZip: parsedAddr.cityStateZip,
+    });
+    setSelectedBureaus([]);
+    setSurvey({
+      isFraudulent: false,
+      isIdentityTheft: false,
+      hasPoliceReport: false,
+      hasFtcReport: false,
+      wasDataBreach: false,
+      wasReinserted: false,
+      reinsertedDetails: "",
+      hadCreditorRelationship: false,
+      belongsToAnotherPerson: false,
+      hasPersonalInfoErrors: false,
+      hasPreviousDisputes: false,
+      additionalFacts: "",
+    });
+    setGeneratedLetters([]);
+    setError(null);
+    setEditingIndex(null);
+    toast({
+      title: "Session cleared",
+      description: "All inputs and generated letters have been reset.",
+    });
+  }, [extractedData.fullLegalName, parsedAddr.line1, parsedAddr.cityStateZip, toast]);
 
   const updateConsumerInfo = <K extends keyof ConsumerInfo>(key: K, value: string) => {
     setConsumerInfo(prev => ({ ...prev, [key]: value }));
@@ -382,6 +477,21 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
             />
           </div>
         </div>
+
+        {/* Clear Session Button */}
+        {(generatedLetters.length > 0 || selectedBureaus.length > 0) && (
+          <div className="mt-6 pt-4 border-t border-border/50">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={clearSession}
+              className="text-muted-foreground hover:text-destructive"
+            >
+              <RotateCcw className="w-4 h-4 mr-2" />
+              Clear Session & Start Over
+            </Button>
+          </div>
+        )}
       </div>
 
       {/* Step 2: Bureau Selection */}
