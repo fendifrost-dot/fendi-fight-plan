@@ -1,4 +1,5 @@
 import { Suspense, lazy } from "react";
+import AppNavigation from "@/components/AppNavigation";
 import HeroSection from "@/components/HeroSection";
 import SystemGuide from "@/components/SystemGuide";
 import TemplateSection from "@/components/TemplateSection";
@@ -20,6 +21,7 @@ const AnalyzerFallback = () => (
 const Index = () => {
   return (
     <main className="min-h-screen bg-background">
+      <AppNavigation />
       <HeroSection />
       <SystemGuide />
       <Suspense fallback={<AnalyzerFallback />}>
