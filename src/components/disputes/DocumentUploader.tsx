@@ -104,6 +104,7 @@ export function DocumentUploader({
       uploadedAt: new Date().toISOString(),
       processingStatus: "complete",
       relativePath,
+      file, // Include the actual File object for analysis
     };
 
     onAddDocument(newDoc);
