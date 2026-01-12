@@ -37,6 +37,7 @@ export interface UploadedDocument {
   type: DocumentClassification;
   size: number;
   mimeType: string;
+  file?: File; // Original file object for processing
   extractedText?: string;
   pageCount?: number;
   uploadedAt: string;
@@ -65,10 +66,11 @@ export interface DisputeAccount {
 }
 
 export interface AccountStatus {
-  status: "current" | "closed" | "late" | "charge_off" | "collection" | "unknown";
+  status: "current" | "closed" | "late" | "charge_off" | "collection" | "unknown" | string;
   balance?: string;
   remarks?: string;
   lastReported?: string;
+  reported?: boolean;
 }
 
 // Bureau response analysis result
