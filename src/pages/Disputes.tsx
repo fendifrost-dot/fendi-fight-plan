@@ -1,5 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
-import mammoth from "mammoth";
+import { useState, useEffect, useCallback } from "react";
 import AppNavigation from "@/components/AppNavigation";
 import Footer from "@/components/Footer";
 import { Button } from "@/components/ui/button";
@@ -17,8 +16,6 @@ import {
   Download,
   Scale,
   Import,
-  File,
-  X,
   Lock,
   ChevronRight,
   Shield,
@@ -28,7 +25,8 @@ import {
   Pencil,
   Eye,
   FileCheck,
-  HelpCircle
+  HelpCircle,
+  RotateCcw
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -40,158 +38,34 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-const DISPUTES_STORAGE_KEY = "dispute-engine-state-v2";
+// New System B components
+import { DocumentUploader } from "@/components/disputes/DocumentUploader";
+import { AccountReviewTable } from "@/components/disputes/AccountReviewTable";
+import { ProcessingProgress } from "@/components/disputes/ProcessingProgress";
 
-// Bureau data
-const BUREAU_DATA = {
-  experian: {
-    legalName: "Experian Information Solutions, Inc.",
-    address: "P.O. Box 4500",
-    cityStateZip: "Allen, TX 75013",
-  },
-  equifax: {
-    legalName: "Equifax Information Services LLC",
-    address: "P.O. Box 740256",
-    cityStateZip: "Atlanta, GA 30374",
-  },
-  transunion: {
-    legalName: "TransUnion LLC",
-    address: "P.O. Box 2000",
-    cityStateZip: "Chester, PA 19016",
-  },
-} as const;
+// System B Types
+import type {
+  BureauKey,
+  UploadedDocument,
+  DisputeAccount,
+  AnalysisResult,
+  OutcomeConfirmation,
+  DisputeSurvey,
+  ConsumerInfo,
+  ProcessingProgress as ProgressType,
+  DisputeSession,
+} from "@/types/disputes";
 
-type BureauKey = keyof typeof BUREAU_DATA;
+import {
+  BUREAU_DATA,
+  defaultOutcomeConfirmation,
+  defaultSurvey,
+  defaultConsumerInfo,
+  defaultProcessingProgress,
+  createDefaultSession,
+} from "@/types/disputes";
 
-// Analysis result from AI
-interface AnalysisResult {
-  bureau: BureauKey;
-  outcome: "verified" | "partial" | "deleted" | "no_response" | "frivolous" | "reinsertion";
-  itemsVerified: string[];
-  itemsDeleted: string[];
-  legalImplications: string[];
-  nextSteps: string[];
-  rawSummary: string;
-}
-
-// Outcome confirmation answers
-interface OutcomeConfirmation {
-  receivedResponse: boolean | null;
-  responseWithin30Days: boolean | null;
-  allItemsAddressed: boolean | null;
-  anyReinsertions: boolean | null;
-  notes: string;
-}
-
-// Survey answers (from DisputeLetterBuilder)
-interface DisputeSurvey {
-  isFraudulent: boolean;
-  isIdentityTheft: boolean;
-  hasPoliceReport: boolean;
-  hasFtcReport: boolean;
-  wasDataBreach: boolean;
-  wasReinserted: boolean;
-  reinsertedDetails: string;
-  hadCreditorRelationship: boolean;
-  belongsToAnotherPerson: boolean;
-  hasPersonalInfoErrors: boolean;
-  hasPreviousDisputes: boolean;
-  additionalFacts: string;
-}
-
-// Consumer info
-interface ConsumerInfo {
-  fullName: string;
-  addressLine1: string;
-  addressLine2: string;
-  cityStateZip: string;
-}
-
-// Uploaded file reference
-interface UploadedFile {
-  id: string;
-  name: string;
-  type: "bureau_response" | "prior_letter" | "supporting_doc";
-  size: number;
-  extractedText?: string;
-}
-
-// Persisted state
-interface PersistedState {
-  // Section 1: Evidence
-  bureauResponseFiles: UploadedFile[];
-  bureauResponseText: string;
-  priorLetterFiles: UploadedFile[];
-  priorLetterText: string;
-  supportingDocFiles: UploadedFile[];
-  
-  // Section 2: Analysis
-  analysisResult: AnalysisResult | null;
-  isAnalyzed: boolean;
-  
-  // Section 3: Outcome Confirmation
-  outcomeConfirmation: OutcomeConfirmation;
-  
-  // Section 4: Legal Survey
-  survey: DisputeSurvey;
-  
-  // Section 5 & 6: Generated Letter
-  selectedBureau: BureauKey | null;
-  generatedLetter: string;
-  consumerInfo: ConsumerInfo;
-  
-  // Imported data
-  importedAnalyzerData: any | null;
-  
-  lastUpdated: string;
-}
-
-const defaultOutcomeConfirmation: OutcomeConfirmation = {
-  receivedResponse: null,
-  responseWithin30Days: null,
-  allItemsAddressed: null,
-  anyReinsertions: null,
-  notes: "",
-};
-
-const defaultSurvey: DisputeSurvey = {
-  isFraudulent: false,
-  isIdentityTheft: false,
-  hasPoliceReport: false,
-  hasFtcReport: false,
-  wasDataBreach: false,
-  wasReinserted: false,
-  reinsertedDetails: "",
-  hadCreditorRelationship: false,
-  belongsToAnotherPerson: false,
-  hasPersonalInfoErrors: false,
-  hasPreviousDisputes: false,
-  additionalFacts: "",
-};
-
-const defaultConsumerInfo: ConsumerInfo = {
-  fullName: "",
-  addressLine1: "",
-  addressLine2: "",
-  cityStateZip: "",
-};
-
-const getDefaultState = (): PersistedState => ({
-  bureauResponseFiles: [],
-  bureauResponseText: "",
-  priorLetterFiles: [],
-  priorLetterText: "",
-  supportingDocFiles: [],
-  analysisResult: null,
-  isAnalyzed: false,
-  outcomeConfirmation: defaultOutcomeConfirmation,
-  survey: defaultSurvey,
-  selectedBureau: null,
-  generatedLetter: "",
-  consumerInfo: defaultConsumerInfo,
-  importedAnalyzerData: null,
-  lastUpdated: new Date().toISOString(),
-});
+const DISPUTES_STORAGE_KEY = "dispute-engine-state-v3";
 
 // Survey questions configuration
 const surveyQuestions = [
@@ -250,149 +124,6 @@ const surveyQuestions = [
   },
 ];
 
-// ============= UPLOAD COMPONENTS =============
-
-interface FileDropzoneProps {
-  onFileSelect: (file: File, extractedText?: string) => void;
-  accept: string;
-  label: string;
-  description: string;
-  icon: React.ReactNode;
-  disabled?: boolean;
-  extractText?: boolean;
-}
-
-const FileDropzone = ({ onFileSelect, accept, label, description, icon, disabled, extractText }: FileDropzoneProps) => {
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [isDragging, setIsDragging] = useState(false);
-  const [isExtracting, setIsExtracting] = useState(false);
-
-  const handleClick = () => {
-    if (!disabled) fileInputRef.current?.click();
-  };
-
-  const processFile = async (file: File) => {
-    if (extractText && (file.name.endsWith('.docx') || file.name.endsWith('.txt'))) {
-      setIsExtracting(true);
-      try {
-        let text = "";
-        if (file.name.endsWith('.txt')) {
-          text = await file.text();
-        } else if (file.name.endsWith('.docx')) {
-          const arrayBuffer = await file.arrayBuffer();
-          const result = await mammoth.extractRawText({ arrayBuffer });
-          text = result.value;
-        }
-        onFileSelect(file, text);
-      } catch (err) {
-        console.error("Text extraction error:", err);
-        onFileSelect(file);
-        toast.error("Could not extract text. Paste content manually.");
-      } finally {
-        setIsExtracting(false);
-      }
-    } else {
-      onFileSelect(file);
-    }
-  };
-
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      if (file.size > 10 * 1024 * 1024) {
-        toast.error("File size exceeds 10MB limit.");
-        return;
-      }
-      await processFile(file);
-    }
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  };
-
-  const handleDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    if (disabled) return;
-    const file = e.dataTransfer.files?.[0];
-    if (file) {
-      if (file.size > 10 * 1024 * 1024) {
-        toast.error("File size exceeds 10MB limit.");
-        return;
-      }
-      await processFile(file);
-    }
-  };
-
-  return (
-    <div
-      onClick={handleClick}
-      onDragOver={(e) => { e.preventDefault(); if (!disabled) setIsDragging(true); }}
-      onDragLeave={(e) => { e.preventDefault(); setIsDragging(false); }}
-      onDrop={handleDrop}
-      role="button"
-      tabIndex={disabled ? -1 : 0}
-      aria-label={label}
-      onKeyDown={(e) => e.key === 'Enter' && !disabled && handleClick()}
-      className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
-        disabled 
-          ? 'opacity-50 cursor-not-allowed border-border/50' 
-          : isDragging 
-            ? 'border-primary bg-primary/5 cursor-pointer' 
-            : 'border-border hover:border-primary/50 cursor-pointer'
-      }`}
-    >
-      {isExtracting ? (
-        <Loader2 className="w-8 h-8 mx-auto text-primary animate-spin mb-3" />
-      ) : (
-        <div className="w-8 h-8 mx-auto text-muted-foreground mb-3">{icon}</div>
-      )}
-      <p className="text-sm text-muted-foreground mb-2">{label}</p>
-      <Button type="button" variant="outline" size="sm" disabled={disabled || isExtracting} onClick={(e) => { e.stopPropagation(); handleClick(); }}>
-        {isExtracting ? "Extracting..." : "Choose File"}
-      </Button>
-      <p className="text-xs text-muted-foreground mt-2">{description}</p>
-      <input
-        ref={fileInputRef}
-        type="file"
-        className="hidden"
-        accept={accept}
-        onChange={handleFileChange}
-        disabled={disabled}
-      />
-    </div>
-  );
-};
-
-interface FileListProps {
-  files: UploadedFile[];
-  onRemove: (id: string) => void;
-  disabled?: boolean;
-}
-
-const FileList = ({ files, onRemove, disabled }: FileListProps) => {
-  if (files.length === 0) return null;
-  
-  return (
-    <div className="space-y-2 mt-3">
-      {files.map((f) => (
-        <div key={f.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border border-border">
-          <div className="flex items-center gap-3">
-            {disabled ? <Lock className="w-4 h-4 text-muted-foreground" /> : <File className="w-4 h-4 text-primary" />}
-            <div>
-              <p className="text-sm font-medium">{f.name}</p>
-              <p className="text-xs text-muted-foreground">{(f.size / 1024 / 1024).toFixed(2)} MB</p>
-            </div>
-          </div>
-          {!disabled && (
-            <Button variant="ghost" size="sm" onClick={() => onRemove(f.id)} className="text-muted-foreground hover:text-destructive">
-              <X className="w-4 h-4" />
-            </Button>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-};
-
 // ============= SECTION COMPONENTS =============
 
 interface SectionHeaderProps {
@@ -428,11 +159,11 @@ const SectionHeader = ({ number, title, icon, unlocked, completed }: SectionHead
 
 const Disputes = () => {
   const [session, setSession] = useState<Session | null>(null);
-  const [state, setState] = useState<PersistedState>(getDefaultState);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [state, setState] = useState<DisputeSession>(createDefaultSession);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [currentBureauLetter, setCurrentBureauLetter] = useState<BureauKey>("experian");
 
   // Auth
   useEffect(() => {
@@ -446,7 +177,7 @@ const Disputes = () => {
     try {
       const saved = localStorage.getItem(DISPUTES_STORAGE_KEY);
       if (saved) {
-        const parsed = JSON.parse(saved) as PersistedState;
+        const parsed = JSON.parse(saved) as DisputeSession;
         setState(parsed);
       }
     } catch (e) {
@@ -456,7 +187,7 @@ const Disputes = () => {
 
   // Auto-save state
   useEffect(() => {
-    const toSave = { ...state, lastUpdated: new Date().toISOString() };
+    const toSave = { ...state, updatedAt: new Date().toISOString() };
     localStorage.setItem(DISPUTES_STORAGE_KEY, JSON.stringify(toSave));
   }, [state]);
 
@@ -467,24 +198,27 @@ const Disputes = () => {
       setState(prev => ({
         ...prev,
         consumerInfo: {
-          fullName: data.fullLegalName || "",
-          addressLine1: data.currentAddress?.split(',')[0] || "",
+          fullName: data.questionnaire?.fullLegalName || data.fullLegalName || "",
+          addressLine1: (data.questionnaire?.currentAddress || data.currentAddress)?.split(',')[0] || "",
           addressLine2: "",
-          cityStateZip: data.currentAddress?.split(',').slice(1).join(',').trim() || "",
+          cityStateZip: (data.questionnaire?.currentAddress || data.currentAddress)?.split(',').slice(1).join(',').trim() || "",
         }
       }));
     }
   }, [state.importedAnalyzerData, state.consumerInfo.fullName]);
 
   // ============= STATE CHECKS =============
-  const hasEvidence = state.bureauResponseFiles.length > 0 || state.bureauResponseText.trim().length > 0;
+  const hasDocuments = state.documents.length > 0 || state.bureauResponseText.trim().length > 0;
   const isEvidenceLocked = state.isAnalyzed;
-  const canAnalyze = hasEvidence && !state.isAnalyzed;
+  const canAnalyze = hasDocuments && !state.isAnalyzed && state.processingProgress.phase === "idle";
+  const isProcessing = !["idle", "complete", "error"].includes(state.processingProgress.phase);
+  const canShowReview = state.isAnalyzed && state.accounts.length > 0;
+  const hasSelectedAccounts = state.accounts.some(a => a.isSelected);
   const canConfirmOutcome = state.isAnalyzed;
   const isOutcomeConfirmed = state.outcomeConfirmation.receivedResponse !== null;
   const canShowSurvey = isOutcomeConfirmed;
-  const canGenerate = canShowSurvey && state.selectedBureau && state.consumerInfo.fullName.trim();
-  const hasGeneratedLetter = state.generatedLetter.length > 0;
+  const canGenerate = canShowSurvey && state.selectedBureaus.length > 0 && state.consumerInfo.fullName.trim() && hasSelectedAccounts;
+  const hasGeneratedLetter = Object.values(state.generatedLetters).some(l => l.length > 0);
 
   // ============= HANDLERS =============
 
@@ -516,41 +250,29 @@ const Disputes = () => {
     }
   };
 
-  const addFile = (type: "bureau_response" | "prior_letter" | "supporting_doc", file: File, extractedText?: string) => {
-    const newFile: UploadedFile = {
-      id: crypto.randomUUID(),
-      name: file.name,
-      type,
-      size: file.size,
-      extractedText,
-    };
-    
-    setState(prev => {
-      if (type === "bureau_response") {
-        return { ...prev, bureauResponseFiles: [...prev.bureauResponseFiles, newFile] };
-      } else if (type === "prior_letter") {
-        return { 
-          ...prev, 
-          priorLetterFiles: [...prev.priorLetterFiles, newFile],
-          priorLetterText: extractedText || prev.priorLetterText,
-        };
-      } else {
-        return { ...prev, supportingDocFiles: [...prev.supportingDocFiles, newFile] };
-      }
-    });
-    toast.success(`${file.name} added.`);
+  const handleAddDocument = (doc: UploadedDocument) => {
+    setState(prev => ({
+      ...prev,
+      documents: [...prev.documents, doc],
+    }));
   };
 
-  const removeFile = (type: "bureau_response" | "prior_letter" | "supporting_doc", id: string) => {
-    setState(prev => {
-      if (type === "bureau_response") {
-        return { ...prev, bureauResponseFiles: prev.bureauResponseFiles.filter(f => f.id !== id) };
-      } else if (type === "prior_letter") {
-        return { ...prev, priorLetterFiles: prev.priorLetterFiles.filter(f => f.id !== id) };
-      } else {
-        return { ...prev, supportingDocFiles: prev.supportingDocFiles.filter(f => f.id !== id) };
-      }
-    });
+  const handleRemoveDocument = (id: string) => {
+    setState(prev => ({
+      ...prev,
+      documents: prev.documents.filter(d => d.id !== id),
+    }));
+  };
+
+  const handleExtractedText = (docId: string, text: string) => {
+    // Check if it's a prior dispute doc
+    const doc = state.documents.find(d => d.id === docId);
+    if (doc?.type === "prior_dispute") {
+      setState(prev => ({
+        ...prev,
+        priorLetterText: prev.priorLetterText + "\n\n" + text,
+      }));
+    }
   };
 
   const handleAnalyze = async () => {
@@ -559,49 +281,146 @@ const Disputes = () => {
       return;
     }
 
-    setIsAnalyzing(true);
+    // Update progress
+    setState(prev => ({
+      ...prev,
+      processingProgress: {
+        ...prev.processingProgress,
+        phase: "classifying",
+        currentStep: "Sending to AI for classification...",
+        totalSteps: 1,
+        completedSteps: 0,
+        message: "Analyzing documents...",
+      },
+    }));
 
     try {
-      // For now, simulate analysis - this would call an edge function
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Gather all extracted text from bureau response documents
+      const bureauResponseDocs = state.documents.filter(d => d.type === "bureau_response");
+      const priorDisputeDocs = state.documents.filter(d => d.type === "prior_dispute");
       
-      // Mock analysis result
-      const mockResult: AnalysisResult = {
-        bureau: "experian",
-        outcome: "verified",
-        itemsVerified: ["Capital One Visa - Late payment verified"],
-        itemsDeleted: [],
-        legalImplications: [
-          "Bureau claims verification but may not have obtained Method of Verification (MoV)",
-          "FCRA §611(a)(6) requires bureaus to provide MoV upon request",
-          "Failure to investigate properly is a willful violation under §616",
-        ],
-        nextSteps: [
-          "Demand Method of Verification (MoV) from the bureau",
-          "If MoV not provided within 15 days, file CFPB complaint",
-          "Consider BBB complaint and State Attorney General escalation",
-        ],
-        rawSummary: "The bureau has verified the disputed item without providing adequate proof of investigation. This is a common tactic. Demand the Method of Verification to expose procedural failures.",
+      const bureauText = bureauResponseDocs
+        .map(d => d.extractedText || "")
+        .filter(t => t.length > 0)
+        .join("\n\n---\n\n");
+      
+      const priorText = priorDisputeDocs
+        .map(d => d.extractedText || "")
+        .filter(t => t.length > 0)
+        .join("\n\n---\n\n") || state.priorLetterText;
+
+      // If no extracted text from files, use the manual text input
+      const combinedBureauText = bureauText || state.bureauResponseText;
+
+      if (!combinedBureauText.trim()) {
+        toast.error("No text content to analyze. Please upload PDFs with text or paste content manually.");
+        setState(prev => ({
+          ...prev,
+          processingProgress: { ...defaultProcessingProgress, phase: "error", message: "No text content to analyze." },
+        }));
+        return;
+      }
+
+      // Call the classify-documents edge function
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/classify-documents`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          bureauResponseText: combinedBureauText,
+          priorLetterText: priorText,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Analysis failed");
+      }
+
+      // Map the response to our types
+      const accounts: DisputeAccount[] = (data.accounts || []).map((acc: any) => ({
+        id: acc.id || crypto.randomUUID(),
+        maskedAccountNumber: acc.maskedAccountNumber || "Unknown",
+        creditorName: acc.creditorName || "Unknown Creditor",
+        dateOpened: acc.dateOpened,
+        bureauStatuses: acc.bureauStatuses || {},
+        isSelected: false,
+        disputeReason: undefined,
+        customReason: undefined,
+        sourceFile: bureauResponseDocs[0]?.name,
+        confidence: acc.confidence || 0.8,
+      }));
+
+      const analysisResult: AnalysisResult = {
+        bureau: data.bureauMode || "experian",
+        outcome: data.outcome || "verified",
+        itemsVerified: data.itemsVerified || [],
+        itemsDeleted: data.itemsDeleted || [],
+        itemsPartial: data.itemsPartial || [],
+        legalImplications: data.legalImplications || [],
+        nextSteps: data.nextSteps || [],
+        rawSummary: data.summary || "Analysis complete.",
+        accounts,
       };
 
       setState(prev => ({
         ...prev,
-        analysisResult: mockResult,
+        analysisResult,
+        accounts,
         isAnalyzed: true,
-        selectedBureau: mockResult.bureau,
+        selectedBureaus: data.bureauMode === "multi-bureau" 
+          ? ["experian", "equifax", "transunion"] 
+          : [data.bureauMode || "experian"],
+        processingProgress: {
+          phase: "complete",
+          currentStep: "",
+          totalSteps: 1,
+          completedSteps: 1,
+          failedChunks: [],
+          message: `Found ${accounts.length} account(s). Review and select items to dispute.`,
+        },
       }));
 
       toast.success("Response analyzed. Review findings below.");
     } catch (err) {
-      toast.error("Analysis failed. Please try again.");
-    } finally {
-      setIsAnalyzing(false);
+      console.error("Analysis error:", err);
+      setState(prev => ({
+        ...prev,
+        processingProgress: {
+          phase: "error",
+          currentStep: "",
+          totalSteps: 0,
+          completedSteps: 0,
+          failedChunks: [],
+          message: err instanceof Error ? err.message : "Analysis failed. Please try again.",
+        },
+      }));
+      toast.error(err instanceof Error ? err.message : "Analysis failed.");
     }
   };
 
+  const handleAccountChange = (id: string, changes: Partial<DisputeAccount>) => {
+    setState(prev => ({
+      ...prev,
+      accounts: prev.accounts.map(acc => 
+        acc.id === id ? { ...acc, ...changes } : acc
+      ),
+    }));
+  };
+
+  const handleSelectAllAccounts = (selected: boolean) => {
+    setState(prev => ({
+      ...prev,
+      accounts: prev.accounts.map(acc => ({ ...acc, isSelected: selected })),
+    }));
+  };
+
   const handleGenerateLetter = async () => {
-    if (!session?.access_token || !state.selectedBureau) {
-      toast.error("Please log in and select a bureau.");
+    if (!session?.access_token || state.selectedBureaus.length === 0) {
+      toast.error("Please log in and select at least one bureau.");
       return;
     }
 
@@ -610,53 +429,74 @@ const Disputes = () => {
       return;
     }
 
+    const selectedAccounts = state.accounts.filter(a => a.isSelected);
+    if (selectedAccounts.length === 0) {
+      toast.error("Please select at least one account to dispute.");
+      return;
+    }
+
     setIsGenerating(true);
 
     try {
-      const bureau = BUREAU_DATA[state.selectedBureau];
-      
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-dispute-letter`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          survey: state.survey,
-          extractedData: state.importedAnalyzerData?.analysisResults || {
-            inaccurateNames: [],
-            inaccurateAddresses: [],
-            derogatoryAccounts: state.analysisResult?.itemsVerified.map(item => ({
-              creditor_name: item.split(' - ')[0],
-              account_number: "Unknown",
-              date_opened: "Unknown",
-              derogatory_triggers: [item.split(' - ')[1] || "Disputed item"],
-            })) || [],
-            inquiries: [],
-            collections: [],
-            chargeOffs: [],
-            publicRecords: [],
-          },
-          consumerInfo: state.consumerInfo,
-          bureau: {
-            key: state.selectedBureau,
-            legalName: bureau.legalName,
-            address: bureau.address,
-            cityStateZip: bureau.cityStateZip,
-          },
-          analysisContext: state.analysisResult,
-          priorLetterText: state.priorLetterText,
-        }),
-      });
+      const newLetters: Record<BureauKey, string> = { ...state.generatedLetters };
 
-      const data = await response.json();
+      // Generate a letter for each selected bureau
+      for (const bureauKey of state.selectedBureaus) {
+        const bureau = BUREAU_DATA[bureauKey];
+        
+        const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-dispute-letter`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            survey: state.survey,
+            extractedData: state.importedAnalyzerData?.analysisResults || {
+              inaccurateNames: [],
+              inaccurateAddresses: [],
+              derogatoryAccounts: selectedAccounts.map(acc => ({
+                creditor_name: acc.creditorName,
+                account_number: acc.maskedAccountNumber,
+                date_opened: acc.dateOpened || "Unknown",
+                derogatory_triggers: [acc.disputeReason || "Disputed item"],
+              })),
+              inquiries: [],
+              collections: [],
+              chargeOffs: [],
+              publicRecords: [],
+            },
+            consumerInfo: state.consumerInfo,
+            bureau: {
+              key: bureauKey,
+              legalName: bureau.legalName,
+              address: bureau.address,
+              cityStateZip: bureau.cityStateZip,
+            },
+            analysisContext: state.analysisResult,
+            priorLetterText: state.priorLetterText,
+            selectedAccounts: selectedAccounts.map(acc => ({
+              creditorName: acc.creditorName,
+              maskedAccountNumber: acc.maskedAccountNumber,
+              disputeReason: acc.disputeReason,
+              customReason: acc.customReason,
+              bureauStatus: acc.bureauStatuses[bureauKey],
+            })),
+          }),
+        });
 
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to generate letter");
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || `Failed to generate letter for ${bureauKey}`);
+        }
+
+        newLetters[bureauKey] = data.letter;
       }
 
-      setState(prev => ({ ...prev, generatedLetter: data.letter }));
-      toast.success("Letter generated successfully!");
+      setState(prev => ({ ...prev, generatedLetters: newLetters }));
+      setCurrentBureauLetter(state.selectedBureaus[0]);
+      toast.success(`Generated ${state.selectedBureaus.length} letter(s) successfully!`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Generation failed.");
     } finally {
@@ -665,16 +505,19 @@ const Disputes = () => {
   };
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(state.generatedLetter);
-    setCopied(true);
-    toast.success("Letter copied to clipboard");
-    setTimeout(() => setCopied(false), 2000);
+    const letter = state.generatedLetters[currentBureauLetter];
+    if (letter) {
+      await navigator.clipboard.writeText(letter);
+      setCopied(true);
+      toast.success("Letter copied to clipboard");
+      setTimeout(() => setCopied(false), 2000);
+    }
   };
 
   const handleReset = () => {
     if (confirm("Reset all data and start over?")) {
       localStorage.removeItem(DISPUTES_STORAGE_KEY);
-      setState(getDefaultState());
+      setState(createDefaultSession());
       toast.success("Engine reset.");
     }
   };
@@ -697,6 +540,15 @@ const Disputes = () => {
     setState(prev => ({
       ...prev,
       consumerInfo: { ...prev.consumerInfo, [key]: value }
+    }));
+  };
+
+  const toggleBureauSelection = (bureau: BureauKey) => {
+    setState(prev => ({
+      ...prev,
+      selectedBureaus: prev.selectedBureaus.includes(bureau)
+        ? prev.selectedBureaus.filter(b => b !== bureau)
+        : [...prev.selectedBureaus, bureau],
     }));
   };
 
@@ -730,6 +582,7 @@ const Disputes = () => {
                 </Badge>
               )}
               <Button variant="ghost" size="sm" onClick={handleReset} className="text-muted-foreground">
+                <RotateCcw className="w-4 h-4 mr-2" />
                 Reset
               </Button>
             </div>
@@ -757,89 +610,58 @@ const Disputes = () => {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
-                {/* Bureau Response */}
-                <div>
-                  <Label className="text-sm font-medium mb-2 block">Bureau Response(s)</Label>
-                  <FileDropzone
-                    onFileSelect={(file) => addFile("bureau_response", file)}
-                    accept=".pdf,.png,.jpg,.jpeg,.webp"
-                    label="Drop bureau response here or click to browse"
-                    description="PDF, PNG, JPG, WebP (max 10MB)"
-                    icon={<Upload className="w-8 h-8" />}
-                    disabled={isEvidenceLocked}
-                  />
-                  <FileList 
-                    files={state.bureauResponseFiles} 
-                    onRemove={(id) => removeFile("bureau_response", id)} 
-                    disabled={isEvidenceLocked}
-                  />
-                  {!isEvidenceLocked && (
-                    <div className="mt-3">
-                      <Label className="text-xs text-muted-foreground">Or paste response text</Label>
-                      <Textarea
-                        placeholder="Paste bureau response text..."
-                        value={state.bureauResponseText}
-                        onChange={(e) => setState(prev => ({ ...prev, bureauResponseText: e.target.value }))}
-                        rows={3}
-                        className="mt-1"
-                      />
-                    </div>
-                  )}
-                </div>
+                {/* Bureau Response Upload */}
+                <DocumentUploader
+                  documents={state.documents}
+                  onAddDocument={handleAddDocument}
+                  onRemoveDocument={handleRemoveDocument}
+                  onExtractedText={handleExtractedText}
+                  disabled={isEvidenceLocked}
+                  category="bureau_response"
+                />
 
-                {/* Prior Letter */}
-                <div>
-                  <Label className="text-sm font-medium mb-2 block">Prior Dispute Letter(s)</Label>
-                  <FileDropzone
-                    onFileSelect={(file, text) => addFile("prior_letter", file, text)}
-                    accept=".docx,.pdf,.txt"
-                    label="Drop prior letter here or click to browse"
-                    description="DOCX, PDF, TXT (max 10MB)"
-                    icon={<FileText className="w-8 h-8" />}
-                    disabled={isEvidenceLocked}
-                    extractText
-                  />
-                  <FileList 
-                    files={state.priorLetterFiles} 
-                    onRemove={(id) => removeFile("prior_letter", id)} 
-                    disabled={isEvidenceLocked}
-                  />
-                  {state.priorLetterText && (
-                    <div className="mt-3 p-3 rounded-lg bg-muted/30 border border-border">
-                      <p className="text-xs text-muted-foreground mb-1">Extracted Text:</p>
-                      <p className="text-sm line-clamp-3">{state.priorLetterText}</p>
-                    </div>
-                  )}
-                </div>
+                {/* Manual text paste for bureau response */}
+                {!isEvidenceLocked && (
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Or paste bureau response text</Label>
+                    <Textarea
+                      placeholder="Paste bureau response text..."
+                      value={state.bureauResponseText}
+                      onChange={(e) => setState(prev => ({ ...prev, bureauResponseText: e.target.value }))}
+                      rows={3}
+                      className="mt-1"
+                    />
+                  </div>
+                )}
 
-                {/* Supporting Docs */}
-                <div>
-                  <Label className="text-sm font-medium mb-2 block">Supporting Documents</Label>
-                  <FileDropzone
-                    onFileSelect={(file) => addFile("supporting_doc", file)}
-                    accept=".pdf,.png,.jpg,.jpeg,.webp,.docx,.txt"
-                    label="Drop supporting docs (ID, utility bill, FTC report)"
-                    description="Any format (max 10MB)"
-                    icon={<FileCheck className="w-8 h-8" />}
-                    disabled={isEvidenceLocked}
-                  />
-                  <FileList 
-                    files={state.supportingDocFiles} 
-                    onRemove={(id) => removeFile("supporting_doc", id)} 
-                    disabled={isEvidenceLocked}
-                  />
-                </div>
+                {/* Prior Letter Upload */}
+                <DocumentUploader
+                  documents={state.documents}
+                  onAddDocument={handleAddDocument}
+                  onRemoveDocument={handleRemoveDocument}
+                  onExtractedText={handleExtractedText}
+                  disabled={isEvidenceLocked}
+                  category="prior_dispute"
+                />
+
+                {/* Show extracted prior letter text */}
+                {state.priorLetterText && (
+                  <div className="p-3 rounded-lg bg-muted/30 border border-border">
+                    <p className="text-xs text-muted-foreground mb-1">Extracted Prior Letter Text:</p>
+                    <p className="text-sm line-clamp-3">{state.priorLetterText}</p>
+                  </div>
+                )}
               </CardContent>
             </Card>
 
             {/* SECTION 2: Bureau Response Analysis */}
-            <Card className={!hasEvidence ? "opacity-50" : state.isAnalyzed ? "border-green-500/30" : ""}>
+            <Card className={!hasDocuments ? "opacity-50" : state.isAnalyzed ? "border-green-500/30" : ""}>
               <CardHeader>
                 <SectionHeader 
                   number={2} 
                   title="Bureau Response Analysis" 
                   icon={<Scale className="w-5 h-5" />}
-                  unlocked={hasEvidence}
+                  unlocked={hasDocuments}
                   completed={state.isAnalyzed}
                 />
                 <CardDescription>
@@ -848,26 +670,30 @@ const Disputes = () => {
                     : "Analyze the bureau response to classify outcome and surface legal implications."}
                 </CardDescription>
               </CardHeader>
-              <CardContent>
-                {!state.isAnalyzed ? (
+              <CardContent className="space-y-4">
+                {/* Processing Progress */}
+                <ProcessingProgress 
+                  progress={state.processingProgress}
+                  onCancel={() => setState(prev => ({ 
+                    ...prev, 
+                    processingProgress: defaultProcessingProgress 
+                  }))}
+                />
+
+                {/* Analyze Button */}
+                {!state.isAnalyzed && state.processingProgress.phase === "idle" && (
                   <Button 
                     onClick={handleAnalyze} 
-                    disabled={!canAnalyze || isAnalyzing}
+                    disabled={!canAnalyze || isProcessing}
                     className="w-full"
                   >
-                    {isAnalyzing ? (
-                      <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        Analyzing Response...
-                      </>
-                    ) : (
-                      <>
-                        <ChevronRight className="w-4 h-4 mr-2" />
-                        Analyze Response
-                      </>
-                    )}
+                    <ChevronRight className="w-4 h-4 mr-2" />
+                    Analyze Response
                   </Button>
-                ) : state.analysisResult && (
+                )}
+
+                {/* Analysis Results */}
+                {state.analysisResult && (
                   <div className="space-y-4">
                     {/* Outcome Badge */}
                     <div className="flex items-center gap-3">
@@ -880,6 +706,9 @@ const Disputes = () => {
                       }>
                         {state.analysisResult.outcome.charAt(0).toUpperCase() + state.analysisResult.outcome.slice(1)}
                       </Badge>
+                      <Badge variant="outline">
+                        {state.analysisResult.bureau === "multi-bureau" ? "Multi-Bureau" : state.analysisResult.bureau}
+                      </Badge>
                     </div>
 
                     {/* Summary */}
@@ -888,43 +717,73 @@ const Disputes = () => {
                     </div>
 
                     {/* Legal Implications */}
-                    <div>
-                      <p className="text-sm font-medium mb-2 flex items-center gap-2">
-                        <AlertTriangle className="w-4 h-4 text-amber-500" />
-                        Legal Implications
-                      </p>
-                      <ul className="space-y-1">
-                        {state.analysisResult.legalImplications.map((imp, i) => (
-                          <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
-                            <span className="text-primary">•</span>
-                            {imp}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
+                    {state.analysisResult.legalImplications.length > 0 && (
+                      <div>
+                        <p className="text-sm font-medium mb-2 flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4 text-amber-500" />
+                          Legal Implications
+                        </p>
+                        <ul className="space-y-1">
+                          {state.analysisResult.legalImplications.map((imp, i) => (
+                            <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
+                              <span className="text-primary">•</span>
+                              {imp}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
 
                     {/* Next Steps */}
-                    <div>
-                      <p className="text-sm font-medium mb-2">Recommended Next Steps</p>
-                      <ul className="space-y-1">
-                        {state.analysisResult.nextSteps.map((step, i) => (
-                          <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
-                            <span className="text-green-400">{i + 1}.</span>
-                            {step}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
+                    {state.analysisResult.nextSteps.length > 0 && (
+                      <div>
+                        <p className="text-sm font-medium mb-2">Recommended Next Steps</p>
+                        <ul className="space-y-1">
+                          {state.analysisResult.nextSteps.map((step, i) => (
+                            <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
+                              <span className="text-green-400">{i + 1}.</span>
+                              {step}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 )}
               </CardContent>
             </Card>
 
-            {/* SECTION 3: Outcome Confirmation */}
+            {/* SECTION 3: Account Review */}
+            {canShowReview && (
+              <Card className="border-border">
+                <CardHeader>
+                  <SectionHeader 
+                    number={3} 
+                    title="Account Review" 
+                    icon={<FileCheck className="w-5 h-5" />}
+                    unlocked={true}
+                    completed={hasSelectedAccounts}
+                  />
+                  <CardDescription>
+                    Select accounts to dispute. Review per-bureau status before selecting.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <AccountReviewTable
+                    accounts={state.accounts}
+                    onAccountChange={handleAccountChange}
+                    onSelectAll={handleSelectAllAccounts}
+                    disabled={false}
+                  />
+                </CardContent>
+              </Card>
+            )}
+
+            {/* SECTION 4: Outcome Confirmation */}
             <Card className={!canConfirmOutcome ? "opacity-50" : isOutcomeConfirmed ? "border-green-500/30" : ""}>
               <CardHeader>
                 <SectionHeader 
-                  number={3} 
+                  number={4} 
                   title="Outcome Confirmation" 
                   icon={<CheckCircle2 className="w-5 h-5" />}
                   unlocked={canConfirmOutcome}
@@ -1037,11 +896,11 @@ const Disputes = () => {
               </CardContent>
             </Card>
 
-            {/* SECTION 4: Legal Strategy Survey */}
+            {/* SECTION 5: Legal Strategy Survey */}
             <Card className={!canShowSurvey ? "opacity-50" : ""}>
               <CardHeader>
                 <SectionHeader 
-                  number={4} 
+                  number={5} 
                   title="Legal Strategy Survey" 
                   icon={<Shield className="w-5 h-5" />}
                   unlocked={canShowSurvey}
@@ -1094,11 +953,11 @@ const Disputes = () => {
               </CardContent>
             </Card>
 
-            {/* SECTION 5: Generate Next Legal Response */}
+            {/* SECTION 6: Generate Next Legal Response */}
             <Card className={!canShowSurvey ? "opacity-50" : ""}>
               <CardHeader>
                 <SectionHeader 
-                  number={5} 
+                  number={6} 
                   title="Generate Next Legal Response" 
                   icon={<FileText className="w-5 h-5" />}
                   unlocked={canShowSurvey}
@@ -1154,22 +1013,26 @@ const Disputes = () => {
                   </div>
                 </div>
 
-                {/* Bureau Selection */}
+                {/* Bureau Selection - Multi-select */}
                 <div>
-                  <Label className="text-sm">Target Bureau</Label>
-                  <div className="flex gap-2 mt-2">
+                  <Label className="text-sm">Target Bureau(s)</Label>
+                  <div className="flex gap-2 mt-2 flex-wrap">
                     {(Object.keys(BUREAU_DATA) as BureauKey[]).map((key) => (
                       <Button
                         key={key}
                         size="sm"
-                        variant={state.selectedBureau === key ? "default" : "outline"}
-                        onClick={() => setState(prev => ({ ...prev, selectedBureau: key }))}
+                        variant={state.selectedBureaus.includes(key) ? "default" : "outline"}
+                        onClick={() => toggleBureauSelection(key)}
                         disabled={!canShowSurvey}
                       >
+                        {state.selectedBureaus.includes(key) && <Check className="w-3 h-3 mr-1" />}
                         {key.charAt(0).toUpperCase() + key.slice(1)}
                       </Button>
                     ))}
                   </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {state.selectedBureaus.length} bureau(s) selected
+                  </p>
                 </div>
 
                 <Button 
@@ -1181,32 +1044,51 @@ const Disputes = () => {
                   {isGenerating ? (
                     <>
                       <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Generating Letter...
+                      Generating Letter(s)...
                     </>
                   ) : (
                     <>
                       <FileText className="w-4 h-4 mr-2" />
-                      Generate Dispute Letter
+                      Generate Dispute Letter(s)
                     </>
                   )}
                 </Button>
               </CardContent>
             </Card>
 
-            {/* SECTION 6: Generated Output */}
+            {/* SECTION 7: Generated Output */}
             {hasGeneratedLetter && (
               <Card className="border-primary/30">
                 <CardHeader>
                   <SectionHeader 
-                    number={6} 
+                    number={7} 
                     title="Generated Output" 
                     icon={<FileCheck className="w-5 h-5" />}
                     unlocked={true}
                     completed={true}
                   />
-                  <CardDescription>Your letter is ready. Review, edit if needed, and export.</CardDescription>
+                  <CardDescription>Your letters are ready. Review, edit if needed, and export.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
+                  {/* Bureau tabs for letters */}
+                  {state.selectedBureaus.length > 1 && (
+                    <div className="flex gap-2 flex-wrap">
+                      {state.selectedBureaus.map((bureau) => (
+                        <Button
+                          key={bureau}
+                          size="sm"
+                          variant={currentBureauLetter === bureau ? "default" : "outline"}
+                          onClick={() => setCurrentBureauLetter(bureau)}
+                        >
+                          {bureau.charAt(0).toUpperCase() + bureau.slice(1)}
+                          {state.generatedLetters[bureau] && (
+                            <CheckCircle2 className="w-3 h-3 ml-1 text-green-400" />
+                          )}
+                        </Button>
+                      ))}
+                    </div>
+                  )}
+
                   {/* Action Bar */}
                   <div className="flex items-center gap-2 flex-wrap">
                     <Button size="sm" variant="outline" onClick={() => setIsEditing(!isEditing)}>
@@ -1226,8 +1108,14 @@ const Disputes = () => {
                   {/* Letter Content */}
                   {isEditing ? (
                     <Textarea
-                      value={state.generatedLetter}
-                      onChange={(e) => setState(prev => ({ ...prev, generatedLetter: e.target.value }))}
+                      value={state.generatedLetters[currentBureauLetter] || ""}
+                      onChange={(e) => setState(prev => ({ 
+                        ...prev, 
+                        generatedLetters: { 
+                          ...prev.generatedLetters, 
+                          [currentBureauLetter]: e.target.value 
+                        } 
+                      }))}
                       rows={25}
                       className="font-mono text-sm"
                     />
@@ -1237,7 +1125,7 @@ const Disputes = () => {
                       style={{ backgroundColor: '#ffffff', color: '#111111' }}
                     >
                       <pre className="whitespace-pre-wrap font-serif text-sm leading-relaxed">
-                        {state.generatedLetter}
+                        {state.generatedLetters[currentBureauLetter] || "No letter generated for this bureau yet."}
                       </pre>
                     </div>
                   )}
