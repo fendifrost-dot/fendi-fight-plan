@@ -14,7 +14,125 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      dispute_accounts: {
+        Row: {
+          bureau_statuses: Json | null
+          confidence: number | null
+          created_at: string
+          creditor_name: string
+          custom_reason: string | null
+          date_opened: string | null
+          dispute_reason: string | null
+          id: string
+          is_selected: boolean | null
+          masked_account_number: string
+          session_id: string
+          source_file: string | null
+          source_page: number | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          bureau_statuses?: Json | null
+          confidence?: number | null
+          created_at?: string
+          creditor_name: string
+          custom_reason?: string | null
+          date_opened?: string | null
+          dispute_reason?: string | null
+          id?: string
+          is_selected?: boolean | null
+          masked_account_number: string
+          session_id: string
+          source_file?: string | null
+          source_page?: number | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          bureau_statuses?: Json | null
+          confidence?: number | null
+          created_at?: string
+          creditor_name?: string
+          custom_reason?: string | null
+          date_opened?: string | null
+          dispute_reason?: string | null
+          id?: string
+          is_selected?: boolean | null
+          masked_account_number?: string
+          session_id?: string
+          source_file?: string | null
+          source_page?: number | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "dispute_accounts_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "dispute_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      dispute_sessions: {
+        Row: {
+          analysis_result: Json | null
+          bureau_response_text: string | null
+          consumer_info: Json | null
+          created_at: string
+          documents: Json | null
+          generated_letters: Json | null
+          id: string
+          imported_analyzer_data: Json | null
+          is_analyzed: boolean | null
+          outcome_confirmation: Json | null
+          prior_letter_text: string | null
+          processing_progress: Json | null
+          selected_bureaus: string[] | null
+          survey: Json | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          analysis_result?: Json | null
+          bureau_response_text?: string | null
+          consumer_info?: Json | null
+          created_at?: string
+          documents?: Json | null
+          generated_letters?: Json | null
+          id?: string
+          imported_analyzer_data?: Json | null
+          is_analyzed?: boolean | null
+          outcome_confirmation?: Json | null
+          prior_letter_text?: string | null
+          processing_progress?: Json | null
+          selected_bureaus?: string[] | null
+          survey?: Json | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          analysis_result?: Json | null
+          bureau_response_text?: string | null
+          consumer_info?: Json | null
+          created_at?: string
+          documents?: Json | null
+          generated_letters?: Json | null
+          id?: string
+          imported_analyzer_data?: Json | null
+          is_analyzed?: boolean | null
+          outcome_confirmation?: Json | null
+          prior_letter_text?: string | null
+          processing_progress?: Json | null
+          selected_bureaus?: string[] | null
+          survey?: Json | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
