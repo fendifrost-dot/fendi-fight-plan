@@ -126,14 +126,50 @@ serve(async (req) => {
       sampleImages.splice(5, 0, images[midPoint]);
     }
 
+    // Validate and normalize image data URLs
+    const validatedImages: string[] = [];
+    for (const img of sampleImages) {
+      // Ensure the image is a valid base64 data URL with supported format
+      if (typeof img !== 'string') continue;
+      
+      if (img.startsWith('data:image/')) {
+        // Extract the MIME type from the data URL
+        const mimeMatch = img.match(/^data:(image\/[^;]+);base64,/);
+        if (mimeMatch) {
+          const mimeType = mimeMatch[1];
+          // Supported formats: png, jpeg, gif, webp
+          if (['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp'].includes(mimeType)) {
+            // Normalize image/jpg to image/jpeg for API compatibility
+            if (mimeType === 'image/jpg') {
+              validatedImages.push(img.replace('data:image/jpg;', 'data:image/jpeg;'));
+            } else {
+              validatedImages.push(img);
+            }
+          } else {
+            console.warn(`Skipping unsupported image format: ${mimeType}`);
+          }
+        }
+      } else if (img.startsWith('http://') || img.startsWith('https://')) {
+        // URL-based images are passed through
+        validatedImages.push(img);
+      }
+    }
+
+    if (validatedImages.length === 0) {
+      return new Response(JSON.stringify({ error: "No valid images. Supported formats: PNG, JPEG, GIF, WebP" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     const userContent: any[] = [
       {
         type: "text",
-        text: `Analyze these ${sampleImages.length} sample pages from a ${totalPages}-page credit report. Identify section boundaries and document structure. Output JSON only.`
+        text: `Analyze these ${validatedImages.length} sample pages from a ${totalPages}-page credit report. Identify section boundaries and document structure. Output JSON only.`
       }
     ];
     
-    for (const img of sampleImages) {
+    for (const img of validatedImages) {
       userContent.push({
         type: "image_url",
         image_url: { url: img }
