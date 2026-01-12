@@ -199,7 +199,9 @@ const Disputes = () => {
   const canAnalyze = hasDocuments && !state.isAnalyzed && !isProcessing;
   const canShowReview = state.isAnalyzed && state.accounts.length > 0;
   const hasSelectedAccounts = state.accounts.some(a => a.isSelected);
-  const canConfirmOutcome = state.isAnalyzed;
+  // Allow outcome confirmation if analyzed OR if user skipped analysis
+  const [analysisSkipped, setAnalysisSkipped] = useState(false);
+  const canConfirmOutcome = state.isAnalyzed || analysisSkipped;
   const isOutcomeConfirmed = state.outcomeConfirmation.receivedResponse !== null;
   const canShowSurvey = isOutcomeConfirmed;
   const canGenerate = canShowSurvey && state.selectedBureaus.length > 0 && state.consumerInfo.fullName.trim() && hasSelectedAccounts;
@@ -575,6 +577,24 @@ const Disputes = () => {
                       </>
                     )}
                   </Button>
+                )}
+
+                {/* Skip Analysis option for users who want to proceed without AI */}
+                {!state.isAnalyzed && !analysisSkipped && (
+                  <Button 
+                    variant="ghost" 
+                    size="sm"
+                    onClick={() => setAnalysisSkipped(true)}
+                    className="w-full text-muted-foreground hover:text-foreground"
+                  >
+                    Skip Analysis & Proceed Manually
+                  </Button>
+                )}
+
+                {analysisSkipped && !state.isAnalyzed && (
+                  <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-sm">
+                    Analysis skipped. You can proceed to fill out the outcome confirmation and generate letters manually.
+                  </div>
                 )}
 
                 {/* Analysis Results */}
