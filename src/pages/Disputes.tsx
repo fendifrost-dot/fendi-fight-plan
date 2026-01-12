@@ -196,7 +196,7 @@ const Disputes = () => {
   // ============= STATE CHECKS =============
   const hasDocuments = state.documents.length > 0 || state.bureauResponseText.trim().length > 0;
   const isEvidenceLocked = state.isAnalyzed;
-  const canAnalyze = hasDocuments && !state.isAnalyzed && state.processingProgress.phase === "idle" && !isProcessing;
+  const canAnalyze = hasDocuments && !state.isAnalyzed && !isProcessing;
   const canShowReview = state.isAnalyzed && state.accounts.length > 0;
   const hasSelectedAccounts = state.accounts.some(a => a.isSelected);
   const canConfirmOutcome = state.isAnalyzed;
@@ -250,6 +250,9 @@ const Disputes = () => {
       toast.error("Please log in to analyze responses.");
       return;
     }
+
+    // Clear prior error state so the button/progress can recover cleanly
+    setProcessingProgress(defaultProcessingProgress);
 
     // Use the new chunked analysis hook
     const result = await analyzeDocuments(
@@ -550,10 +553,10 @@ const Disputes = () => {
                 />
 
                 {/* Analyze Button */}
-                {!state.isAnalyzed && state.processingProgress.phase === "idle" && (
+                {!state.isAnalyzed && (
                   <Button 
                     onClick={handleAnalyze} 
-                    disabled={!canAnalyze || isProcessing}
+                    disabled={!canAnalyze}
                     className="w-full"
                   >
                     {isProcessing ? (
@@ -564,7 +567,11 @@ const Disputes = () => {
                     ) : (
                       <>
                         <ChevronRight className="w-4 h-4 mr-2" />
-                        Analyze Response
+                        {state.processingProgress.phase === "error"
+                          ? "Retry Analysis"
+                          : state.processingProgress.phase === "idle"
+                            ? "Analyze Response"
+                            : "Restart Analysis"}
                       </>
                     )}
                   </Button>
