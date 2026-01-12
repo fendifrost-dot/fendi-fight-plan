@@ -1,18 +1,16 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import AppNavigation from "@/components/AppNavigation";
 import Footer from "@/components/Footer";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { 
-  Upload, 
   FileText, 
   AlertTriangle, 
   CheckCircle2, 
-  XCircle, 
   Download,
   Scale,
   Import,
@@ -26,11 +24,10 @@ import {
   Eye,
   FileCheck,
   HelpCircle,
-  RotateCcw
+  RotateCcw,
+  Save
 } from "lucide-react";
 import { toast } from "sonner";
-import { supabase } from "@/integrations/supabase/client";
-import { Session } from "@supabase/supabase-js";
 import {
   Tooltip,
   TooltipContent,
@@ -43,29 +40,23 @@ import { DocumentUploader } from "@/components/disputes/DocumentUploader";
 import { AccountReviewTable } from "@/components/disputes/AccountReviewTable";
 import { ProcessingProgress } from "@/components/disputes/ProcessingProgress";
 
+// New hooks for persistence and analysis
+import { useDisputeSession } from "@/hooks/useDisputeSession";
+import { useDisputeAnalysis } from "@/hooks/useDisputeAnalysis";
+
 // System B Types
 import type {
   BureauKey,
   UploadedDocument,
   DisputeAccount,
-  AnalysisResult,
   OutcomeConfirmation,
   DisputeSurvey,
-  ConsumerInfo,
-  ProcessingProgress as ProgressType,
-  DisputeSession,
 } from "@/types/disputes";
 
 import {
   BUREAU_DATA,
-  defaultOutcomeConfirmation,
-  defaultSurvey,
-  defaultConsumerInfo,
   defaultProcessingProgress,
-  createDefaultSession,
 } from "@/types/disputes";
-
-const DISPUTES_STORAGE_KEY = "dispute-engine-state-v3";
 
 // Survey questions configuration
 const surveyQuestions = [
@@ -158,67 +149,61 @@ const SectionHeader = ({ number, title, icon, unlocked, completed }: SectionHead
 // ============= MAIN COMPONENT =============
 
 const Disputes = () => {
-  const [session, setSession] = useState<Session | null>(null);
-  const [state, setState] = useState<DisputeSession>(createDefaultSession);
+  // Use the new persistence hook
+  const {
+    session,
+    state,
+    isLoading,
+    isSaving,
+    setState,
+    addDocument,
+    removeDocument,
+    updateAccount,
+    selectAllAccounts,
+    setAnalysisResult,
+    setProcessingProgress,
+    updateOutcome,
+    updateSurvey,
+    updateConsumerInfo,
+    setSelectedBureaus,
+    setGeneratedLetters,
+    resetSession,
+    importAnalyzerData,
+  } = useDisputeSession();
+
+  // Use the new analysis hook
+  const {
+    progress: analysisProgress,
+    isProcessing,
+    analyzeDocuments,
+    retryChunk,
+    skipRemaining,
+    reset: resetAnalysis,
+  } = useDisputeAnalysis();
+
   const [isGenerating, setIsGenerating] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [copied, setCopied] = useState(false);
   const [currentBureauLetter, setCurrentBureauLetter] = useState<BureauKey>("experian");
 
-  // Auth
+  // Sync analysis progress to state
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_, session) => setSession(session));
-    return () => subscription.unsubscribe();
-  }, []);
-
-  // Load persisted state
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(DISPUTES_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved) as DisputeSession;
-        setState(parsed);
-      }
-    } catch (e) {
-      console.error("Failed to load dispute engine state:", e);
+    if (analysisProgress.phase !== 'idle') {
+      setProcessingProgress(analysisProgress);
     }
-  }, []);
-
-  // Auto-save state
-  useEffect(() => {
-    const toSave = { ...state, updatedAt: new Date().toISOString() };
-    localStorage.setItem(DISPUTES_STORAGE_KEY, JSON.stringify(toSave));
-  }, [state]);
-
-  // Populate consumer info from imported data
-  useEffect(() => {
-    if (state.importedAnalyzerData && !state.consumerInfo.fullName) {
-      const data = state.importedAnalyzerData;
-      setState(prev => ({
-        ...prev,
-        consumerInfo: {
-          fullName: data.questionnaire?.fullLegalName || data.fullLegalName || "",
-          addressLine1: (data.questionnaire?.currentAddress || data.currentAddress)?.split(',')[0] || "",
-          addressLine2: "",
-          cityStateZip: (data.questionnaire?.currentAddress || data.currentAddress)?.split(',').slice(1).join(',').trim() || "",
-        }
-      }));
-    }
-  }, [state.importedAnalyzerData, state.consumerInfo.fullName]);
+  }, [analysisProgress, setProcessingProgress]);
 
   // ============= STATE CHECKS =============
   const hasDocuments = state.documents.length > 0 || state.bureauResponseText.trim().length > 0;
   const isEvidenceLocked = state.isAnalyzed;
-  const canAnalyze = hasDocuments && !state.isAnalyzed && state.processingProgress.phase === "idle";
-  const isProcessing = !["idle", "complete", "error"].includes(state.processingProgress.phase);
+  const canAnalyze = hasDocuments && !state.isAnalyzed && state.processingProgress.phase === "idle" && !isProcessing;
   const canShowReview = state.isAnalyzed && state.accounts.length > 0;
   const hasSelectedAccounts = state.accounts.some(a => a.isSelected);
   const canConfirmOutcome = state.isAnalyzed;
   const isOutcomeConfirmed = state.outcomeConfirmation.receivedResponse !== null;
   const canShowSurvey = isOutcomeConfirmed;
   const canGenerate = canShowSurvey && state.selectedBureaus.length > 0 && state.consumerInfo.fullName.trim() && hasSelectedAccounts;
-  const hasGeneratedLetter = Object.values(state.generatedLetters).some(l => l.length > 0);
+  const hasGeneratedLetter = Object.values(state.generatedLetters).some(l => l && l.length > 0);
 
   // ============= HANDLERS =============
 
@@ -231,16 +216,7 @@ const Disputes = () => {
       }
       const parsed = JSON.parse(analyzerData);
       if (parsed.analysisResults || parsed.questionnaire) {
-        setState(prev => ({
-          ...prev,
-          importedAnalyzerData: parsed,
-          consumerInfo: {
-            fullName: parsed.questionnaire?.fullLegalName || prev.consumerInfo.fullName,
-            addressLine1: parsed.questionnaire?.currentAddress?.split(',')[0] || prev.consumerInfo.addressLine1,
-            addressLine2: prev.consumerInfo.addressLine2,
-            cityStateZip: parsed.questionnaire?.currentAddress?.split(',').slice(1).join(',').trim() || prev.consumerInfo.cityStateZip,
-          }
-        }));
+        importAnalyzerData(parsed);
         toast.success("Imported analyzer data successfully!");
       } else {
         toast.error("No analysis results found.");
@@ -251,17 +227,11 @@ const Disputes = () => {
   };
 
   const handleAddDocument = (doc: UploadedDocument) => {
-    setState(prev => ({
-      ...prev,
-      documents: [...prev.documents, doc],
-    }));
+    addDocument(doc);
   };
 
   const handleRemoveDocument = (id: string) => {
-    setState(prev => ({
-      ...prev,
-      documents: prev.documents.filter(d => d.id !== id),
-    }));
+    removeDocument(id);
   };
 
   const handleExtractedText = (docId: string, text: string) => {
@@ -281,141 +251,26 @@ const Disputes = () => {
       return;
     }
 
-    // Update progress
-    setState(prev => ({
-      ...prev,
-      processingProgress: {
-        ...prev.processingProgress,
-        phase: "classifying",
-        currentStep: "Sending to AI for classification...",
-        totalSteps: 1,
-        completedSteps: 0,
-        message: "Analyzing documents...",
-      },
-    }));
+    // Use the new chunked analysis hook
+    const result = await analyzeDocuments(
+      state.documents,
+      state.bureauResponseText,
+      state.priorLetterText,
+      session.access_token
+    );
 
-    try {
-      // Gather all extracted text from bureau response documents
-      const bureauResponseDocs = state.documents.filter(d => d.type === "bureau_response");
-      const priorDisputeDocs = state.documents.filter(d => d.type === "prior_dispute");
-      
-      const bureauText = bureauResponseDocs
-        .map(d => d.extractedText || "")
-        .filter(t => t.length > 0)
-        .join("\n\n---\n\n");
-      
-      const priorText = priorDisputeDocs
-        .map(d => d.extractedText || "")
-        .filter(t => t.length > 0)
-        .join("\n\n---\n\n") || state.priorLetterText;
-
-      // If no extracted text from files, use the manual text input
-      const combinedBureauText = bureauText || state.bureauResponseText;
-
-      if (!combinedBureauText.trim()) {
-        toast.error("No text content to analyze. Please upload PDFs with text or paste content manually.");
-        setState(prev => ({
-          ...prev,
-          processingProgress: { ...defaultProcessingProgress, phase: "error", message: "No text content to analyze." },
-        }));
-        return;
-      }
-
-      // Call the classify-documents edge function
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/classify-documents`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          bureauResponseText: combinedBureauText,
-          priorLetterText: priorText,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "Analysis failed");
-      }
-
-      // Map the response to our types
-      const accounts: DisputeAccount[] = (data.accounts || []).map((acc: any) => ({
-        id: acc.id || crypto.randomUUID(),
-        maskedAccountNumber: acc.maskedAccountNumber || "Unknown",
-        creditorName: acc.creditorName || "Unknown Creditor",
-        dateOpened: acc.dateOpened,
-        bureauStatuses: acc.bureauStatuses || {},
-        isSelected: false,
-        disputeReason: undefined,
-        customReason: undefined,
-        sourceFile: bureauResponseDocs[0]?.name,
-        confidence: acc.confidence || 0.8,
-      }));
-
-      const analysisResult: AnalysisResult = {
-        bureau: data.bureauMode || "experian",
-        outcome: data.outcome || "verified",
-        itemsVerified: data.itemsVerified || [],
-        itemsDeleted: data.itemsDeleted || [],
-        itemsPartial: data.itemsPartial || [],
-        legalImplications: data.legalImplications || [],
-        nextSteps: data.nextSteps || [],
-        rawSummary: data.summary || "Analysis complete.",
-        accounts,
-      };
-
-      setState(prev => ({
-        ...prev,
-        analysisResult,
-        accounts,
-        isAnalyzed: true,
-        selectedBureaus: data.bureauMode === "multi-bureau" 
-          ? ["experian", "equifax", "transunion"] 
-          : [data.bureauMode || "experian"],
-        processingProgress: {
-          phase: "complete",
-          currentStep: "",
-          totalSteps: 1,
-          completedSteps: 1,
-          failedChunks: [],
-          message: `Found ${accounts.length} account(s). Review and select items to dispute.`,
-        },
-      }));
-
+    if (result) {
+      setAnalysisResult(result.result, result.accounts);
       toast.success("Response analyzed. Review findings below.");
-    } catch (err) {
-      console.error("Analysis error:", err);
-      setState(prev => ({
-        ...prev,
-        processingProgress: {
-          phase: "error",
-          currentStep: "",
-          totalSteps: 0,
-          completedSteps: 0,
-          failedChunks: [],
-          message: err instanceof Error ? err.message : "Analysis failed. Please try again.",
-        },
-      }));
-      toast.error(err instanceof Error ? err.message : "Analysis failed.");
     }
   };
 
   const handleAccountChange = (id: string, changes: Partial<DisputeAccount>) => {
-    setState(prev => ({
-      ...prev,
-      accounts: prev.accounts.map(acc => 
-        acc.id === id ? { ...acc, ...changes } : acc
-      ),
-    }));
+    updateAccount(id, changes);
   };
 
   const handleSelectAllAccounts = (selected: boolean) => {
-    setState(prev => ({
-      ...prev,
-      accounts: prev.accounts.map(acc => ({ ...acc, isSelected: selected })),
-    }));
+    selectAllAccounts(selected);
   };
 
   const handleGenerateLetter = async () => {
@@ -494,7 +349,7 @@ const Disputes = () => {
         newLetters[bureauKey] = data.letter;
       }
 
-      setState(prev => ({ ...prev, generatedLetters: newLetters }));
+      setGeneratedLetters(newLetters);
       setCurrentBureauLetter(state.selectedBureaus[0]);
       toast.success(`Generated ${state.selectedBureaus.length} letter(s) successfully!`);
     } catch (err) {
@@ -516,41 +371,47 @@ const Disputes = () => {
 
   const handleReset = () => {
     if (confirm("Reset all data and start over?")) {
-      localStorage.removeItem(DISPUTES_STORAGE_KEY);
-      setState(createDefaultSession());
-      toast.success("Engine reset.");
+      resetSession();
+      resetAnalysis();
     }
   };
 
-  const updateOutcome = <K extends keyof OutcomeConfirmation>(key: K, value: OutcomeConfirmation[K]) => {
-    setState(prev => ({
-      ...prev,
-      outcomeConfirmation: { ...prev.outcomeConfirmation, [key]: value }
-    }));
+  const handleUpdateOutcome = <K extends keyof OutcomeConfirmation>(key: K, value: OutcomeConfirmation[K]) => {
+    updateOutcome({ [key]: value });
   };
 
-  const updateSurvey = <K extends keyof DisputeSurvey>(key: K, value: DisputeSurvey[K]) => {
-    setState(prev => ({
-      ...prev,
-      survey: { ...prev.survey, [key]: value }
-    }));
+  const handleUpdateSurvey = <K extends keyof DisputeSurvey>(key: K, value: DisputeSurvey[K]) => {
+    updateSurvey({ [key]: value });
   };
 
-  const updateConsumerInfo = <K extends keyof ConsumerInfo>(key: K, value: string) => {
-    setState(prev => ({
-      ...prev,
-      consumerInfo: { ...prev.consumerInfo, [key]: value }
-    }));
+  const handleUpdateConsumerInfo = (key: string, value: string) => {
+    updateConsumerInfo({ [key]: value });
   };
 
   const toggleBureauSelection = (bureau: BureauKey) => {
-    setState(prev => ({
-      ...prev,
-      selectedBureaus: prev.selectedBureaus.includes(bureau)
-        ? prev.selectedBureaus.filter(b => b !== bureau)
-        : [...prev.selectedBureaus, bureau],
-    }));
+    const newBureaus = state.selectedBureaus.includes(bureau)
+      ? state.selectedBureaus.filter(b => b !== bureau)
+      : [...state.selectedBureaus, bureau];
+    setSelectedBureaus(newBureaus);
   };
+
+  const handleRetryChunk = (chunkId: string) => {
+    const idx = parseInt(chunkId, 10);
+    if (!isNaN(idx)) {
+      retryChunk(idx);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <main className="min-h-screen bg-background flex items-center justify-center">
+        <div className="flex items-center gap-3">
+          <Loader2 className="w-6 h-6 animate-spin text-primary" />
+          <span className="text-muted-foreground">Loading dispute session...</span>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <TooltipProvider>
@@ -579,6 +440,12 @@ const Disputes = () => {
                 <Badge variant="outline" className="border-green-500/30 text-green-400">
                   <CheckCircle2 className="w-3 h-3 mr-1" />
                   Data Imported
+                </Badge>
+              )}
+              {isSaving && (
+                <Badge variant="outline" className="border-blue-500/30 text-blue-400">
+                  <Save className="w-3 h-3 mr-1 animate-pulse" />
+                  Saving...
                 </Badge>
               )}
               <Button variant="ghost" size="sm" onClick={handleReset} className="text-muted-foreground">
@@ -674,10 +541,12 @@ const Disputes = () => {
                 {/* Processing Progress */}
                 <ProcessingProgress 
                   progress={state.processingProgress}
-                  onCancel={() => setState(prev => ({ 
-                    ...prev, 
-                    processingProgress: defaultProcessingProgress 
-                  }))}
+                  onCancel={() => {
+                    skipRemaining();
+                    setProcessingProgress(defaultProcessingProgress);
+                  }}
+                  onRetryChunk={handleRetryChunk}
+                  onSkipChunk={skipRemaining}
                 />
 
                 {/* Analyze Button */}
@@ -687,8 +556,17 @@ const Disputes = () => {
                     disabled={!canAnalyze || isProcessing}
                     className="w-full"
                   >
-                    <ChevronRight className="w-4 h-4 mr-2" />
-                    Analyze Response
+                    {isProcessing ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Analyzing...
+                      </>
+                    ) : (
+                      <>
+                        <ChevronRight className="w-4 h-4 mr-2" />
+                        Analyze Response
+                      </>
+                    )}
                   </Button>
                 )}
 
@@ -799,7 +677,7 @@ const Disputes = () => {
                       <Button 
                         size="sm" 
                         variant={state.outcomeConfirmation.receivedResponse === true ? "default" : "outline"}
-                        onClick={() => updateOutcome("receivedResponse", true)}
+                        onClick={() => handleUpdateOutcome("receivedResponse", true)}
                         disabled={!canConfirmOutcome}
                       >
                         Yes
@@ -807,7 +685,7 @@ const Disputes = () => {
                       <Button 
                         size="sm" 
                         variant={state.outcomeConfirmation.receivedResponse === false ? "default" : "outline"}
-                        onClick={() => updateOutcome("receivedResponse", false)}
+                        onClick={() => handleUpdateOutcome("receivedResponse", false)}
                         disabled={!canConfirmOutcome}
                       >
                         No
@@ -821,7 +699,7 @@ const Disputes = () => {
                       <Button 
                         size="sm" 
                         variant={state.outcomeConfirmation.responseWithin30Days === true ? "default" : "outline"}
-                        onClick={() => updateOutcome("responseWithin30Days", true)}
+                        onClick={() => handleUpdateOutcome("responseWithin30Days", true)}
                         disabled={!canConfirmOutcome}
                       >
                         Yes
@@ -829,7 +707,7 @@ const Disputes = () => {
                       <Button 
                         size="sm" 
                         variant={state.outcomeConfirmation.responseWithin30Days === false ? "default" : "outline"}
-                        onClick={() => updateOutcome("responseWithin30Days", false)}
+                        onClick={() => handleUpdateOutcome("responseWithin30Days", false)}
                         disabled={!canConfirmOutcome}
                       >
                         No
@@ -843,7 +721,7 @@ const Disputes = () => {
                       <Button 
                         size="sm" 
                         variant={state.outcomeConfirmation.allItemsAddressed === true ? "default" : "outline"}
-                        onClick={() => updateOutcome("allItemsAddressed", true)}
+                        onClick={() => handleUpdateOutcome("allItemsAddressed", true)}
                         disabled={!canConfirmOutcome}
                       >
                         Yes
@@ -851,7 +729,7 @@ const Disputes = () => {
                       <Button 
                         size="sm" 
                         variant={state.outcomeConfirmation.allItemsAddressed === false ? "default" : "outline"}
-                        onClick={() => updateOutcome("allItemsAddressed", false)}
+                        onClick={() => handleUpdateOutcome("allItemsAddressed", false)}
                         disabled={!canConfirmOutcome}
                       >
                         No
@@ -865,7 +743,7 @@ const Disputes = () => {
                       <Button 
                         size="sm" 
                         variant={state.outcomeConfirmation.anyReinsertions === true ? "default" : "outline"}
-                        onClick={() => updateOutcome("anyReinsertions", true)}
+                        onClick={() => handleUpdateOutcome("anyReinsertions", true)}
                         disabled={!canConfirmOutcome}
                       >
                         Yes
@@ -873,7 +751,7 @@ const Disputes = () => {
                       <Button 
                         size="sm" 
                         variant={state.outcomeConfirmation.anyReinsertions === false ? "default" : "outline"}
-                        onClick={() => updateOutcome("anyReinsertions", false)}
+                        onClick={() => handleUpdateOutcome("anyReinsertions", false)}
                         disabled={!canConfirmOutcome}
                       >
                         No
@@ -887,7 +765,7 @@ const Disputes = () => {
                   <Textarea
                     placeholder="Any observations about the response..."
                     value={state.outcomeConfirmation.notes}
-                    onChange={(e) => updateOutcome("notes", e.target.value)}
+                    onChange={(e) => handleUpdateOutcome("notes", e.target.value)}
                     rows={2}
                     disabled={!canConfirmOutcome}
                     className="mt-1"
@@ -923,7 +801,7 @@ const Disputes = () => {
                     </div>
                     <Switch
                       checked={state.survey[q.key] as boolean}
-                      onCheckedChange={(checked) => updateSurvey(q.key, checked)}
+                      onCheckedChange={(checked) => handleUpdateSurvey(q.key, checked)}
                       disabled={!canShowSurvey}
                     />
                   </div>
@@ -933,7 +811,7 @@ const Disputes = () => {
                   <Textarea
                     placeholder="Provide reinsertion details..."
                     value={state.survey.reinsertedDetails}
-                    onChange={(e) => updateSurvey("reinsertedDetails", e.target.value)}
+                    onChange={(e) => handleUpdateSurvey("reinsertedDetails", e.target.value)}
                     rows={2}
                     disabled={!canShowSurvey}
                   />
@@ -944,7 +822,7 @@ const Disputes = () => {
                   <Textarea
                     placeholder="Any other relevant facts to include in the letter..."
                     value={state.survey.additionalFacts}
-                    onChange={(e) => updateSurvey("additionalFacts", e.target.value)}
+                    onChange={(e) => handleUpdateSurvey("additionalFacts", e.target.value)}
                     rows={2}
                     disabled={!canShowSurvey}
                     className="mt-1"
@@ -972,7 +850,7 @@ const Disputes = () => {
                     <input
                       type="text"
                       value={state.consumerInfo.fullName}
-                      onChange={(e) => updateConsumerInfo("fullName", e.target.value)}
+                      onChange={(e) => handleUpdateConsumerInfo("fullName", e.target.value)}
                       placeholder="John Michael Smith"
                       disabled={!canShowSurvey}
                       className="w-full mt-1 px-3 py-2 bg-muted/30 border border-border rounded-md text-sm"
@@ -983,7 +861,7 @@ const Disputes = () => {
                     <input
                       type="text"
                       value={state.consumerInfo.addressLine1}
-                      onChange={(e) => updateConsumerInfo("addressLine1", e.target.value)}
+                      onChange={(e) => handleUpdateConsumerInfo("addressLine1", e.target.value)}
                       placeholder="123 Main Street"
                       disabled={!canShowSurvey}
                       className="w-full mt-1 px-3 py-2 bg-muted/30 border border-border rounded-md text-sm"
@@ -994,7 +872,7 @@ const Disputes = () => {
                     <input
                       type="text"
                       value={state.consumerInfo.addressLine2}
-                      onChange={(e) => updateConsumerInfo("addressLine2", e.target.value)}
+                      onChange={(e) => handleUpdateConsumerInfo("addressLine2", e.target.value)}
                       placeholder="Apt 4B"
                       disabled={!canShowSurvey}
                       className="w-full mt-1 px-3 py-2 bg-muted/30 border border-border rounded-md text-sm"
@@ -1005,7 +883,7 @@ const Disputes = () => {
                     <input
                       type="text"
                       value={state.consumerInfo.cityStateZip}
-                      onChange={(e) => updateConsumerInfo("cityStateZip", e.target.value)}
+                      onChange={(e) => handleUpdateConsumerInfo("cityStateZip", e.target.value)}
                       placeholder="New York, NY 10001"
                       disabled={!canShowSurvey}
                       className="w-full mt-1 px-3 py-2 bg-muted/30 border border-border rounded-md text-sm"
@@ -1109,13 +987,10 @@ const Disputes = () => {
                   {isEditing ? (
                     <Textarea
                       value={state.generatedLetters[currentBureauLetter] || ""}
-                      onChange={(e) => setState(prev => ({ 
-                        ...prev, 
-                        generatedLetters: { 
-                          ...prev.generatedLetters, 
-                          [currentBureauLetter]: e.target.value 
-                        } 
-                      }))}
+                      onChange={(e) => {
+                        const newLetters = { ...state.generatedLetters, [currentBureauLetter]: e.target.value };
+                        setGeneratedLetters(newLetters);
+                      }}
                       rows={25}
                       className="font-mono text-sm"
                     />
