@@ -133,7 +133,13 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
         return await analyzeWithTextClassification(bureauResponseText, priorLetterText, accessToken);
       }
 
-      throw new Error('No documents or text content to analyze');
+      // Check if only prior dispute docs were uploaded (common user error)
+      const hasPriorDisputeOnly = documents.some(d => d.type === 'prior_dispute') && bureauDocs.length === 0;
+      if (hasPriorDisputeOnly) {
+        throw new Error('Please upload the Bureau Response (PDF/image of the credit bureau\'s reply letter) — not just your prior dispute letter.');
+      }
+
+      throw new Error('Please upload a Bureau Response document (PDF or image) or paste the response text to analyze.');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Analysis failed';
       setProgress(prev => ({
