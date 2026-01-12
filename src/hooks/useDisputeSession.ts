@@ -139,9 +139,15 @@ export function useDisputeSession(): UseDisputeSessionReturn {
     loadState();
   }, [session?.user?.id]);
 
-  // Auto-save to localStorage on state change
+  // Auto-save to localStorage on state change (excluding non-serializable File objects)
   useEffect(() => {
-    const toSave = { ...state, id: dbSessionIdRef.current, updatedAt: new Date().toISOString() };
+    const documentsForStorage = state.documents.map(({ file, ...rest }) => rest);
+    const toSave = { 
+      ...state, 
+      documents: documentsForStorage,
+      id: dbSessionIdRef.current, 
+      updatedAt: new Date().toISOString() 
+    };
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(toSave));
     
     // Debounced save to database
