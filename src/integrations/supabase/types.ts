@@ -14,6 +14,77 @@ export type Database = {
   }
   public: {
     Tables: {
+      analysis_jobs: {
+        Row: {
+          attempt_count: number | null
+          checkpoints: Json | null
+          completed_at: string | null
+          created_at: string
+          error_code: string | null
+          error_message: string | null
+          id: string
+          input_data: Json | null
+          last_heartbeat_at: string | null
+          max_attempts: number | null
+          progress: number | null
+          result_data: Json | null
+          session_id: string | null
+          started_at: string | null
+          status: string
+          step: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          attempt_count?: number | null
+          checkpoints?: Json | null
+          completed_at?: string | null
+          created_at?: string
+          error_code?: string | null
+          error_message?: string | null
+          id?: string
+          input_data?: Json | null
+          last_heartbeat_at?: string | null
+          max_attempts?: number | null
+          progress?: number | null
+          result_data?: Json | null
+          session_id?: string | null
+          started_at?: string | null
+          status?: string
+          step?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          attempt_count?: number | null
+          checkpoints?: Json | null
+          completed_at?: string | null
+          created_at?: string
+          error_code?: string | null
+          error_message?: string | null
+          id?: string
+          input_data?: Json | null
+          last_heartbeat_at?: string | null
+          max_attempts?: number | null
+          progress?: number | null
+          result_data?: Json | null
+          session_id?: string | null
+          started_at?: string | null
+          status?: string
+          step?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "analysis_jobs_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "dispute_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       dispute_accounts: {
         Row: {
           bureau_statuses: Json | null

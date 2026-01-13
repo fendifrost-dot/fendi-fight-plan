@@ -1,1 +1,25 @@
 project_id = "imjnqwcrgpqrouiiazam"
+
+[functions.analysis-start]
+verify_jwt = false
+
+[functions.analysis-status]
+verify_jwt = false
+
+[functions.analysis-worker]
+verify_jwt = false
+
+[functions.analyze-chunk]
+verify_jwt = false
+
+[functions.analyze-response]
+verify_jwt = false
+
+[functions.classify-documents]
+verify_jwt = false
+
+[functions.generate-dispute-letter]
+verify_jwt = false
+
+[functions.map-document]
+verify_jwt = false
