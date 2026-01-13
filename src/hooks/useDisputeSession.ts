@@ -158,6 +158,15 @@ export function useDisputeSession(): UseDisputeSessionReturn {
             processingProgress: defaultProcessingProgress,
           };
           
+          // CRITICAL: Also update localStorage to prevent stale docs from reappearing
+          const cleanedForStorage = cleanedDocs.map(({ file, ...rest }) => rest);
+          const toSave = { 
+            ...loadedState, 
+            documents: cleanedForStorage,
+            updatedAt: new Date().toISOString() 
+          };
+          localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(toSave));
+          
           // Show user-friendly message after a short delay (after component mounts)
           setTimeout(() => {
             toast.info(
@@ -168,6 +177,9 @@ export function useDisputeSession(): UseDisputeSessionReturn {
         }
         
         setState(loadedState);
+      } else {
+        // No loaded state found, use default
+        setState(createDefaultSession());
       }
       
       setIsLoading(false);
