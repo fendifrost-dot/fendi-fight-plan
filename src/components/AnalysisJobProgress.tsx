@@ -1,15 +1,16 @@
-import { Loader2, CheckCircle, AlertCircle, AlertTriangle, RefreshCw, ArrowRight } from 'lucide-react';
+import { Loader2, CheckCircle, AlertCircle, AlertTriangle, RefreshCw, ArrowRight, Bug } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { cn } from '@/lib/utils';
-import type { AnalysisJobState, JobStatus } from '@/hooks/useAnalysisJob';
+import type { JobState, JobStatus } from '@/lib/analysisJobs';
 
 interface AnalysisJobProgressProps {
-  state: AnalysisJobState;
+  state: JobState;
   onRetry?: () => void;
   onUsePartial?: () => void;
   onSwitchToManual?: () => void;
   onCancel?: () => void;
+  isStale?: boolean;
 }
 
 const STATUS_CONFIG: Record<JobStatus, { icon: React.ElementType; color: string; label: string }> = {
@@ -27,8 +28,9 @@ export function AnalysisJobProgress({
   onUsePartial,
   onSwitchToManual,
   onCancel,
+  isStale = false,
 }: AnalysisJobProgressProps) {
-  const { status, step, progress, errorMessage, partialResults } = state;
+  const { status, step, progress, errorMessage, checkpoints, jobId } = state;
   const config = STATUS_CONFIG[status];
   const Icon = config.icon;
   const isProcessing = status === 'QUEUED' || status === 'RUNNING';
@@ -44,6 +46,9 @@ export function AnalysisJobProgress({
         <div className="flex items-center gap-2">
           <Icon className={cn('h-5 w-5', config.color, isProcessing && 'animate-spin')} />
           <span className={cn('font-medium', config.color)}>{config.label}</span>
+          {isStale && isProcessing && (
+            <span className="text-xs text-yellow-500 ml-2">(Still working...)</span>
+          )}
         </div>
         {isProcessing && onCancel && (
           <Button variant="ghost" size="sm" onClick={onCancel}>
@@ -64,12 +69,12 @@ export function AnalysisJobProgress({
       )}
 
       {/* Chunk Progress */}
-      {isProcessing && partialResults.totalChunks > 0 && (
+      {isProcessing && checkpoints.totalChunks > 0 && (
         <div className="text-xs text-muted-foreground">
-          Processed {partialResults.processedChunks} of {partialResults.totalChunks} chunks
-          {partialResults.failedChunks.length > 0 && (
+          Processed {checkpoints.processedChunks} of {checkpoints.totalChunks} chunks
+          {checkpoints.failedChunks.length > 0 && (
             <span className="text-yellow-500 ml-2">
-              ({partialResults.failedChunks.length} failed)
+              ({checkpoints.failedChunks.length} failed)
             </span>
           )}
         </div>
@@ -83,9 +88,9 @@ export function AnalysisJobProgress({
       )}
 
       {/* Partial Results Info */}
-      {status === 'PARTIAL' && partialResults.accounts.length > 0 && (
+      {status === 'PARTIAL' && checkpoints.accounts.length > 0 && (
         <div className="text-sm bg-yellow-500/10 text-yellow-700 dark:text-yellow-400 rounded p-2">
-          Found {partialResults.accounts.length} account(s) despite some chunks failing.
+          Found {checkpoints.accounts.length} account(s) despite some chunks failing.
           You can use these results or retry the failed chunks.
         </div>
       )}
@@ -99,10 +104,10 @@ export function AnalysisJobProgress({
           </Button>
         )}
 
-        {status === 'PARTIAL' && onUsePartial && partialResults.accounts.length > 0 && (
+        {status === 'PARTIAL' && onUsePartial && checkpoints.accounts.length > 0 && (
           <Button variant="default" size="sm" onClick={onUsePartial}>
             <ArrowRight className="h-4 w-4 mr-1" />
-            Use {partialResults.accounts.length} Account(s)
+            Use {checkpoints.accounts.length} Account(s)
           </Button>
         )}
 
@@ -125,6 +130,23 @@ export function AnalysisJobProgress({
         <p className="text-xs text-muted-foreground">
           Analysis continues in the background. You can refresh the page and resume.
         </p>
+      )}
+
+      {/* Debug Info (always show job ID for troubleshooting) */}
+      {jobId && (
+        <details className="text-xs text-muted-foreground">
+          <summary className="cursor-pointer flex items-center gap-1 hover:text-foreground">
+            <Bug className="h-3 w-3" />
+            Debug Info
+          </summary>
+          <div className="mt-2 p-2 bg-muted/50 rounded font-mono text-[10px]">
+            <div>Job ID: {jobId}</div>
+            <div>Status: {status}</div>
+            <div>Progress: {progress}%</div>
+            <div>Step: {step || 'N/A'}</div>
+            <div>Accounts extracted: {checkpoints.accounts?.length || 0}</div>
+          </div>
+        </details>
       )}
     </div>
   );

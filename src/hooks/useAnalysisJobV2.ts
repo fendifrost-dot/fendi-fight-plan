@@ -3,6 +3,9 @@
  * 
  * Wraps the centralized analysisJobs module.
  * Components should use this hook, NOT call analysisJobs directly.
+ * 
+ * CRITICAL INVARIANT: Toast must ONLY fire AFTER the onComplete callback
+ * has successfully hydrated results into the component's state.
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
@@ -12,12 +15,10 @@ import {
   fetchJobStatus,
   retryJob as retryJobApi,
   fetchActiveJob,
-  fetchJobById,
   isTerminalStatus,
   isPollExpired,
   isJobStale,
   getPollInterval,
-  formatJobResult,
   parseJobResultAccounts,
   JobState,
   JobStatus,
@@ -25,8 +26,12 @@ import {
 } from '@/lib/analysisJobs';
 
 export interface UseAnalysisJobOptions {
-  /** Callback when job completes successfully */
-  onComplete?: (result: any, accounts: any[]) => void;
+  /** 
+   * Callback when job completes successfully.
+   * MUST return true after hydrating results into state.
+   * Toast will ONLY fire if this returns true.
+   */
+  onComplete?: (result: any, accounts: any[]) => boolean | void;
   /** Callback when job fails */
   onError?: (errorCode: string | null, errorMessage: string | null) => void;
   /** Callback when job has partial results */
@@ -39,7 +44,6 @@ export interface UseAnalysisJobReturn {
   state: JobState;
   isProcessing: boolean;
   isStale: boolean;
-  formattedStatus: { accountCount: number; summary: string; hasPartialData: boolean };
   
   // Actions
   startAnalysis: (imageUrls: string[], questionnaire?: any, sessionId?: string | null) => Promise<string | null>;
@@ -91,8 +95,26 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
       if (result.status === 'DONE' && !completedRef.current) {
         completedRef.current = true;
         const accounts = parseJobResultAccounts(result.result);
-        toast.success(`Analysis complete. Found ${accounts.length} account(s).`);
-        onComplete?.(result.result, accounts);
+        
+        // CRITICAL: Call onComplete and only show toast if it returns true
+        // This ensures results are hydrated before the success message
+        try {
+          const hydrationSuccess = onComplete?.(result.result, accounts);
+          
+          // Only show toast if hydration was successful (callback returned true)
+          if (hydrationSuccess === true) {
+            toast.success(`Analysis complete. Found ${accounts.length} account(s).`);
+          } else if (hydrationSuccess === undefined) {
+            // Legacy behavior for callbacks that don't return anything
+            // Still show toast but warn in console
+            console.warn('[useAnalysisJobV2] onComplete callback should return true after hydrating results');
+            toast.success(`Analysis complete. Found ${accounts.length} account(s).`);
+          }
+          // If hydrationSuccess === false, don't show toast (hydration failed)
+        } catch (err) {
+          console.error('[useAnalysisJobV2] onComplete callback failed:', err);
+          toast.error('Analysis complete but failed to load results. Use the reload button.');
+        }
       } else if (result.status === 'PARTIAL') {
         const accounts = result.checkpoints?.accounts || [];
         toast.warning(`Analysis partially complete. Extracted ${accounts.length} account(s).`);
@@ -245,13 +267,11 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
 
   const isProcessing = ['QUEUED', 'RUNNING'].includes(state.status);
   const isStale = isJobStale(state);
-  const formattedStatus = formatJobResult(state);
 
   return {
     state,
     isProcessing,
     isStale,
-    formattedStatus,
     startAnalysis,
     resumeJob,
     retryJob,

@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect } from "react";
-import { Upload, FileText, Loader2, AlertCircle, Copy, Check, Sparkles, ChevronRight, AlertTriangle, LogIn, X, Plus, User, MapPin, Briefcase, Phone, Mail, Calendar, Hash, Shield, FileWarning, Edit3, Layers, Scale } from "lucide-react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { Upload, FileText, Loader2, AlertCircle, Copy, Check, Sparkles, ChevronRight, AlertTriangle, LogIn, X, Plus, User, MapPin, Briefcase, Phone, Mail, Calendar, Hash, Shield, FileWarning, Edit3, Layers, Scale, RefreshCw, Bug } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -15,8 +15,9 @@ import { pdfToImages, extractTextFromPdf, detectBureauFromText, isHeicFile, isPd
 import DisputeLetterBuilder from "./DisputeLetterBuilder";
 import { useChunkedAnalysis } from "@/hooks/useChunkedAnalysis";
 import { AnalysisProgress } from "./AnalysisProgress";
-import { useAnalysisJob } from "@/hooks/useAnalysisJob";
+import { useAnalysisJobV2 } from "@/hooks/useAnalysisJobV2";
 import { AnalysisJobProgress } from "./AnalysisJobProgress";
+import { parseJobResultAccounts } from "@/lib/analysisJobs";
 
 // Bureau type for multi-bureau support
 type BureauName = 'experian' | 'equifax' | 'transunion';
@@ -150,6 +151,92 @@ const AIAnalyzer = () => {
   // Chunked analysis hook for multi-bureau reports
   const { progress: chunkedProgress, analyzeChunked, skipPaymentHistory, retrySection, reset: resetChunked } = useChunkedAnalysis();
   const [documentMap, setDocumentMap] = useState<any>(null);
+
+  // Track if job completed but results failed to load (for debug panel)
+  const [jobCompletedButEmpty, setJobCompletedButEmpty] = useState(false);
+  const [lastJobInfo, setLastJobInfo] = useState<{ jobId: string | null; resultCount: number } | null>(null);
+
+  // Store the job ID for callbacks (avoids circular dependency)
+  const currentJobIdRef = useRef<string | null>(null);
+
+  /**
+   * CRITICAL: Hydrate job results into the `results` state.
+   * Returns true only if hydration succeeds.
+   * Toast will only fire after this returns true.
+   */
+  const handleJobComplete = useCallback((resultData: any, accounts: any[]) => {
+    console.log('[AIAnalyzer] handleJobComplete called with', accounts.length, 'accounts');
+    setLastJobInfo({ jobId: currentJobIdRef.current, resultCount: accounts.length });
+    
+    if (!accounts || accounts.length === 0) {
+      console.warn('[AIAnalyzer] Job complete but no accounts extracted');
+      setJobCompletedButEmpty(true);
+      setIsAnalyzing(false);
+      return false; // Don't show success toast
+    }
+
+    try {
+      // Convert job accounts to DisputeAnalysisResult format
+      const hydratedResult: DisputeAnalysisResult = {
+        bureau: resultData?.documentMap?.is_multi_bureau ? 'Multi-Bureau' : 'Credit Report',
+        is_multi_bureau_report: resultData?.documentMap?.is_multi_bureau || false,
+        detected_bureaus: resultData?.documentMap?.detected_bureaus || [],
+        inaccurate_names: [],
+        inaccurate_addresses: [],
+        inaccurate_employers: [],
+        extra_identifier_mismatches: [],
+        derogatory_accounts: accounts.map((acc: any) => ({
+          creditor_name: acc.creditorName || acc.creditor_name || 'Unknown',
+          account_number: acc.maskedAccountNumber || acc.account_number || 'Unknown',
+          date_opened: acc.dateOpened || acc.date_opened || '',
+          derogatory_triggers: acc.derogatoryTriggers || acc.derogatory_triggers || [],
+          status_as_reported: acc.status || 'Unknown',
+          confidence: (acc.confidence >= 0.9 ? 'high' : acc.confidence >= 0.7 ? 'medium' : 'low') as "high" | "medium" | "low",
+          bureaus: acc.bureaus || [],
+        })),
+        late_payment_summary: [],
+        collections: [],
+        charge_offs: [],
+        public_records: [],
+        inquiries: [],
+        summary: `Extracted ${accounts.length} account(s) from ${resultData?.totalPages || 'multiple'} pages.`,
+        next_steps: [
+          "Review each account for accuracy",
+          "Select accounts to dispute",
+          "Generate dispute letters"
+        ],
+        warnings: resultData?.failedChunks?.length > 0 
+          ? [`${resultData.failedChunks.length} page chunk(s) failed to process`] 
+          : [],
+      };
+
+      // Hydrate into results state
+      setResults({ 'async-job': hydratedResult });
+      setActiveTab('async-job');
+      setIsAnalyzing(false);
+      setJobCompletedButEmpty(false);
+      
+      console.log('[AIAnalyzer] Results hydrated successfully:', Object.keys({ 'async-job': hydratedResult }));
+      return true; // Success - show toast
+    } catch (err) {
+      console.error('[AIAnalyzer] Failed to hydrate results:', err);
+      setJobCompletedButEmpty(true);
+      setIsAnalyzing(false);
+      return false; // Don't show success toast
+    }
+  }, []);
+
+  const handleJobError = useCallback((errorCode: string | null, errorMessage: string | null) => {
+    console.error('[AIAnalyzer] Job error:', errorCode, errorMessage);
+    setIsAnalyzing(false);
+    setError(errorMessage || 'Analysis failed');
+  }, []);
+
+  const handleJobPartial = useCallback((accounts: any[]) => {
+    console.log('[AIAnalyzer] Partial results:', accounts.length, 'accounts');
+    setLastJobInfo({ jobId: currentJobIdRef.current, resultCount: accounts.length });
+    setIsAnalyzing(false);
+  }, []);
   
   // Async job hook for timeout-resistant analysis
   const { 
@@ -160,7 +247,17 @@ const AIAnalyzer = () => {
     usePartialResults,
     reset: resetJob,
     isProcessing: isJobProcessing 
-  } = useAnalysisJob();
+  } = useAnalysisJobV2({
+    onComplete: handleJobComplete,
+    onError: handleJobError,
+    onPartial: handleJobPartial,
+    autoResume: true,
+  });
+
+  // Keep ref in sync with job state
+  useEffect(() => {
+    currentJobIdRef.current = jobState.jobId;
+  }, [jobState.jobId]);
 
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
@@ -1527,10 +1624,10 @@ const AIAnalyzer = () => {
               {/* Analyze button */}
               <Button
                 onClick={() => handleAnalyze()}
-                disabled={isAnalyzing || anyFileProcessing || (!responseText && uploadedFiles.length === 0) || !fullLegalName || !currentAddress || !currentEmployer || hasUnknownBureau}
+                disabled={isAnalyzing || isJobProcessing || anyFileProcessing || (!responseText && uploadedFiles.length === 0) || !fullLegalName || !currentAddress || !currentEmployer || hasUnknownBureau}
                 className="w-full py-6 text-lg font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
-                {isAnalyzing ? (
+                {isAnalyzing || isJobProcessing ? (
                   <>
                     <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                     Analyzing Credit Reports...
@@ -1547,6 +1644,71 @@ const AIAnalyzer = () => {
                   </>
                 )}
               </Button>
+
+              {/* Job Progress - shown when async job is active */}
+              {(isJobProcessing || jobState.status === 'PARTIAL' || jobState.status === 'FAILED') && (
+                <AnalysisJobProgress
+                  state={jobState}
+                  onRetry={retryJob}
+                  onUsePartial={() => {
+                    const accounts = usePartialResults();
+                    if (accounts.length > 0) {
+                      // Hydrate partial results
+                      handleJobComplete({ accounts }, accounts);
+                    }
+                  }}
+                  isStale={false}
+                />
+              )}
+
+              {/* Debug Panel - shown when job completed but results are empty */}
+              {jobCompletedButEmpty && lastJobInfo && (
+                <div className="p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-lg space-y-3">
+                  <div className="flex items-center gap-2 text-yellow-600 dark:text-yellow-400">
+                    <Bug className="w-5 h-5" />
+                    <span className="font-medium">Results Loading Issue</span>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Analysis completed but results failed to load into the UI. 
+                    This can happen due to a temporary issue.
+                  </p>
+                  <div className="text-xs font-mono bg-muted/50 p-2 rounded">
+                    <div>Job ID: {lastJobInfo.jobId || 'N/A'}</div>
+                    <div>Result Count: {lastJobInfo.resultCount}</div>
+                    <div>Results State: {Object.keys(results).length} keys</div>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={async () => {
+                        // Reload results from job
+                        if (lastJobInfo.jobId && jobState.result) {
+                          const accounts = parseJobResultAccounts(jobState.result);
+                          const success = handleJobComplete(jobState.result, accounts);
+                          if (success) {
+                            setJobCompletedButEmpty(false);
+                          }
+                        }
+                      }}
+                    >
+                      <RefreshCw className="w-4 h-4 mr-1" />
+                      Reload Results
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        resetJob();
+                        setJobCompletedButEmpty(false);
+                        setLastJobInfo(null);
+                      }}
+                    >
+                      Start Over
+                    </Button>
+                  </div>
+                </div>
+              )}
 
               {/* Error state */}
               {error && (
