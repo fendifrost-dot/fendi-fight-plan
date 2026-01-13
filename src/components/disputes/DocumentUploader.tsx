@@ -369,7 +369,7 @@ export function DocumentUploader({
                 )}
                 <div className="min-w-0">
                   <p className="text-sm font-medium truncate">{doc.name}</p>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <p className="text-xs text-muted-foreground">
                       {(doc.size / 1024 / 1024).toFixed(2)} MB
                     </p>
@@ -377,6 +377,11 @@ export function DocumentUploader({
                       <p className="text-xs text-muted-foreground truncate">
                         {doc.relativePath}
                       </p>
+                    )}
+                    {!doc.file && category === 'bureau_response' && (
+                      <Badge variant="outline" className="text-xs">
+                        Re-upload required
+                      </Badge>
                     )}
                     {doc.extractedText && (
                       <Badge variant="outline" className="text-xs">
