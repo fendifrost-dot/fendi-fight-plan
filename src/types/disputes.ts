@@ -129,9 +129,15 @@ export interface ProcessingProgress {
   message: string;
 }
 
+// Session mode for generation
+export type DisputeMode = "ai" | "manual";
+
 // Persisted dispute session
 export interface DisputeSession {
   id: string;
+  
+  // Session mode (AI or Manual)
+  mode: DisputeMode;
   
   // Section 1: Evidence
   documents: UploadedDocument[];
@@ -210,6 +216,7 @@ export const defaultProcessingProgress: ProcessingProgress = {
 export function createDefaultSession(): DisputeSession {
   return {
     id: crypto.randomUUID(),
+    mode: "ai",
     documents: [],
     bureauResponseText: "",
     priorLetterText: "",

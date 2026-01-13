@@ -87,6 +87,7 @@ export type Database = {
           id: string
           imported_analyzer_data: Json | null
           is_analyzed: boolean | null
+          mode: string
           outcome_confirmation: Json | null
           prior_letter_text: string | null
           processing_progress: Json | null
@@ -105,6 +106,7 @@ export type Database = {
           id?: string
           imported_analyzer_data?: Json | null
           is_analyzed?: boolean | null
+          mode?: string
           outcome_confirmation?: Json | null
           prior_letter_text?: string | null
           processing_progress?: Json | null
@@ -123,6 +125,7 @@ export type Database = {
           id?: string
           imported_analyzer_data?: Json | null
           is_analyzed?: boolean | null
+          mode?: string
           outcome_confirmation?: Json | null
           prior_letter_text?: string | null
           processing_progress?: Json | null
