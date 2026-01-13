@@ -86,12 +86,14 @@ export function useDisputeSession(): UseDisputeSessionReturn {
     const loadState = async () => {
       setIsLoading(true);
       
+      let loadedState: DisputeSession | null = null;
+      
       // Try localStorage first for immediate hydration
       try {
         const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
         if (saved) {
           const parsed = JSON.parse(saved);
-          setState(parsed);
+          loadedState = parsed;
           dbSessionIdRef.current = parsed.id || null;
         }
       } catch (e) {
@@ -112,7 +114,7 @@ export function useDisputeSession(): UseDisputeSessionReturn {
           if (data && !error) {
             dbSessionIdRef.current = data.id;
             const dbState = mapDbToState(data);
-            setState(dbState);
+            loadedState = dbState;
             localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(dbState));
             
             // Load associated accounts
@@ -122,15 +124,50 @@ export function useDisputeSession(): UseDisputeSessionReturn {
               .eq('session_id', data.id);
             
             if (accounts && accounts.length > 0) {
-              setState(prev => ({
-                ...prev,
+              loadedState = {
+                ...loadedState,
                 accounts: accounts.map(mapDbAccountToState),
-              }));
+              };
             }
           }
         } catch (e) {
           console.error('Failed to load from database:', e);
         }
+      }
+
+      // CRITICAL: Auto-cleanup stale Bureau Response docs that lost their File object
+      // This happens after page refresh since File objects can't be serialized
+      if (loadedState) {
+        const staleBureauDocs = loadedState.documents.filter(
+          d => d.type === 'bureau_response' && !d.file
+        );
+        
+        if (staleBureauDocs.length > 0) {
+          // Remove stale docs and reset analysis state
+          const cleanedDocs = loadedState.documents.filter(
+            d => d.type !== 'bureau_response' || d.file
+          );
+          
+          loadedState = {
+            ...loadedState,
+            documents: cleanedDocs,
+            // Reset analysis-related state since the source files are gone
+            isAnalyzed: false,
+            analysisResult: null,
+            accounts: [],
+            processingProgress: defaultProcessingProgress,
+          };
+          
+          // Show user-friendly message after a short delay (after component mounts)
+          setTimeout(() => {
+            toast.info(
+              'Your previous Bureau Response files could not be restored after the page reload. Please upload them again to continue.',
+              { duration: 6000 }
+            );
+          }, 500);
+        }
+        
+        setState(loadedState);
       }
       
       setIsLoading(false);
