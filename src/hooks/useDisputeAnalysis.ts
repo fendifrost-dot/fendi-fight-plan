@@ -13,6 +13,26 @@ import { defaultProcessingProgress } from '@/types/disputes';
 const MAX_IMAGES_PER_CHUNK = 3;
 const CONCURRENT_REQUESTS = 2;
 
+async function safeReadJson(res: Response): Promise<any> {
+  try {
+    return await res.json();
+  } catch {
+    try {
+      const text = await res.text();
+      return { error: text || res.statusText || 'Request failed' };
+    } catch {
+      return { error: res.statusText || 'Request failed' };
+    }
+  }
+}
+
+function getErrorMessage(payload: any): string | null {
+  if (!payload) return null;
+  if (typeof payload === 'string') return payload;
+  return payload.error || payload.message || payload.details || null;
+}
+
+
 interface DocumentMap {
   is_multi_bureau: boolean;
   detected_bureaus: string[];
@@ -100,7 +120,11 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
 
       const allImages: string[] = [];
       const bureauDocs = documents.filter(d => d.type === 'bureau_response');
-      
+
+      // If the UI rehydrated from localStorage after a refresh/hot reload, the File objects
+      // will be missing (they are not serializable). Detect this early with a clear message.
+      const hasBureauFiles = bureauDocs.some(d => !!d.file);
+
       for (const doc of bureauDocs) {
         if (doc.file && doc.file.type === 'application/pdf') {
           try {
@@ -131,6 +155,13 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
       // Fall back to text-based classification if no images
       if (bureauResponseText.trim()) {
         return await analyzeWithTextClassification(bureauResponseText, priorLetterText, accessToken);
+      }
+
+      // Clear guidance for the common "files present but File objects missing" scenario
+      if (bureauDocs.length > 0 && !hasBureauFiles) {
+        throw new Error(
+          'Your Bureau Response upload needs to be re-added. For security reasons, your browser can’t restore the actual file after a refresh/hot reload. Remove the Bureau Response item(s) and upload again (or paste the response text).'
+        );
       }
 
       // Check if only prior dispute docs were uploaded (common user error)
@@ -182,10 +213,11 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
     );
 
     if (!mapResponse.ok) {
-      const err = await mapResponse.json();
+      const err = await safeReadJson(mapResponse);
+      const msg = getErrorMessage(err);
       if (mapResponse.status === 429) throw new Error('Rate limit exceeded. Please wait a moment.');
       if (mapResponse.status === 402) throw new Error('Usage limit reached. Please add credits.');
-      throw new Error(err.error || 'Failed to map document');
+      throw new Error(msg || 'Failed to map document');
     }
 
     const documentMap: DocumentMap = await mapResponse.json();
@@ -364,14 +396,15 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
       }
     );
 
+    const payload = await safeReadJson(response);
+
     if (!response.ok) {
-      const err = await response.json();
       if (response.status === 429) throw new Error('Rate limit exceeded');
       if (response.status === 402) throw new Error('Usage limit reached');
-      throw new Error(err.error || 'Classification failed');
+      throw new Error(getErrorMessage(payload) || 'Classification failed');
     }
 
-    const data = await response.json();
+    const data = payload;
 
     const accounts: DisputeAccount[] = (data.accounts || []).map((acc: any) => ({
       id: acc.id || crypto.randomUUID(),
@@ -431,13 +464,14 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
       }
     );
 
+    const payload = await safeReadJson(response);
+
     if (!response.ok) {
-      const err = await response.json();
-      console.error(`Chunk ${chunkIndex + 1} failed:`, err);
-      throw new Error(err.error || 'Chunk analysis failed');
+      console.error(`Chunk ${chunkIndex + 1} failed:`, payload);
+      throw new Error(getErrorMessage(payload) || 'Chunk analysis failed');
     }
 
-    return response.json();
+    return payload as ChunkResult;
   };
 
   const retryChunk = useCallback(async (chunkIndex: number) => {

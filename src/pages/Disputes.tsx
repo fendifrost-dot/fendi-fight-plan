@@ -194,9 +194,15 @@ const Disputes = () => {
   }, [analysisProgress, setProcessingProgress]);
 
   // ============= STATE CHECKS =============
-  const hasDocuments = state.documents.length > 0 || state.bureauResponseText.trim().length > 0;
+  const bureauResponseDocs = state.documents.filter(d => d.type === 'bureau_response');
+  const hasBureauFile = bureauResponseDocs.some(d => d.file instanceof File);
+  const hasBureauText = state.bureauResponseText.trim().length > 0;
+
+  // Only Bureau Response input unlocks analysis (prior letters alone should not).
+  const hasDocuments = bureauResponseDocs.length > 0 || hasBureauText;
+
   const isEvidenceLocked = state.isAnalyzed;
-  const canAnalyze = hasDocuments && !state.isAnalyzed && !isProcessing;
+  const canAnalyze = hasDocuments && !state.isAnalyzed && !isProcessing && (hasBureauFile || hasBureauText);
   const canShowReview = state.isAnalyzed && state.accounts.length > 0;
   const hasSelectedAccounts = state.accounts.some(a => a.isSelected);
   // Allow outcome confirmation if analyzed OR if user skipped analysis
@@ -544,6 +550,13 @@ const Disputes = () => {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
+                {/* Missing-file warning (common after refresh/hot reload) */}
+                {!state.isAnalyzed && bureauResponseDocs.length > 0 && !hasBureauFile && !hasBureauText && (
+                  <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-sm">
+                    Your Bureau Response item(s) are saved, but the actual file needs to be re-uploaded (browsers can’t restore files after a refresh). Remove the Bureau Response upload(s) and add them again — or paste the response text above.
+                  </div>
+                )}
+
                 {/* Processing Progress */}
                 <ProcessingProgress 
                   progress={state.processingProgress}
