@@ -1,6 +1,9 @@
 /**
  * Single-source-of-truth gating system for Dispute Engine generation.
  * ALL generation eligibility is computed from ONE validator function.
+ * 
+ * CRITICAL: No other booleans (canShowSurvey, isAnalyzed, analysisSkipped, etc.)
+ * may gate UI. Only getGenerateBlockers determines eligibility.
  */
 
 import type { DisputeSession, AnalysisStatus, DisputeMode } from "@/types/disputes";
@@ -26,6 +29,15 @@ export function getGenerateBlockers(session: DisputeSession, isGenerating: boole
       message: "Generation in progress. Please wait.",
     });
     return blockers; // Early return - no point checking other conditions
+  }
+
+  // 0b. Analysis job running - must wait or switch to manual
+  if (session.activeJobId && session.analysisStatus === "IN_PROGRESS") {
+    blockers.push({
+      key: "analysis_running",
+      message: "Analysis is running. Wait for completion or switch to Manual mode.",
+    });
+    // Don't early return - still check other requirements so user sees full list
   }
 
   // 1. Require at least 1 bureau selected
@@ -71,7 +83,8 @@ export function getGenerateBlockers(session: DisputeSession, isGenerating: boole
 
   if (session.mode === "AI") {
     // AI Mode requirements
-    if (session.analysisStatus === "IN_PROGRESS") {
+    // Skip this check if we already added the analysis_running blocker
+    if (session.analysisStatus === "IN_PROGRESS" && !session.activeJobId) {
       blockers.push({
         key: "analysis_running",
         message: "Analysis is running. Wait for completion or switch to Manual mode.",
@@ -137,6 +150,34 @@ export function getFirstBlockerMessage(session: DisputeSession, isGenerating: bo
 }
 
 /**
+ * Check if user can analyze (separate from generate).
+ * Analysis requires: documents OR bureauResponseText, not currently analyzing.
+ */
+export function canAnalyze(session: DisputeSession): { allowed: boolean; reason?: string } {
+  if (session.analysisStatus === "IN_PROGRESS" || session.activeJobId) {
+    return { allowed: false, reason: "Analysis already in progress." };
+  }
+  
+  if (session.analysisStatus === "DONE") {
+    return { allowed: false, reason: "Analysis complete. Reset to analyze again." };
+  }
+  
+  const hasBureauResponse = session.documents.some(d => 
+    d.type === 'bureau_response' && d.file instanceof File
+  );
+  const hasBureauText = session.bureauResponseText.trim().length > 0;
+  
+  if (!hasBureauResponse && !hasBureauText) {
+    return { 
+      allowed: false, 
+      reason: "Upload a Bureau Response document or paste response text." 
+    };
+  }
+  
+  return { allowed: true };
+}
+
+/**
  * Debug info object for logging on generate attempts.
  */
 export function getGenerateDebugInfo(session: DisputeSession, isGenerating: boolean = false) {
@@ -144,6 +185,8 @@ export function getGenerateDebugInfo(session: DisputeSession, isGenerating: bool
   return {
     mode: session.mode,
     analysisStatus: session.analysisStatus,
+    activeJobId: session.activeJobId,
+    latestAnalyzerResultId: session.latestAnalyzerResultId,
     hasName: (session.consumerInfo.fullName?.trim().length || 0) > 0,
     hasStreet: (session.consumerInfo.addressLine1?.trim().length || 0) > 0,
     hasCityStateZip: (session.consumerInfo.cityStateZip?.trim().length || 0) > 0,
@@ -158,4 +201,11 @@ export function getGenerateDebugInfo(session: DisputeSession, isGenerating: bool
     blockerCount: blockers.length,
     blockers: blockers.map(b => b.key),
   };
+}
+
+/**
+ * Check if session has any active job that should resume on mount.
+ */
+export function shouldResumeJob(session: DisputeSession): boolean {
+  return Boolean(session.activeJobId && session.analysisStatus === "IN_PROGRESS");
 }
