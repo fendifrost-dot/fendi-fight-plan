@@ -149,6 +149,12 @@ export interface DisputeSession {
   // Analysis status: tracks where AI processing is
   analysisStatus: AnalysisStatus;
   
+  // Active job ID for async analysis (null if no job running)
+  activeJobId: string | null;
+  
+  // Latest analyzer result ID (points to analysis_jobs.id when DONE)
+  latestAnalyzerResultId: string | null;
+  
   // === Section 1: Evidence ===
   documents: UploadedDocument[];
   bureauResponseText: string;
@@ -231,6 +237,8 @@ export function createDefaultSession(): DisputeSession {
     id: crypto.randomUUID(),
     mode: "AI",
     analysisStatus: "NOT_STARTED",
+    activeJobId: null,
+    latestAnalyzerResultId: null,
     documents: [],
     bureauResponseText: "",
     priorLetterText: "",

@@ -45,6 +45,10 @@ interface UseDisputeSessionReturn {
   setProcessingProgress: (progress: ProcessingProgress) => void;
   setAnalysisStatus: (status: AnalysisStatus) => void;
   
+  // Job tracking actions (for async analysis)
+  setActiveJobId: (jobId: string | null) => void;
+  setLatestAnalyzerResultId: (resultId: string | null) => void;
+  
   // Survey/outcome actions
   updateOutcome: (outcome: Partial<OutcomeConfirmation>) => void;
   updateSurvey: (survey: Partial<DisputeSurvey>) => void;
@@ -496,6 +500,23 @@ export function useDisputeSession(): UseDisputeSessionReturn {
     }));
   }, []);
 
+  // Job tracking actions
+  const setActiveJobId = useCallback((jobId: string | null) => {
+    setState(prev => ({
+      ...prev,
+      activeJobId: jobId,
+      // When starting a job, set status to IN_PROGRESS
+      analysisStatus: jobId ? "IN_PROGRESS" : prev.analysisStatus,
+    }));
+  }, []);
+
+  const setLatestAnalyzerResultId = useCallback((resultId: string | null) => {
+    setState(prev => ({
+      ...prev,
+      latestAnalyzerResultId: resultId,
+    }));
+  }, []);
+
   return {
     session,
     state,
@@ -510,6 +531,8 @@ export function useDisputeSession(): UseDisputeSessionReturn {
     setAnalysisResult,
     setProcessingProgress,
     setAnalysisStatus,
+    setActiveJobId,
+    setLatestAnalyzerResultId,
     updateOutcome,
     updateSurvey,
     updateConsumerInfo,
@@ -565,6 +588,8 @@ function mapDbToState(data: any): DisputeSession {
     id: data.id,
     mode,
     analysisStatus,
+    activeJobId: data.active_job_id || null,
+    latestAnalyzerResultId: data.latest_analyzer_result_id || null,
     manualClaimsText: data.manual_claims_text || "",
     documents: parseJson(data.documents, []),
     bureauResponseText: data.bureau_response_text || '',
