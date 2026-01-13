@@ -39,6 +39,12 @@ import {
 import { DocumentUploader } from "@/components/disputes/DocumentUploader";
 import { AccountReviewTable } from "@/components/disputes/AccountReviewTable";
 import { ProcessingProgress } from "@/components/disputes/ProcessingProgress";
+import { 
+  GenerateRequirementsPanel, 
+  computeGenerateRequirements, 
+  computeCanGenerate,
+  getFirstUnmetRequirement,
+} from "@/components/disputes/GenerateRequirementsPanel";
 
 // New hooks for persistence and analysis
 import { useDisputeSession } from "@/hooks/useDisputeSession";
@@ -167,6 +173,7 @@ const Disputes = () => {
     updateConsumerInfo,
     setSelectedBureaus,
     setGeneratedLetters,
+    setMode,
     resetSession,
     importAnalyzerData,
   } = useDisputeSession();
@@ -205,13 +212,18 @@ const Disputes = () => {
   const canAnalyze = hasDocuments && !state.isAnalyzed && !isProcessing && (hasBureauFile || hasBureauText);
   const canShowReview = state.isAnalyzed && state.accounts.length > 0;
   const hasSelectedAccounts = state.accounts.some(a => a.isSelected);
-  // Allow outcome confirmation if analyzed OR if user skipped analysis
-  const [analysisSkipped, setAnalysisSkipped] = useState(false);
-  const canConfirmOutcome = state.isAnalyzed || analysisSkipped;
+  
+  // Outcome confirmation is now unlocked if analyzed OR in manual mode
+  const canConfirmOutcome = state.isAnalyzed || state.mode === "manual";
   const isOutcomeConfirmed = state.outcomeConfirmation.receivedResponse !== null;
-  const canShowSurvey = isOutcomeConfirmed;
-  // Allow generation if: survey visible, bureaus selected, name filled, AND (has selected accounts OR analysis was skipped)
-  const canGenerate = canShowSurvey && state.selectedBureaus.length > 0 && state.consumerInfo.fullName.trim() && (hasSelectedAccounts || analysisSkipped);
+  
+  // Survey is optional in manual mode - it unlocks immediately
+  const canShowSurvey = state.mode === "manual" || isOutcomeConfirmed;
+  
+  // Compute generation requirements using centralized logic
+  const generateRequirements = computeGenerateRequirements(state, isGenerating);
+  const canGenerate = computeCanGenerate(generateRequirements);
+  
   const hasGeneratedLetter = Object.values(state.generatedLetters).some(l => l && l.length > 0);
 
   // ============= HANDLERS =============
@@ -286,18 +298,43 @@ const Disputes = () => {
   };
 
   const handleGenerateLetter = async () => {
-    if (!session?.access_token || state.selectedBureaus.length === 0) {
-      toast.error("Please log in and select at least one bureau.");
+    // Instrumentation: log structured object for debugging
+    const debugInfo = {
+      hasName: generateRequirements.hasName,
+      hasBureaus: generateRequirements.hasBureaus,
+      isAnalyzed: generateRequirements.isAnalyzed,
+      mode: generateRequirements.mode,
+      selectedAccountsCount: generateRequirements.selectedAccountCount,
+      canGenerate,
+      isGenerating,
+    };
+    console.log("[Generate Attempt]", debugInfo);
+
+    // If button is disabled, show toast with the reason
+    if (!canGenerate) {
+      const reason = getFirstUnmetRequirement(generateRequirements);
+      toast.error(reason || "Cannot generate letter. Check requirements above.");
       return;
     }
 
-    if (!state.consumerInfo.fullName.trim() || !state.consumerInfo.addressLine1.trim()) {
-      toast.error("Please complete your contact information.");
+    if (!session?.access_token) {
+      toast.error("Please log in to generate letters.");
       return;
     }
 
+    if (state.selectedBureaus.length === 0) {
+      toast.error("Please select at least one bureau.");
+      return;
+    }
+
+    if (!state.consumerInfo.fullName.trim()) {
+      toast.error("Please enter your full legal name.");
+      return;
+    }
+
+    // In AI mode, require selected accounts. In Manual mode, accounts are optional.
     const selectedAccounts = state.accounts.filter(a => a.isSelected);
-    if (selectedAccounts.length === 0) {
+    if (state.mode === "ai" && selectedAccounts.length === 0) {
       toast.error("Please select at least one account to dispute.");
       return;
     }
@@ -311,6 +348,24 @@ const Disputes = () => {
       for (const bureauKey of state.selectedBureaus) {
         const bureau = BUREAU_DATA[bureauKey];
         
+        // Build extractedData - in manual mode, use survey info + any user-provided text
+        const extractedData = state.importedAnalyzerData?.analysisResults || {
+          inaccurateNames: [],
+          inaccurateAddresses: [],
+          derogatoryAccounts: selectedAccounts.length > 0 
+            ? selectedAccounts.map(acc => ({
+                creditor_name: acc.creditorName,
+                account_number: acc.maskedAccountNumber,
+                date_opened: acc.dateOpened || "Unknown",
+                derogatory_triggers: [acc.disputeReason || "Disputed item"],
+              }))
+            : [],
+          inquiries: [],
+          collections: [],
+          chargeOffs: [],
+          publicRecords: [],
+        };
+
         const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-dispute-letter`, {
           method: "POST",
           headers: {
@@ -319,20 +374,7 @@ const Disputes = () => {
           },
           body: JSON.stringify({
             survey: state.survey,
-            extractedData: state.importedAnalyzerData?.analysisResults || {
-              inaccurateNames: [],
-              inaccurateAddresses: [],
-              derogatoryAccounts: selectedAccounts.map(acc => ({
-                creditor_name: acc.creditorName,
-                account_number: acc.maskedAccountNumber,
-                date_opened: acc.dateOpened || "Unknown",
-                derogatory_triggers: [acc.disputeReason || "Disputed item"],
-              })),
-              inquiries: [],
-              collections: [],
-              chargeOffs: [],
-              publicRecords: [],
-            },
+            extractedData,
             consumerInfo: state.consumerInfo,
             bureau: {
               key: bureauKey,
@@ -593,21 +635,29 @@ const Disputes = () => {
                   </Button>
                 )}
 
-                {/* Skip Analysis option for users who want to proceed without AI */}
-                {!state.isAnalyzed && !analysisSkipped && (
+                {/* Switch to Manual Mode button for users who want to skip AI */}
+                {!state.isAnalyzed && state.mode === "ai" && (
                   <Button 
                     variant="ghost" 
                     size="sm"
-                    onClick={() => setAnalysisSkipped(true)}
+                    onClick={() => setMode("manual")}
                     className="w-full text-muted-foreground hover:text-foreground"
                   >
                     Skip Analysis & Proceed Manually
                   </Button>
                 )}
 
-                {analysisSkipped && !state.isAnalyzed && (
-                  <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-sm">
-                    Analysis skipped. You can proceed to fill out the outcome confirmation and generate letters manually.
+                {state.mode === "manual" && !state.isAnalyzed && (
+                  <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-sm flex items-center justify-between">
+                    <span>Manual Mode: AI analysis skipped. You can proceed to generate letters.</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setMode("ai")}
+                      className="text-amber-400 hover:text-amber-300"
+                    >
+                      Switch to AI Mode
+                    </Button>
                   </div>
                 )}
 
@@ -953,6 +1003,12 @@ const Disputes = () => {
                     {state.selectedBureaus.length} bureau(s) selected
                   </p>
                 </div>
+
+                {/* Requirements Checklist Panel */}
+                <GenerateRequirementsPanel 
+                  requirements={generateRequirements}
+                  canGenerate={canGenerate}
+                />
 
                 <Button 
                   onClick={handleGenerateLetter} 

@@ -12,6 +12,7 @@ import type {
   ConsumerInfo,
   ProcessingProgress,
   BureauKey,
+  DisputeMode,
 } from '@/types/disputes';
 import {
   createDefaultSession,
@@ -50,6 +51,9 @@ interface UseDisputeSessionReturn {
   // Bureau/letter actions
   setSelectedBureaus: (bureaus: BureauKey[]) => void;
   setGeneratedLetters: (letters: Record<BureauKey, string>) => void;
+  
+  // Mode action
+  setMode: (mode: DisputeMode) => void;
   
   // Persistence
   saveToDatabase: () => Promise<void>;
@@ -448,6 +452,14 @@ export function useDisputeSession(): UseDisputeSessionReturn {
     }));
   }, []);
 
+  // Mode action
+  const setMode = useCallback((mode: DisputeMode) => {
+    setState(prev => ({
+      ...prev,
+      mode,
+    }));
+  }, []);
+
   return {
     session,
     state,
@@ -466,6 +478,7 @@ export function useDisputeSession(): UseDisputeSessionReturn {
     updateConsumerInfo,
     setSelectedBureaus,
     setGeneratedLetters,
+    setMode,
     saveToDatabase,
     loadFromDatabase,
     resetSession,
@@ -477,6 +490,7 @@ export function useDisputeSession(): UseDisputeSessionReturn {
 function mapStateToDb(state: DisputeSession, userId: string) {
   return {
     user_id: userId,
+    mode: state.mode,
     documents: JSON.stringify(state.documents),
     bureau_response_text: state.bureauResponseText,
     prior_letter_text: state.priorLetterText,
@@ -495,6 +509,7 @@ function mapStateToDb(state: DisputeSession, userId: string) {
 function mapDbToState(data: any): DisputeSession {
   return {
     id: data.id,
+    mode: data.mode || 'ai',
     documents: parseJson(data.documents, []),
     bureauResponseText: data.bureau_response_text || '',
     priorLetterText: data.prior_letter_text || '',
