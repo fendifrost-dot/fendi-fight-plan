@@ -3,6 +3,12 @@
 
 export type BureauKey = "experian" | "equifax" | "transunion";
 
+// Engine mode: AI-assisted vs Manual
+export type DisputeMode = "AI" | "MANUAL";
+
+// Analysis status: tracks where AI processing is
+export type AnalysisStatus = "NOT_STARTED" | "IN_PROGRESS" | "DONE" | "FAILED" | "SKIPPED";
+
 export const BUREAU_DATA = {
   experian: {
     legalName: "Experian Information Solutions, Inc.",
@@ -37,13 +43,15 @@ export interface UploadedDocument {
   type: DocumentClassification;
   size: number;
   mimeType: string;
-  file?: File; // Original file object for processing
+  file?: File; // Original file object for processing (non-serializable)
   extractedText?: string;
   pageCount?: number;
   uploadedAt: string;
   processingStatus: "pending" | "extracting" | "classifying" | "complete" | "failed";
   errorMessage?: string;
   relativePath?: string; // For folder/zip uploads
+  needsReupload?: boolean; // True if file was lost after page refresh
+  storageUrl?: string; // If persisted to backend storage
 }
 
 // Analysis result per account
@@ -129,38 +137,43 @@ export interface ProcessingProgress {
   message: string;
 }
 
-// Session mode for generation
-export type DisputeMode = "ai" | "manual";
-
 // Persisted dispute session
 export interface DisputeSession {
   id: string;
   
-  // Session mode (AI or Manual)
+  // === CORE ENGINE STATE (persisted to DB + localStorage) ===
+  
+  // Engine mode: AI-assisted vs Manual
   mode: DisputeMode;
   
-  // Section 1: Evidence
+  // Analysis status: tracks where AI processing is
+  analysisStatus: AnalysisStatus;
+  
+  // === Section 1: Evidence ===
   documents: UploadedDocument[];
   bureauResponseText: string;
   priorLetterText: string;
   
-  // Section 2: Processing
+  // Manual claims text (user allegations/summary, used in manual generation)
+  manualClaimsText: string;
+  
+  // === Section 2: Processing ===
   processingProgress: ProcessingProgress;
   
-  // Section 3: Analysis Results
+  // === Section 3: Analysis Results ===
   analysisResult: AnalysisResult | null;
-  isAnalyzed: boolean;
+  isAnalyzed: boolean; // Kept for backward compat, derived from analysisStatus
   
-  // Section 4: Review
+  // === Section 4: Review ===
   accounts: DisputeAccount[];
   
-  // Section 5: Outcome Confirmation
+  // === Section 5: Outcome Confirmation ===
   outcomeConfirmation: OutcomeConfirmation;
   
-  // Section 6: Legal Survey
+  // === Section 6: Legal Survey ===
   survey: DisputeSurvey;
   
-  // Section 7: Letter Generation
+  // === Section 7: Letter Generation ===
   selectedBureaus: BureauKey[];
   generatedLetters: Record<BureauKey, string>;
   consumerInfo: ConsumerInfo;
@@ -216,10 +229,12 @@ export const defaultProcessingProgress: ProcessingProgress = {
 export function createDefaultSession(): DisputeSession {
   return {
     id: crypto.randomUUID(),
-    mode: "ai",
+    mode: "AI",
+    analysisStatus: "NOT_STARTED",
     documents: [],
     bureauResponseText: "",
     priorLetterText: "",
+    manualClaimsText: "",
     processingProgress: defaultProcessingProgress,
     analysisResult: null,
     isAnalyzed: false,
