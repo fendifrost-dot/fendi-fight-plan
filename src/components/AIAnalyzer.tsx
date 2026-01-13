@@ -15,6 +15,8 @@ import { pdfToImages, extractTextFromPdf, detectBureauFromText, isHeicFile, isPd
 import DisputeLetterBuilder from "./DisputeLetterBuilder";
 import { useChunkedAnalysis } from "@/hooks/useChunkedAnalysis";
 import { AnalysisProgress } from "./AnalysisProgress";
+import { useAnalysisJob } from "@/hooks/useAnalysisJob";
+import { AnalysisJobProgress } from "./AnalysisJobProgress";
 
 // Bureau type for multi-bureau support
 type BureauName = 'experian' | 'equifax' | 'transunion';
@@ -148,6 +150,17 @@ const AIAnalyzer = () => {
   // Chunked analysis hook for multi-bureau reports
   const { progress: chunkedProgress, analyzeChunked, skipPaymentHistory, retrySection, reset: resetChunked } = useChunkedAnalysis();
   const [documentMap, setDocumentMap] = useState<any>(null);
+  
+  // Async job hook for timeout-resistant analysis
+  const { 
+    state: jobState, 
+    startAnalysis: startJobAnalysis, 
+    resumeJob, 
+    retryJob, 
+    usePartialResults,
+    reset: resetJob,
+    isProcessing: isJobProcessing 
+  } = useAnalysisJob();
 
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
@@ -477,13 +490,35 @@ const AIAnalyzer = () => {
           clearTimeout(timeoutId);
         }
       } else {
-        // Check if any multi-bureau files with many pages (use chunked analysis)
+        // Check if any multi-bureau files with many pages (use async job analysis)
         const hasLargeMultiBureau = Object.values(bureauGroups).some(
           g => g.bureau === 'multi-bureau' && g.images.length > 10
         );
+        
+        // Check total image count for async job (>15 pages uses async job to avoid timeout)
+        const totalImageCount = Object.values(bureauGroups).reduce((sum, g) => sum + g.images.length, 0);
+        const useAsyncJob = totalImageCount > 15;
 
-        if (hasLargeMultiBureau) {
-          // Use chunked analysis for large multi-bureau reports
+        if (useAsyncJob) {
+          // Use async job system for large reports to avoid timeout
+          const allImages = Object.values(bureauGroups).flatMap(g => g.images);
+          
+          toast({
+            title: "Starting background analysis",
+            description: `Analyzing ${totalImageCount} pages. This may take a few minutes. You can refresh and resume.`,
+          });
+          
+          const jobId = await startJobAnalysis(allImages, questionnaire);
+          
+          if (!jobId) {
+            throw new Error("Failed to start analysis job");
+          }
+          
+          // Job started - polling will handle the rest
+          // Don't set isAnalyzing to false yet - let the job progress handle it
+          return;
+        } else if (hasLargeMultiBureau) {
+          // Use chunked analysis for large multi-bureau reports (legacy fallback)
           for (const [key, group] of Object.entries(bureauGroups)) {
             if (group.bureau === 'multi-bureau' && group.images.length > 10) {
               const displayName = group.label 
