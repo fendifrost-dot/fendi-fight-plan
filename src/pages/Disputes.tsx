@@ -204,7 +204,8 @@ const Disputes = () => {
   const canConfirmOutcome = state.isAnalyzed || analysisSkipped;
   const isOutcomeConfirmed = state.outcomeConfirmation.receivedResponse !== null;
   const canShowSurvey = isOutcomeConfirmed;
-  const canGenerate = canShowSurvey && state.selectedBureaus.length > 0 && state.consumerInfo.fullName.trim() && hasSelectedAccounts;
+  // Allow generation if: survey visible, bureaus selected, name filled, AND (has selected accounts OR analysis was skipped)
+  const canGenerate = canShowSurvey && state.selectedBureaus.length > 0 && state.consumerInfo.fullName.trim() && (hasSelectedAccounts || analysisSkipped);
   const hasGeneratedLetter = Object.values(state.generatedLetters).some(l => l && l.length > 0);
 
   // ============= HANDLERS =============
