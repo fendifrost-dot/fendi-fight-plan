@@ -13,13 +13,14 @@ import type {
   ProcessingProgress,
   BureauKey,
   DisputeMode,
+  AnalysisStatus,
 } from '@/types/disputes';
 import {
   createDefaultSession,
   defaultProcessingProgress,
 } from '@/types/disputes';
 
-const LOCAL_STORAGE_KEY = 'dispute-engine-state-v4';
+const LOCAL_STORAGE_KEY = 'dispute-engine-state-v5'; // Bumped version for new schema
 
 interface UseDisputeSessionReturn {
   session: Session | null;
@@ -42,6 +43,7 @@ interface UseDisputeSessionReturn {
   // Analysis actions
   setAnalysisResult: (result: AnalysisResult, accounts: DisputeAccount[]) => void;
   setProcessingProgress: (progress: ProcessingProgress) => void;
+  setAnalysisStatus: (status: AnalysisStatus) => void;
   
   // Survey/outcome actions
   updateOutcome: (outcome: Partial<OutcomeConfirmation>) => void;
@@ -54,6 +56,9 @@ interface UseDisputeSessionReturn {
   
   // Mode action
   setMode: (mode: DisputeMode) => void;
+  
+  // Manual claims text
+  setManualClaimsText: (text: string) => void;
   
   // Persistence
   saveToDatabase: () => Promise<void>;
@@ -143,27 +148,25 @@ export function useDisputeSession(): UseDisputeSessionReturn {
       // This happens after page refresh since File objects can't be serialized
       if (loadedState) {
         const staleBureauDocs = loadedState.documents.filter(
-          d => d.type === 'bureau_response' && !d.file
+          d => d.type === 'bureau_response' && !d.file && !d.storageUrl
         );
         
         if (staleBureauDocs.length > 0) {
-          // Remove stale docs and reset analysis state
-          const cleanedDocs = loadedState.documents.filter(
-            d => d.type !== 'bureau_response' || d.file
-          );
+          // Mark stale docs with needsReupload flag instead of deleting
+          const updatedDocs = loadedState.documents.map(d => {
+            if (d.type === 'bureau_response' && !d.file && !d.storageUrl) {
+              return { ...d, needsReupload: true };
+            }
+            return d;
+          });
           
           loadedState = {
             ...loadedState,
-            documents: cleanedDocs,
-            // Reset analysis-related state since the source files are gone
-            isAnalyzed: false,
-            analysisResult: null,
-            accounts: [],
-            processingProgress: defaultProcessingProgress,
+            documents: updatedDocs,
           };
           
           // CRITICAL: Also update localStorage to prevent stale docs from reappearing
-          const cleanedForStorage = cleanedDocs.map(({ file, ...rest }) => rest);
+          const cleanedForStorage = updatedDocs.map(({ file, ...rest }) => rest);
           const toSave = { 
             ...loadedState, 
             documents: cleanedForStorage,
@@ -174,10 +177,22 @@ export function useDisputeSession(): UseDisputeSessionReturn {
           // Show user-friendly message after a short delay (after component mounts)
           setTimeout(() => {
             toast.info(
-              'Your previous Bureau Response files could not be restored after the page reload. Please upload them again to continue.',
+              'Some files could not be restored after the page reload. Re-upload them or use Manual Mode.',
               { duration: 6000 }
             );
           }, 500);
+        }
+        
+        // Ensure new fields have defaults
+        if (!loadedState.analysisStatus) {
+          loadedState.analysisStatus = loadedState.isAnalyzed ? "DONE" : "NOT_STARTED";
+        }
+        if (!loadedState.manualClaimsText) {
+          loadedState.manualClaimsText = "";
+        }
+        if (!loadedState.mode || (loadedState.mode !== "AI" && loadedState.mode !== "MANUAL")) {
+          // Migrate old lowercase mode to new uppercase
+          loadedState.mode = (loadedState.mode as any) === "manual" ? "MANUAL" : "AI";
         }
         
         setState(loadedState);
@@ -383,6 +398,7 @@ export function useDisputeSession(): UseDisputeSessionReturn {
       analysisResult: result,
       accounts,
       isAnalyzed: true,
+      analysisStatus: "DONE" as AnalysisStatus,
       selectedBureaus: result.bureau === 'multi-bureau' 
         ? ['experian', 'equifax', 'transunion'] as BureauKey[]
         : [result.bureau as BureauKey],
@@ -457,6 +473,26 @@ export function useDisputeSession(): UseDisputeSessionReturn {
     setState(prev => ({
       ...prev,
       mode,
+      // When switching to MANUAL, also set analysisStatus to SKIPPED
+      analysisStatus: mode === "MANUAL" ? "SKIPPED" : prev.analysisStatus,
+    }));
+  }, []);
+
+  // Analysis status action
+  const setAnalysisStatus = useCallback((status: AnalysisStatus) => {
+    setState(prev => ({
+      ...prev,
+      analysisStatus: status,
+      // Keep isAnalyzed in sync for backward compat
+      isAnalyzed: status === "DONE",
+    }));
+  }, []);
+
+  // Manual claims text action
+  const setManualClaimsText = useCallback((text: string) => {
+    setState(prev => ({
+      ...prev,
+      manualClaimsText: text,
     }));
   }, []);
 
@@ -473,12 +509,14 @@ export function useDisputeSession(): UseDisputeSessionReturn {
     selectAllAccounts,
     setAnalysisResult,
     setProcessingProgress,
+    setAnalysisStatus,
     updateOutcome,
     updateSurvey,
     updateConsumerInfo,
     setSelectedBureaus,
     setGeneratedLetters,
     setMode,
+    setManualClaimsText,
     saveToDatabase,
     loadFromDatabase,
     resetSession,
@@ -503,13 +541,31 @@ function mapStateToDb(state: DisputeSession, userId: string) {
     selected_bureaus: state.selectedBureaus,
     generated_letters: JSON.stringify(state.generatedLetters),
     imported_analyzer_data: state.importedAnalyzerData ? JSON.stringify(state.importedAnalyzerData) : null,
+    // Note: analysisStatus and manualClaimsText would need DB columns
+    // For now they're stored in consumer_info JSON or need migration
   };
 }
 
 function mapDbToState(data: any): DisputeSession {
+  // Migrate old lowercase mode to new uppercase
+  let mode: DisputeMode = "AI";
+  if (data.mode === "manual" || data.mode === "MANUAL") {
+    mode = "MANUAL";
+  }
+  
+  // Derive analysisStatus from isAnalyzed for backward compat
+  let analysisStatus: AnalysisStatus = "NOT_STARTED";
+  if (data.is_analyzed) {
+    analysisStatus = "DONE";
+  } else if (mode === "MANUAL") {
+    analysisStatus = "SKIPPED";
+  }
+
   return {
     id: data.id,
-    mode: data.mode || 'ai',
+    mode,
+    analysisStatus,
+    manualClaimsText: data.manual_claims_text || "",
     documents: parseJson(data.documents, []),
     bureauResponseText: data.bureau_response_text || '',
     priorLetterText: data.prior_letter_text || '',

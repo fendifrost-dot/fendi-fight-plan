@@ -39,12 +39,15 @@ import {
 import { DocumentUploader } from "@/components/disputes/DocumentUploader";
 import { AccountReviewTable } from "@/components/disputes/AccountReviewTable";
 import { ProcessingProgress } from "@/components/disputes/ProcessingProgress";
+import { GenerateRequirementsPanel } from "@/components/disputes/GenerateRequirementsPanel";
+
+// New gating system - single source of truth
 import { 
-  GenerateRequirementsPanel, 
-  computeGenerateRequirements, 
-  computeCanGenerate,
-  getFirstUnmetRequirement,
-} from "@/components/disputes/GenerateRequirementsPanel";
+  canGenerate as checkCanGenerate, 
+  getGenerateBlockers, 
+  getFirstBlockerMessage,
+  getGenerateDebugInfo,
+} from "@/lib/dispute-gating";
 
 // New hooks for persistence and analysis
 import { useDisputeSession } from "@/hooks/useDisputeSession";
@@ -168,12 +171,14 @@ const Disputes = () => {
     selectAllAccounts,
     setAnalysisResult,
     setProcessingProgress,
+    setAnalysisStatus,
     updateOutcome,
     updateSurvey,
     updateConsumerInfo,
     setSelectedBureaus,
     setGeneratedLetters,
     setMode,
+    setManualClaimsText,
     resetSession,
     importAnalyzerData,
   } = useDisputeSession();
@@ -213,16 +218,15 @@ const Disputes = () => {
   const canShowReview = state.isAnalyzed && state.accounts.length > 0;
   const hasSelectedAccounts = state.accounts.some(a => a.isSelected);
   
-  // Outcome confirmation is now unlocked if analyzed OR in manual mode
-  const canConfirmOutcome = state.isAnalyzed || state.mode === "manual";
+  // Outcome confirmation unlocks if analyzed OR in MANUAL mode
+  const canConfirmOutcome = state.isAnalyzed || state.mode === "MANUAL";
   const isOutcomeConfirmed = state.outcomeConfirmation.receivedResponse !== null;
   
-  // Survey is optional in manual mode - it unlocks immediately
-  const canShowSurvey = state.mode === "manual" || isOutcomeConfirmed;
+  // Survey is optional in MANUAL mode - it unlocks immediately
+  const canShowSurvey = state.mode === "MANUAL" || isOutcomeConfirmed;
   
-  // Compute generation requirements using centralized logic
-  const generateRequirements = computeGenerateRequirements(state, isGenerating);
-  const canGenerate = computeCanGenerate(generateRequirements);
+  // Use the single-source-of-truth gating system
+  const canGenerate = checkCanGenerate(state, isGenerating);
   
   const hasGeneratedLetter = Object.values(state.generatedLetters).some(l => l && l.length > 0);
 
@@ -299,20 +303,12 @@ const Disputes = () => {
 
   const handleGenerateLetter = async () => {
     // Instrumentation: log structured object for debugging
-    const debugInfo = {
-      hasName: generateRequirements.hasName,
-      hasBureaus: generateRequirements.hasBureaus,
-      isAnalyzed: generateRequirements.isAnalyzed,
-      mode: generateRequirements.mode,
-      selectedAccountsCount: generateRequirements.selectedAccountCount,
-      canGenerate,
-      isGenerating,
-    };
+    const debugInfo = getGenerateDebugInfo(state, isGenerating);
     console.log("[Generate Attempt]", debugInfo);
 
     // If button is disabled, show toast with the reason
     if (!canGenerate) {
-      const reason = getFirstUnmetRequirement(generateRequirements);
+      const reason = getFirstBlockerMessage(state, isGenerating);
       toast.error(reason || "Cannot generate letter. Check requirements above.");
       return;
     }
@@ -332,11 +328,15 @@ const Disputes = () => {
       return;
     }
 
-    // In AI mode, require selected accounts. In Manual mode, accounts are optional.
+    // In AI mode with completed analysis, require selected accounts
+    // In MANUAL mode, accounts are optional if manualClaimsText exists
     const selectedAccounts = state.accounts.filter(a => a.isSelected);
-    if (state.mode === "ai" && selectedAccounts.length === 0) {
-      toast.error("Please select at least one account to dispute.");
-      return;
+    if (state.mode === "AI" && state.analysisStatus === "DONE" && selectedAccounts.length === 0) {
+      // Check if there's manual claims text as fallback
+      if (!state.manualClaimsText?.trim()) {
+        toast.error("Please select at least one account to dispute, or add manual claims text.");
+        return;
+      }
     }
 
     setIsGenerating(true);
@@ -636,24 +636,24 @@ const Disputes = () => {
                 )}
 
                 {/* Switch to Manual Mode button for users who want to skip AI */}
-                {!state.isAnalyzed && state.mode === "ai" && (
+                {!state.isAnalyzed && state.mode === "AI" && (
                   <Button 
                     variant="ghost" 
                     size="sm"
-                    onClick={() => setMode("manual")}
+                    onClick={() => setMode("MANUAL")}
                     className="w-full text-muted-foreground hover:text-foreground"
                   >
                     Skip Analysis & Proceed Manually
                   </Button>
                 )}
 
-                {state.mode === "manual" && !state.isAnalyzed && (
+                {state.mode === "MANUAL" && !state.isAnalyzed && (
                   <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-sm flex items-center justify-between">
                     <span>Manual Mode: AI analysis skipped. You can proceed to generate letters.</span>
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => setMode("ai")}
+                      onClick={() => setMode("AI")}
                       className="text-amber-400 hover:text-amber-300"
                     >
                       Switch to AI Mode
@@ -1004,10 +1004,11 @@ const Disputes = () => {
                   </p>
                 </div>
 
-                {/* Requirements Checklist Panel */}
+                {/* Requirements Checklist Panel - uses single-source-of-truth gating */}
                 <GenerateRequirementsPanel 
-                  requirements={generateRequirements}
-                  canGenerate={canGenerate}
+                  session={state}
+                  isGenerating={isGenerating}
+                  onSwitchToManual={() => setMode("MANUAL")}
                 />
 
                 <Button 
