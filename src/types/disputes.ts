@@ -7,7 +7,7 @@ export type BureauKey = "experian" | "equifax" | "transunion";
 export type DisputeMode = "AI" | "MANUAL";
 
 // Analysis status: tracks where AI processing is
-export type AnalysisStatus = "NOT_STARTED" | "IN_PROGRESS" | "DONE" | "FAILED" | "SKIPPED";
+export type AnalysisStatus = "NOT_STARTED" | "IN_PROGRESS" | "DONE" | "FAILED" | "SKIPPED" | "ABORTED" | "STALE";
 
 export const BUREAU_DATA = {
   experian: {

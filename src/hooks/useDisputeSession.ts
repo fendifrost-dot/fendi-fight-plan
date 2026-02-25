@@ -334,21 +334,35 @@ export function useDisputeSession(): UseDisputeSessionReturn {
   }, [session?.user?.id]);
 
   const resetSession = useCallback(async () => {
-    // Delete from database if exists
+    // Reset DB session columns to clean state (don't delete, just reset)
     if (dbSessionIdRef.current && session?.user?.id) {
       try {
         await supabase
           .from('dispute_sessions')
-          .delete()
+          .update({
+            analysis_status: 'NOT_STARTED',
+            active_job_id: null,
+            latest_analysis_job_id: null,
+            manual_claims_text: '',
+            is_analyzed: false,
+            analysis_result: null,
+            documents: JSON.stringify([]),
+            processing_progress: JSON.stringify(defaultProcessingProgress),
+            mode: 'AI',
+            selected_bureaus: [],
+            generated_letters: JSON.stringify({ experian: '', equifax: '', transunion: '' }),
+            bureau_response_text: '',
+            prior_letter_text: '',
+          })
           .eq('id', dbSessionIdRef.current);
       } catch (e) {
-        console.error('Failed to delete session:', e);
+        console.error('Failed to reset session in database:', e);
       }
     }
     
     // Reset local state
-    dbSessionIdRef.current = null;
     const newState = createDefaultSession();
+    // Keep the same DB session ID so we don't orphan the row
     setState(newState);
     localStorage.removeItem(LOCAL_STORAGE_KEY);
     toast.success('Session cleared');
@@ -552,6 +566,10 @@ function mapStateToDb(state: DisputeSession, userId: string) {
   return {
     user_id: userId,
     mode: state.mode,
+    analysis_status: state.analysisStatus,
+    active_job_id: state.activeJobId || null,
+    latest_analysis_job_id: state.latestAnalyzerResultId || null,
+    manual_claims_text: state.manualClaimsText || '',
     documents: JSON.stringify(state.documents),
     bureau_response_text: state.bureauResponseText,
     prior_letter_text: state.priorLetterText,
@@ -564,8 +582,6 @@ function mapStateToDb(state: DisputeSession, userId: string) {
     selected_bureaus: state.selectedBureaus,
     generated_letters: JSON.stringify(state.generatedLetters),
     imported_analyzer_data: state.importedAnalyzerData ? JSON.stringify(state.importedAnalyzerData) : null,
-    // Note: analysisStatus and manualClaimsText would need DB columns
-    // For now they're stored in consumer_info JSON or need migration
   };
 }
 
@@ -576,12 +592,15 @@ function mapDbToState(data: any): DisputeSession {
     mode = "MANUAL";
   }
   
-  // Derive analysisStatus from isAnalyzed for backward compat
-  let analysisStatus: AnalysisStatus = "NOT_STARTED";
-  if (data.is_analyzed) {
-    analysisStatus = "DONE";
-  } else if (mode === "MANUAL") {
-    analysisStatus = "SKIPPED";
+  // Use DB column as SSoT; fall back to derivation for legacy rows
+  let analysisStatus: AnalysisStatus = (data.analysis_status as AnalysisStatus) || "NOT_STARTED";
+  if (analysisStatus === "NOT_STARTED") {
+    // Legacy fallback for rows that predate the column
+    if (data.is_analyzed) {
+      analysisStatus = "DONE";
+    } else if (mode === "MANUAL") {
+      analysisStatus = "SKIPPED";
+    }
   }
 
   return {
@@ -589,7 +608,7 @@ function mapDbToState(data: any): DisputeSession {
     mode,
     analysisStatus,
     activeJobId: data.active_job_id || null,
-    latestAnalyzerResultId: data.latest_analyzer_result_id || null,
+    latestAnalyzerResultId: data.latest_analysis_job_id || null,
     manualClaimsText: data.manual_claims_text || "",
     documents: parseJson(data.documents, []),
     bureauResponseText: data.bureau_response_text || '',

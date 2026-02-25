@@ -149,7 +149,9 @@ export type Database = {
       }
       dispute_sessions: {
         Row: {
+          active_job_id: string | null
           analysis_result: Json | null
+          analysis_status: string
           bureau_response_text: string | null
           consumer_info: Json | null
           created_at: string
@@ -158,6 +160,8 @@ export type Database = {
           id: string
           imported_analyzer_data: Json | null
           is_analyzed: boolean | null
+          latest_analysis_job_id: string | null
+          manual_claims_text: string
           mode: string
           outcome_confirmation: Json | null
           prior_letter_text: string | null
@@ -168,7 +172,9 @@ export type Database = {
           user_id: string
         }
         Insert: {
+          active_job_id?: string | null
           analysis_result?: Json | null
+          analysis_status?: string
           bureau_response_text?: string | null
           consumer_info?: Json | null
           created_at?: string
@@ -177,6 +183,8 @@ export type Database = {
           id?: string
           imported_analyzer_data?: Json | null
           is_analyzed?: boolean | null
+          latest_analysis_job_id?: string | null
+          manual_claims_text?: string
           mode?: string
           outcome_confirmation?: Json | null
           prior_letter_text?: string | null
@@ -187,7 +195,9 @@ export type Database = {
           user_id: string
         }
         Update: {
+          active_job_id?: string | null
           analysis_result?: Json | null
+          analysis_status?: string
           bureau_response_text?: string | null
           consumer_info?: Json | null
           created_at?: string
@@ -196,6 +206,8 @@ export type Database = {
           id?: string
           imported_analyzer_data?: Json | null
           is_analyzed?: boolean | null
+          latest_analysis_job_id?: string | null
+          manual_claims_text?: string
           mode?: string
           outcome_confirmation?: Json | null
           prior_letter_text?: string | null
@@ -205,7 +217,22 @@ export type Database = {
           updated_at?: string
           user_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "dispute_sessions_active_job_id_fkey"
+            columns: ["active_job_id"]
+            isOneToOne: false
+            referencedRelation: "analysis_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "dispute_sessions_latest_analysis_job_id_fkey"
+            columns: ["latest_analysis_job_id"]
+            isOneToOne: false
+            referencedRelation: "analysis_jobs"
+            referencedColumns: ["id"]
+          },
+        ]
       }
     }
     Views: {
