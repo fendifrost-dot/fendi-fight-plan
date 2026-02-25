@@ -22,6 +22,7 @@ export type Database = {
           created_at: string
           error_code: string | null
           error_message: string | null
+          expires_at: string | null
           id: string
           input_data: Json | null
           last_heartbeat_at: string | null
@@ -42,6 +43,7 @@ export type Database = {
           created_at?: string
           error_code?: string | null
           error_message?: string | null
+          expires_at?: string | null
           id?: string
           input_data?: Json | null
           last_heartbeat_at?: string | null
@@ -62,6 +64,7 @@ export type Database = {
           created_at?: string
           error_code?: string | null
           error_message?: string | null
+          expires_at?: string | null
           id?: string
           input_data?: Json | null
           last_heartbeat_at?: string | null
