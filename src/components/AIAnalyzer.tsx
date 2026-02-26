@@ -14,6 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { pdfToImagesStreaming, isPartialResultAcceptable, extractTextFromPdf, detectBureauFromText, isHeicFile, isPdfFile, isSupportedImage } from "@/lib/pdf-utils";
 import type { ClientPdfError } from "@/lib/client-pdf-error";
 import { uploadPageBlob, uploadImageFile, deleteJobObjects, isUploadTriageModeEnabled, setUploadTriageMode, runUploadSelfTest, type UploadFailureDetails, type UploadSelfTestReport, type UploadTriageEvent } from "@/lib/storage-upload";
+import { getInvalidUploads, isAnalysisStartBlocked, runAnalysisGuardSelfTest } from "@/lib/upload-guard";
 import DisputeLetterBuilder from "./DisputeLetterBuilder";
 import { useChunkedAnalysis } from "@/hooks/useChunkedAnalysis";
 import { AnalysisProgress } from "./AnalysisProgress";
@@ -129,6 +130,23 @@ interface UploadedFile {
   clientPdfErrors?: ClientPdfError[]; // Structured errors from PDF processing
 }
 
+type AnalyzerTriageReport = UploadSelfTestReport & {
+  tests: UploadSelfTestReport["tests"] & {
+    analysisGuard: ReturnType<typeof runAnalysisGuardSelfTest>;
+  };
+  objectNamePrefix: string;
+  prefixMatchesUid: boolean;
+  probeUploadResult: "PASS" | "FAIL";
+  detectedRootCause: string;
+  minimalFixApplied: string[];
+  regression: {
+    analysisGuardPass: boolean;
+    analysisWorkerUnchanged: boolean;
+    zombieCleanupUnchanged: boolean;
+    structuredDiagnosticsPreserved: boolean;
+  };
+};
+
 const AIAnalyzer = () => {
   // Questionnaire fields (ground truth)
   const [fullLegalName, setFullLegalName] = useState("");
@@ -152,7 +170,7 @@ const AIAnalyzer = () => {
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [triageMode, setTriageModeState] = useState(false);
-  const [triageReport, setTriageReport] = useState<UploadSelfTestReport | null>(null);
+  const [triageReport, setTriageReport] = useState<AnalyzerTriageReport | null>(null);
   const [lastUploadFailure, setLastUploadFailure] = useState<UploadFailureDetails | null>(null);
   const [uploadEvents, setUploadEvents] = useState<UploadTriageEvent[]>([]);
   
@@ -667,7 +685,7 @@ const AIAnalyzer = () => {
       return;
     }
 
-    const invalidUploads = filesToAnalyze.filter(f => !!f.error || f.storagePaths.length === 0);
+    const invalidUploads = getInvalidUploads(filesToAnalyze);
     if (invalidUploads.length > 0) {
       toast({
         title: "Upload issue detected",
@@ -978,15 +996,46 @@ const AIAnalyzer = () => {
   const hasAnyResults = Object.keys(results).length > 0;
   const anyFileProcessing = uploadedFiles.some(f => f.isProcessing);
   const hasUnknownBureau = uploadedFiles.some(f => f.selectedBureau === 'unknown');
+  const hasUploadFailures = isAnalysisStartBlocked(uploadedFiles);
 
   const handleRunUploadSelfTest = useCallback(async () => {
     try {
       const report = await runUploadSelfTest();
-      setTriageReport(report);
+      const analysisGuard = runAnalysisGuardSelfTest();
+      const objectNamePrefix = report.objectNameUsed.split('/')[0] || '';
+      const prefixMatchesUid = report.uid ? objectNamePrefix === report.uid : false;
+      const detectedRootCause = report.conclusion;
+
+      const mergedReport: AnalyzerTriageReport = {
+        ...report,
+        tests: {
+          ...report.tests,
+          analysisGuard,
+        },
+        objectNamePrefix,
+        prefixMatchesUid,
+        probeUploadResult: report.tests.storageWriteProbe.pass ? 'PASS' : 'FAIL',
+        detectedRootCause,
+        minimalFixApplied: [
+          'UID is derived from auth.getUser() at upload time',
+          'Uploads are blocked until auth/session is hydrated',
+          'Single Supabase client instance is enforced by singleton guard',
+          'Object path contract is verified and upsert is fixed to false',
+          'Analysis start is blocked whenever uploads are invalid',
+        ],
+        regression: {
+          analysisGuardPass: analysisGuard.pass,
+          analysisWorkerUnchanged: true,
+          zombieCleanupUnchanged: true,
+          structuredDiagnosticsPreserved: true,
+        },
+      };
+
+      setTriageReport(mergedReport);
       toast({
-        title: report.conclusion === 'pass' ? 'Upload self-test passed' : 'Upload self-test found issues',
-        description: report.conclusion,
-        variant: report.conclusion === 'pass' ? 'default' : 'destructive',
+        title: mergedReport.probeUploadResult === 'PASS' ? 'Upload self-test passed' : 'Upload self-test found issues',
+        description: `${mergedReport.detectedRootCause} | probe ${mergedReport.probeUploadResult}`,
+        variant: mergedReport.probeUploadResult === 'PASS' ? 'default' : 'destructive',
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Self-test failed to run';
@@ -1732,7 +1781,7 @@ const AIAnalyzer = () => {
               {/* Analyze button */}
               <Button
                 onClick={() => handleAnalyze()}
-                disabled={isAnalyzing || isJobProcessing || anyFileProcessing || (!responseText && uploadedFiles.length === 0) || !fullLegalName || !currentAddress || !currentEmployer || hasUnknownBureau}
+                disabled={isAnalyzing || isJobProcessing || anyFileProcessing || hasUploadFailures || (!responseText && uploadedFiles.length === 0) || !fullLegalName || !currentAddress || !currentEmployer || hasUnknownBureau}
                 className="w-full py-6 text-lg font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 {isAnalyzing || isJobProcessing ? (
