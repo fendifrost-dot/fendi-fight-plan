@@ -1271,7 +1271,7 @@ const AIAnalyzer = () => {
                     placeholder="JOHN MICHAEL DOE JR"
                     value={fullLegalName}
                     onChange={(e) => setFullLegalName(e.target.value)}
-                    className="bg-muted/30 border-border/50 uppercase"
+                    className="bg-muted/30 border-border/50"
                   />
                   <p className="text-xs text-muted-foreground">Exact match required. Include middle name, suffix, etc.</p>
                 </div>
@@ -1282,10 +1282,10 @@ const AIAnalyzer = () => {
                     Current Employer <span className="text-destructive">*</span>
                   </Label>
                   <Input
-                    placeholder="ACME CORPORATION"
+                    placeholder="Acme Corporation"
                     value={currentEmployer}
                     onChange={(e) => setCurrentEmployer(e.target.value)}
-                    className="bg-muted/30 border-border/50 uppercase"
+                    className="bg-muted/30 border-border/50"
                   />
                 </div>
                 
@@ -1295,10 +1295,10 @@ const AIAnalyzer = () => {
                     Current Address <span className="text-destructive">*</span>
                   </Label>
                   <Input
-                    placeholder="123 MAIN ST APT 4B, ANYTOWN, CA 90210"
+                    placeholder="123 Main St Apt 4B, Anytown, CA 90210"
                     value={currentAddress}
                     onChange={(e) => setCurrentAddress(e.target.value)}
-                    className="bg-muted/30 border-border/50 uppercase"
+                    className="bg-muted/30 border-border/50"
                   />
                 </div>
               </div>
