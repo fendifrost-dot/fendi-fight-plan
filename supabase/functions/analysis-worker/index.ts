@@ -1,6 +1,9 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+// Build fingerprint — proves THIS code is deployed
+console.log("ANALYSIS_WORKER_BUILD", { version: "2026-02-26_abortchain_verify", abortControllerSelfChain: true });
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -315,12 +318,11 @@ async function processChunk(
  * the request is fully sent. The abort kills the response-wait (not the request),
  * so the next invocation starts processing while this one exits cleanly.
  */
-async function selfChain(supabaseUrl: string, serviceKey: string, jobId: string) {
+async function selfChain(supabaseUrl: string, serviceKey: string, jobId: string, nextChunk: number, invocationId: string) {
   const workerUrl = `${supabaseUrl}/functions/v1/analysis-worker`;
-  console.log(`[worker] self-chaining for job=${jobId} via AbortController dispatch`);
+  console.log("CHAIN_DISPATCH", { jobId, nextChunk, invocationId });
 
   const controller = new AbortController();
-  // 2s is enough for TLS handshake + request body to be fully sent
   const abortTimer = setTimeout(() => controller.abort(), 2000);
 
   try {
@@ -333,16 +335,14 @@ async function selfChain(supabaseUrl: string, serviceKey: string, jobId: string)
       body: JSON.stringify({ jobId }),
       signal: controller.signal,
     });
-    // If we get here, the chained invocation already returned (unlikely for long jobs)
     clearTimeout(abortTimer);
-    console.log(`[worker] self-chain for job=${jobId} completed immediately`);
+    console.log("CHAIN_DISPATCH_SUCCESS", { jobId, nextChunk, invocationId });
   } catch (err) {
     clearTimeout(abortTimer);
     if (err instanceof DOMException && err.name === "AbortError") {
-      // Expected: request was sent, we just didn't wait for the response
-      console.log(`[worker] self-chain dispatched for job=${jobId} (abort-after-send)`);
+      console.log("CHAIN_DISPATCH_ABORTED", { jobId, nextChunk, invocationId, note: "request sent, abort killed response-wait (expected)" });
     } else {
-      console.error(`[worker] self-chain FAILED for job=${jobId}:`, err);
+      console.error("CHAIN_DISPATCH_FAILED", { jobId, nextChunk, invocationId, err: String(err) });
     }
   }
 }
@@ -353,6 +353,7 @@ serve(async (req) => {
   }
 
   const invocationStartedAt = Date.now();
+  const invocationId = crypto.randomUUID().slice(0, 8);
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const lovableApiKey = Deno.env.get("LOVABLE_API_KEY")!;
@@ -371,7 +372,7 @@ serve(async (req) => {
       });
     }
 
-    console.log(`[worker] invocation start job=${jobId}`);
+    console.log(`[worker] invocation start job=${jobId} invocationId=${invocationId}`);
 
     const { data: job, error: fetchError } = await client
       .from("analysis_jobs")
@@ -412,6 +413,8 @@ serve(async (req) => {
     } else {
       // Self-chained continuation — just heartbeat
       await heartbeat(client, jobId, { step: "resuming" });
+      const resumeChunks = ((job.checkpoints || {}) as Job["checkpoints"]).processedChunks || 0;
+      console.log("CHAIN_RESUME", { jobId, resumedFrom: resumeChunks, invocationId });
     }
 
     const inputData = job.input_data as Job["input_data"];
@@ -509,7 +512,7 @@ serve(async (req) => {
     const failedChunks: number[] = checkpoints.failedChunks || [];
     const chunkTimings: ChunkTiming[] = checkpoints.chunkTimings || [];
 
-    console.log(`[worker] job=${jobId} chunkCount=${totalChunks} resumeFrom=${processedChunks} maxThisInvocation=${MAX_CHUNKS_PER_INVOCATION}`);
+    console.log("CHAIN_START", { jobId, startChunk: processedChunks, totalChunks, invocationId });
 
     const accountsPrompt = `Extract ALL accounts from these credit report pages. Output JSON: { "accounts": [{ "creditor_name": "...", "account_number": "XXXX...", "date_opened": "MM/YYYY", "status": "...", "balance": "$X,XXX", "derogatory_triggers": [], "bureaus": [] }] }`;
 
@@ -529,7 +532,7 @@ serve(async (req) => {
         });
 
         // Fire off the next invocation
-        await selfChain(supabaseUrl, supabaseServiceKey, jobId);
+        await selfChain(supabaseUrl, supabaseServiceKey, jobId, i, invocationId);
 
         return new Response(JSON.stringify({
           status: "CHAINING",
