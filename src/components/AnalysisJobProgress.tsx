@@ -11,6 +11,7 @@ interface AnalysisJobProgressProps {
   onUsePartial?: () => void;
   onSwitchToManual?: () => void;
   onCancel?: () => void;
+  onStartFresh?: () => void;
   isStale?: boolean;
 }
 
@@ -29,6 +30,7 @@ export function AnalysisJobProgress({
   onUsePartial,
   onSwitchToManual,
   onCancel,
+  onStartFresh,
   isStale = false,
 }: AnalysisJobProgressProps) {
   const { status, step, progress, errorMessage, error, checkpoints, jobId } = state;
@@ -133,7 +135,15 @@ export function AnalysisJobProgress({
 
       {/* Actions */}
       <div className="flex flex-wrap gap-2">
-        {status === 'FAILED' && onRetry && (
+        {/* JOB_STALE: prominent "Start fresh" button */}
+        {status === 'FAILED' && error?.code === 'JOB_STALE' && onStartFresh && (
+          <Button variant="default" size="sm" onClick={onStartFresh}>
+            <RefreshCw className="h-4 w-4 mr-1" />
+            Start Fresh Analysis
+          </Button>
+        )}
+
+        {status === 'FAILED' && error?.code !== 'JOB_STALE' && onRetry && (
           <Button variant="outline" size="sm" onClick={onRetry}>
             <RefreshCw className="h-4 w-4 mr-1" />
             Retry Analysis

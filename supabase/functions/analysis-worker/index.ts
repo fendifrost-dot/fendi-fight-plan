@@ -74,6 +74,15 @@ function classifyWorkerError(err: Error, step?: string, chunk?: number): Structu
   return { code: "UNKNOWN", message: msg, stage: "WORKER", step, chunk, cause: safeCause(msg) };
 }
 
+async function heartbeat(client: any, jobId: string) {
+  const now = new Date().toISOString();
+  const { error } = await client.from("analysis_jobs").update({
+    last_heartbeat_at: now,
+    updated_at: now,
+  }).eq("id", jobId);
+  if (error) console.error(`Heartbeat failed for ${jobId}:`, error);
+}
+
 async function updateJob(client: any, jobId: string, updates: Record<string, any>) {
   const { error } = await client.from("analysis_jobs").update({
     ...updates,
@@ -354,11 +363,15 @@ serve(async (req) => {
       });
 
       try {
+        await heartbeat(client, jobId);
+
         const chunkImages: string[] = [];
         for (const path of chunks[i]) {
           const dataUrl = await downloadImageAsDataUrl(client, path);
           chunkImages.push(dataUrl);
         }
+
+        await heartbeat(client, jobId);
 
         const userContent: any[] = [
           { type: "text", text: `Analyze chunk ${i + 1} of ${totalChunks}. ${accountsPrompt}` },
@@ -371,6 +384,8 @@ serve(async (req) => {
           { role: "system", content: "Extract credit account data. Output valid JSON only." },
           { role: "user", content: userContent },
         ]);
+
+        await heartbeat(client, jobId);
 
         if (result.accounts && Array.isArray(result.accounts)) {
           allAccounts.push(...result.accounts);
