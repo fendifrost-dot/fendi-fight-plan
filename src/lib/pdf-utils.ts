@@ -19,7 +19,6 @@ async function getPdfJs(): Promise<typeof import('pdfjs-dist')> {
 
 import {
   type ClientPdfError,
-  type ClientPdfErrorMeta,
   classifyPdfError,
   sanitizePdfjsError,
   buildClientPdfError,
@@ -27,11 +26,11 @@ import {
 
 /**
  * Callback signature for streaming page processing.
- * Called once per page with a JPEG Blob. The caller must consume or upload
- * the blob before the next page is yielded — no pages accumulate in memory.
+ * Called once per page with a rendered Blob and its true PDF page number (1-based).
+ * The caller must consume or upload the blob before the next page is yielded.
  */
 export interface PageCallback {
-  (pageIndex: number, blob: Blob, mimeType: string, pageCount: number): Promise<void>;
+  (pdfPageNumber: number, blob: Blob, mimeType: string, pageCount: number): Promise<void>;
 }
 
 /** Result from the best-effort streaming pipeline. */
@@ -42,11 +41,21 @@ export interface StreamingResult {
   errors: ClientPdfError[]; // per-page errors (if any)
 }
 
-/** Fallback render settings. */
-const FALLBACK_SETTINGS = [
-  { scale: 1.5, format: 'image/webp' as const, quality: 0.8 },
-  { scale: 1.0, format: 'image/jpeg' as const, quality: 0.75 },
-];
+/** Primary + fallback render settings (best-effort). */
+const PRIMARY_RENDER = { scale: 1.5, format: 'image/webp' as const, quality: 0.8 };
+const FALLBACK_RENDER = { scale: 1.0, format: 'image/jpeg' as const, quality: 0.75 };
+
+function sanitizePdfjsErrorWithStack(err: unknown): string {
+  const base = sanitizePdfjsError(err);
+  if (!(err instanceof Error) || !err.stack) return base;
+  const sanitizedStack = err.stack
+    .replace(/\/[^\s]+/g, '[path]')
+    .split('\n')
+    .slice(0, 6)
+    .join(' | ')
+    .slice(0, 700);
+  return `${base} | stack: ${sanitizedStack}`;
+}
 
 /**
  * Attempt to render a single page with fallback settings.
@@ -54,13 +63,8 @@ const FALLBACK_SETTINGS = [
  */
 async function renderPageWithFallback(
   page: any,
-  primaryScale: number,
-  primaryQuality: number,
 ): Promise<{ blob: Blob; usedScale: number; usedFormat: string; usedQuality: number }> {
-  const attempts = [
-    { scale: primaryScale, format: 'image/jpeg' as const, quality: primaryQuality },
-    ...FALLBACK_SETTINGS,
-  ];
+  const attempts = [PRIMARY_RENDER, FALLBACK_RENDER];
 
   let lastErr: unknown;
   for (const { scale, format, quality } of attempts) {
@@ -93,6 +97,7 @@ async function renderPageWithFallback(
       // Continue to next fallback
     }
   }
+
   throw lastErr;
 }
 
@@ -110,7 +115,6 @@ async function renderPageWithFallback(
 export async function pdfToImagesStreaming(
   file: File,
   onPage: PageCallback,
-  options: { scale?: number; quality?: number } = {}
 ): Promise<StreamingResult> {
   const pdfjs = await getPdfJs();
 
@@ -125,13 +129,11 @@ export async function pdfToImagesStreaming(
       fileSize: file.size,
       mimeType: file.type,
       operation: 'load',
-      pdfjsError: sanitizePdfjsError(err),
+      pdfjsError: sanitizePdfjsErrorWithStack(err),
     });
   }
 
   const pageCount = pdf.numPages;
-  const scale = options.scale ?? 2;
-  const quality = options.quality ?? 0.85;
 
   const failedPages: number[] = [];
   const errors: ClientPdfError[] = [];
@@ -141,10 +143,10 @@ export async function pdfToImagesStreaming(
     try {
       const page = await pdf.getPage(i);
 
-      const { blob } = await renderPageWithFallback(page, scale, quality);
+      const { blob, usedFormat } = await renderPageWithFallback(page);
 
-      // Deliver to caller — they upload/consume before we continue
-      await onPage(pagesSucceeded, blob, 'image/jpeg', pageCount);
+      // Deliver with true PDF page number (1-based)
+      await onPage(i, blob, usedFormat, pageCount);
       pagesSucceeded++;
 
       page.cleanup();
@@ -157,10 +159,10 @@ export async function pdfToImagesStreaming(
         pageCount,
         failingPage: i,
         operation: 'render',
-        scale,
-        format: 'image/jpeg',
-        quality,
-        pdfjsError: sanitizePdfjsError(err),
+        scale: PRIMARY_RENDER.scale,
+        format: PRIMARY_RENDER.format,
+        quality: PRIMARY_RENDER.quality,
+        pdfjsError: sanitizePdfjsErrorWithStack(err),
       }));
     }
   }
@@ -170,12 +172,11 @@ export async function pdfToImagesStreaming(
 
 /**
  * Determine if a partial result is acceptable.
- * Requires >= 70% pages OR at least 5 pages succeeded.
+ * Rule: >=70% pages OR at least 5 pages for small PDFs (<=10 pages).
  */
 export function isPartialResultAcceptable(result: StreamingResult): boolean {
-  if (result.pagesSucceeded === 0) return false;
-  if (result.pagesSucceeded >= 5) return true;
-  return result.pagesSucceeded / result.pageCount >= 0.7;
+  if (result.pageCount <= 0) return false;
+  return (result.pagesSucceeded / result.pageCount >= 0.7) || (result.pagesSucceeded >= 5 && result.pageCount <= 10);
 }
 
 /**
