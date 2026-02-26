@@ -12,107 +12,120 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Verify caller is authenticated
     const authHeader = req.headers.get("authorization");
-    if (!authHeader) {
+    if (!authHeader?.startsWith("Bearer ")) {
       return new Response(JSON.stringify({ error: "Missing authorization" }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    const dbUrl = Deno.env.get("SUPABASE_DB_URL");
+
+    if (!supabaseUrl || !serviceRoleKey || !dbUrl) {
+      return new Response(
+        JSON.stringify({
+          policies: null,
+          policyCount: null,
+          rlsEnabled: null,
+          rowSecuritySetting: null,
+          queryMethod: "missing_env",
+          queryError: "Required env vars missing for snapshot query",
+          bucketConfig: null,
+        }),
+        {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
+      );
+    }
+
     const supabase = createClient(supabaseUrl, serviceRoleKey);
 
-    // Query pg_policies for storage.objects
-    const { data: policies, error: policiesError } = await supabase.rpc(
-      "get_storage_policies" as any
-    ).maybeSingle();
+    // @ts-ignore - Deno import at runtime
+    const { Pool } = await import("https://deno.land/x/postgres@v0.19.3/mod.ts");
+    const pool = new Pool(dbUrl, 1);
+    const conn = await pool.connect();
 
-    // Fallback: direct SQL via postgres connection
-    // Since rpc won't work without a function, use a raw query approach
-    // We'll query via the REST API by creating a temporary approach
-
-    // Actually, let's just use the admin client to query
-    const { data: rlsCheck, error: rlsError } = await supabase
-      .from("pg_policies" as any)
-      .select("*")
-      .then(() => ({ data: null, error: { message: "pg_policies not accessible via REST" } as any }));
-
-    // The only reliable way is to use the postgres connection directly
-    // Let's use supabase-js sql() if available, otherwise report inability
-    let policySnapshot: any[] | null = null;
+    let policies: Array<{
+      policyname: string;
+      permissive: string;
+      roles: string[];
+      cmd: string;
+      qual: string | null;
+      with_check: string | null;
+    }> | null = null;
     let rlsEnabled: boolean | null = null;
-    let queryMethod = "none";
+    let rowSecuritySetting: string | null = null;
+    let queryMethod = "pg_direct";
     let queryError: string | null = null;
 
     try {
-      // Use the management API or direct SQL
-      const dbUrl = Deno.env.get("SUPABASE_DB_URL");
-      if (dbUrl) {
-        // Use postgres directly via Deno
-        // @ts-ignore - dynamic import
-        const { Pool } = await import("https://deno.land/x/postgres@v0.19.3/mod.ts");
-        const pool = new Pool(dbUrl, 1);
-        const conn = await pool.connect();
+      const policiesResult = await conn.queryObject<{
+        policyname: string;
+        permissive: string;
+        roles: string[];
+        cmd: string;
+        qual: string | null;
+        with_check: string | null;
+      }>`
+        SELECT policyname, permissive, roles, cmd, qual, with_check
+        FROM pg_policies
+        WHERE schemaname='storage' AND tablename='objects'
+        ORDER BY policyname
+      `;
+      policies = policiesResult.rows;
 
-        try {
-          const policiesResult = await conn.queryObject<{
-            policyname: string;
-            permissive: string;
-            roles: string[];
-            cmd: string;
-            qual: string | null;
-            with_check: string | null;
-          }>`
-            SELECT policyname, permissive, roles, cmd, qual, with_check
-            FROM pg_policies
-            WHERE schemaname = 'storage' AND tablename = 'objects'
-            ORDER BY policyname
-          `;
-          policySnapshot = policiesResult.rows;
-          queryMethod = "pg_direct";
+      const rlsResult = await conn.queryObject<{ relrowsecurity: boolean }>`
+        SELECT relrowsecurity
+        FROM pg_class
+        WHERE oid = 'storage.objects'::regclass
+      `;
+      rlsEnabled = rlsResult.rows[0]?.relrowsecurity ?? null;
 
-          const rlsResult = await conn.queryObject<{ relrowsecurity: boolean }>`
-            SELECT relrowsecurity
-            FROM pg_class
-            WHERE oid = 'storage.objects'::regclass
-          `;
-          rlsEnabled = rlsResult.rows[0]?.relrowsecurity ?? null;
-        } finally {
-          conn.release();
-          await pool.end();
-        }
-      } else {
-        queryError = "SUPABASE_DB_URL not available";
-        queryMethod = "unavailable";
-      }
+      const rowSecurityResult = await conn.queryObject<{ row_security: string }>`
+        SHOW row_security
+      `;
+      rowSecuritySetting = rowSecurityResult.rows[0]?.row_security ?? null;
     } catch (err) {
-      queryError = err instanceof Error ? err.message : String(err);
       queryMethod = "pg_direct_failed";
+      queryError = err instanceof Error ? err.message : String(err);
+    } finally {
+      conn.release();
+      await pool.end();
     }
 
-    // Also get bucket config
-    let bucketConfig: any = null;
+    let bucketConfig: {
+      id: string;
+      name: string;
+      public: boolean;
+      allowed_mime_types: string[] | null;
+      file_size_limit: number | null;
+    } | null = null;
+
     try {
       const { data } = await supabase.storage.getBucket("analysis-images");
-      bucketConfig = data
-        ? {
-            id: data.id,
-            name: data.name,
-            public: data.public,
-            allowed_mime_types: data.allowed_mime_types,
-            file_size_limit: data.file_size_limit,
-          }
-        : null;
-    } catch {}
+      if (data) {
+        bucketConfig = {
+          id: data.id,
+          name: data.name,
+          public: data.public,
+          allowed_mime_types: data.allowed_mime_types,
+          file_size_limit: data.file_size_limit,
+        };
+      }
+    } catch {
+      // Keep bucketConfig as null
+    }
 
     return new Response(
       JSON.stringify({
-        policies: policySnapshot,
-        policyCount: policySnapshot?.length ?? null,
+        policies,
+        policyCount: policies?.length ?? null,
         rlsEnabled,
+        rowSecuritySetting,
         queryMethod,
         queryError,
         bucketConfig,
@@ -120,7 +133,7 @@ Deno.serve(async (req) => {
       {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
+      },
     );
   } catch (err) {
     return new Response(
@@ -130,7 +143,7 @@ Deno.serve(async (req) => {
       {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
+      },
     );
   }
 });

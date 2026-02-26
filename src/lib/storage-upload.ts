@@ -110,6 +110,7 @@ export interface UploadSelfTestReport {
     }> | null;
     policyCount: number | null;
     rlsEnabled: boolean | null;
+    rowSecuritySetting: string | null;
     queryMethod: string;
     queryError: string | null;
     bucketConfig: {
@@ -149,6 +150,10 @@ function normalizeStatusCode(status: unknown): number | undefined {
     return Number.isFinite(parsed) ? parsed : undefined;
   }
   return undefined;
+}
+
+export function classifyStorageProbeFailureCode(status: number | undefined): "STORAGE_403" | "STORAGE_WRITE_PROBE_FAILED" {
+  return status === 403 ? "STORAGE_403" : "STORAGE_WRITE_PROBE_FAILED";
 }
 
 export function isUploadTriageModeEnabled(): boolean {
@@ -196,7 +201,7 @@ function extFromMime(mimeType: string): "jpg" | "webp" | "png" {
   return "jpg";
 }
 
-function buildObjectPath(uid: string, uploadId: string, pageNumber: number, ext: string): string {
+export function buildObjectPath(uid: string, uploadId: string, pageNumber: number, ext: string): string {
   return `${uid}/${uploadId}/page-${String(pageNumber).padStart(3, "0")}.${ext}`;
 }
 
@@ -553,7 +558,7 @@ export async function runUploadSelfTest(uploadId: string = "selftest"): Promise<
         status: probeStatus,
         details: (error as { details?: string }).details,
       };
-      errors.push({ code: probeStatus === 403 ? "STORAGE_403" : "STORAGE_WRITE_PROBE_FAILED", message: probeError, meta: probeErrorPayload });
+      errors.push({ code: classifyStorageProbeFailureCode(probeStatus), message: probeError, meta: probeErrorPayload });
     } else {
       probePass = true;
       await supabase.storage.from(BUCKET).remove([probePath]);
@@ -611,6 +616,7 @@ export async function runUploadSelfTest(uploadId: string = "selftest"): Promise<
         policies: null,
         policyCount: null,
         rlsEnabled: null,
+        rowSecuritySetting: null,
         queryMethod: "edge_function_error",
         queryError: fnError.message,
         bucketConfig: null,
@@ -623,6 +629,7 @@ export async function runUploadSelfTest(uploadId: string = "selftest"): Promise<
       policies: null,
       policyCount: null,
       rlsEnabled: null,
+      rowSecuritySetting: null,
       queryMethod: "edge_function_unavailable",
       queryError: err instanceof Error ? err.message : String(err),
       bucketConfig: null,
