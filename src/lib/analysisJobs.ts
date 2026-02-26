@@ -84,7 +84,7 @@ const MAX_POLL_DURATION_MS = 10 * 60 * 1000; // 10 minutes max
  * Persists activeJobId to the session.
  */
 export async function startJob(
-  imageUrls: string[],
+  storagePaths: string[],
   questionnaire: any,
   sessionId: string | null
 ): Promise<{ jobId: string; status: JobStatus } | { error: string }> {
@@ -104,7 +104,7 @@ export async function startJob(
           'Authorization': `Bearer ${authData.session.access_token}`,
         },
         body: JSON.stringify({
-          imageUrls,
+          storagePaths,
           questionnaire,
           sessionId,
         }),

@@ -10,16 +10,18 @@ const MAX_IMAGES_PER_CHUNK = 3;
 const AI_TIMEOUT_MS = 25000;
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 1000;
+const STORAGE_BUCKET = "analysis-images";
 
 interface Job {
   id: string;
+  user_id: string;
   status: string;
   step: string;
   progress: number;
   attempt_count: number;
   max_attempts: number;
   input_data: {
-    imageUrls: string[];
+    storagePaths: string[];
     questionnaire: any;
     reportType: string;
     totalPages: number;
@@ -33,15 +35,74 @@ interface Job {
   };
 }
 
-async function updateJob(client: any, jobId: string, updates: Partial<Job & { error_code?: string; error_message?: string; started_at?: string; completed_at?: string; result_data?: any }>) {
+async function updateJob(client: any, jobId: string, updates: Record<string, any>) {
   const { error } = await client.from("analysis_jobs").update({
     ...updates,
     last_heartbeat_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }).eq("id", jobId);
-  
+
   if (error) {
     console.error(`Failed to update job ${jobId}:`, error);
+  }
+}
+
+/**
+ * Download an image from storage and return as a data URL for AI input.
+ * Uses chunked base64 encoding to avoid btoa crashes on large images.
+ */
+async function downloadImageAsDataUrl(client: any, objectName: string): Promise<string> {
+  const { data, error } = await client.storage
+    .from(STORAGE_BUCKET)
+    .download(objectName);
+
+  if (error || !data) {
+    throw new Error(`Failed to download ${objectName}: ${error?.message || 'no data'}`);
+  }
+
+  const buffer = new Uint8Array(await data.arrayBuffer());
+
+  // Safe chunked base64 encode (no btoa crash on large buffers)
+  const CHUNK_SIZE = 32768;
+  let base64 = '';
+  for (let i = 0; i < buffer.length; i += CHUNK_SIZE) {
+    const chunk = buffer.subarray(i, i + CHUNK_SIZE);
+    base64 += String.fromCharCode(...chunk);
+  }
+  base64 = btoa(base64);
+
+  return `data:image/jpeg;base64,${base64}`;
+}
+
+/**
+ * Delete all storage objects for a job prefix.
+ * Called on terminal states (DONE, FAILED, ABORTED).
+ */
+async function cleanupJobStorage(client: any, userId: string, jobId: string) {
+  try {
+    // List all objects under the job prefix
+    const prefix = `${userId}/${jobId}`;
+    const { data: files, error: listError } = await client.storage
+      .from(STORAGE_BUCKET)
+      .list(prefix, { limit: 500 });
+
+    if (listError || !files || files.length === 0) {
+      console.log(`No storage files to clean up for ${prefix}`);
+      return;
+    }
+
+    const paths = files.map((f: any) => `${prefix}/${f.name}`);
+    const { error: removeError } = await client.storage
+      .from(STORAGE_BUCKET)
+      .remove(paths);
+
+    if (removeError) {
+      console.error(`Failed to clean up storage for ${prefix}:`, removeError);
+    } else {
+      console.log(`Cleaned up ${paths.length} storage objects for job ${jobId}`);
+    }
+  } catch (err) {
+    console.error(`Storage cleanup error for job ${jobId}:`, err);
   }
 }
 
@@ -81,21 +142,21 @@ async function callAIWithTimeout(apiKey: string, messages: any[], timeoutMs: num
 
 async function callAIWithRetry(apiKey: string, messages: any[], retries = MAX_RETRIES): Promise<any> {
   let lastError: Error | null = null;
-  
+
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       return await callAIWithTimeout(apiKey, messages, AI_TIMEOUT_MS);
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
       console.error(`AI call attempt ${attempt + 1} failed:`, lastError.message);
-      
+
       if (attempt < retries) {
         const delay = RETRY_DELAY_MS * Math.pow(2, attempt);
         await new Promise(r => setTimeout(r, delay));
       }
     }
   }
-  
+
   throw lastError;
 }
 
@@ -109,9 +170,11 @@ serve(async (req) => {
   const lovableApiKey = Deno.env.get("LOVABLE_API_KEY")!;
 
   const client = createClient(supabaseUrl, supabaseServiceKey);
+  let parsedJobId: string | null = null;
 
   try {
     const { jobId } = await req.json();
+    parsedJobId = jobId;
 
     if (!jobId) {
       return new Response(JSON.stringify({ error: "jobId required" }), {
@@ -147,29 +210,35 @@ serve(async (req) => {
       status: "RUNNING",
       step: "mapping",
       started_at: new Date().toISOString(),
-      attempt_count: job.attempt_count + 1,
+      attempt_count: (job.attempt_count || 0) + 1,
     });
 
     const inputData = job.input_data as Job["input_data"];
     const checkpoints = (job.checkpoints || {}) as Job["checkpoints"];
-    const images = inputData.imageUrls;
+    const storagePaths = inputData.storagePaths;
 
-    // Step 1: Document Mapping (if not already done)
+    // Step 1: Document Mapping (download sample pages from storage)
     let documentMap = checkpoints.documentMap;
     if (!documentMap) {
       try {
         await updateJob(client, jobId, { step: "mapping", progress: 5 });
 
         // Sample pages for mapping
-        const sampleImages: string[] = [];
-        const totalPages = images.length;
-        
+        const totalPages = storagePaths.length;
+        const sampleIndices: number[] = [];
         for (let i = 0; i < Math.min(5, totalPages); i++) {
-          sampleImages.push(images[i]);
+          sampleIndices.push(i);
         }
         if (totalPages > 7) {
-          sampleImages.push(images[totalPages - 2]);
-          sampleImages.push(images[totalPages - 1]);
+          sampleIndices.push(totalPages - 2);
+          sampleIndices.push(totalPages - 1);
+        }
+
+        // Download sample images from storage
+        const sampleImages: string[] = [];
+        for (const idx of sampleIndices) {
+          const dataUrl = await downloadImageAsDataUrl(client, storagePaths[idx]);
+          sampleImages.push(dataUrl);
         }
 
         const mapPrompt = `Analyze these credit report sample pages and output a JSON document map with sections: personal_info, accounts, inquiries, payment_history, public_records, summary. For each: detected (boolean), start_page (1-indexed), end_page (1-indexed). Also output: is_multi_bureau, detected_bureaus, total_pages: ${totalPages}, report_type.`;
@@ -193,13 +262,12 @@ serve(async (req) => {
         });
       } catch (error) {
         console.error("Document mapping failed:", error);
-        // Continue with fallback map
         documentMap = {
           is_multi_bureau: false,
           detected_bureaus: [],
-          total_pages: images.length,
+          total_pages: storagePaths.length,
           sections: {
-            accounts: { detected: true, start_page: 1, end_page: images.length, page_count: images.length },
+            accounts: { detected: true, start_page: 1, end_page: storagePaths.length, page_count: storagePaths.length },
           },
         };
         await updateJob(client, jobId, {
@@ -211,15 +279,15 @@ serve(async (req) => {
     // Step 2: Chunk and analyze accounts
     await updateJob(client, jobId, { step: "analyzing", progress: 20 });
 
-    const accountsSection = documentMap.sections?.accounts || { start_page: 1, end_page: images.length };
+    const accountsSection = documentMap.sections?.accounts || { start_page: 1, end_page: storagePaths.length };
     const startIdx = (accountsSection.start_page || 1) - 1;
-    const endIdx = accountsSection.end_page || images.length;
-    const sectionImages = images.slice(startIdx, endIdx);
+    const endIdx = accountsSection.end_page || storagePaths.length;
+    const sectionPaths = storagePaths.slice(startIdx, endIdx);
 
-    // Split into chunks
+    // Split into chunks of storage paths
     const chunks: string[][] = [];
-    for (let i = 0; i < sectionImages.length; i += MAX_IMAGES_PER_CHUNK) {
-      chunks.push(sectionImages.slice(i, i + MAX_IMAGES_PER_CHUNK));
+    for (let i = 0; i < sectionPaths.length; i += MAX_IMAGES_PER_CHUNK) {
+      chunks.push(sectionPaths.slice(i, i + MAX_IMAGES_PER_CHUNK));
     }
 
     const totalChunks = chunks.length;
@@ -227,7 +295,6 @@ serve(async (req) => {
     const allAccounts: any[] = checkpoints.accounts || [];
     const failedChunks: number[] = checkpoints.failedChunks || [];
 
-    // Process remaining chunks
     const accountsPrompt = `Extract ALL accounts from these credit report pages. Output JSON: { "accounts": [{ "creditor_name": "...", "account_number": "XXXX...", "date_opened": "MM/YYYY", "status": "...", "balance": "$X,XXX", "derogatory_triggers": [], "bureaus": [] }] }`;
 
     for (let i = processedChunks; i < chunks.length; i++) {
@@ -239,10 +306,17 @@ serve(async (req) => {
       });
 
       try {
+        // Download chunk images from storage (one at a time, release after use)
+        const chunkImages: string[] = [];
+        for (const path of chunks[i]) {
+          const dataUrl = await downloadImageAsDataUrl(client, path);
+          chunkImages.push(dataUrl);
+        }
+
         const userContent: any[] = [
           { type: "text", text: `Analyze chunk ${i + 1} of ${totalChunks}. ${accountsPrompt}` },
         ];
-        for (const img of chunks[i]) {
+        for (const img of chunkImages) {
           userContent.push({ type: "image_url", image_url: { url: img } });
         }
 
@@ -297,7 +371,7 @@ serve(async (req) => {
     const resultData = {
       accounts: normalizedAccounts,
       documentMap,
-      totalPages: images.length,
+      totalPages: storagePaths.length,
       processedChunks,
       totalChunks,
       failedChunks,
@@ -313,7 +387,10 @@ serve(async (req) => {
       error_message: failedChunks.length > 0 ? `${failedChunks.length} chunk(s) failed` : undefined,
     });
 
-    console.log(`Job ${jobId} completed with status ${finalStatus}. Found ${normalizedAccounts.length} accounts.`);
+    // CLEANUP: Delete storage objects on terminal state
+    await cleanupJobStorage(client, job.user_id, jobId);
+
+    console.log(`Job ${jobId} completed with status ${finalStatus}. Found ${normalizedAccounts.length} accounts. Storage cleaned.`);
 
     return new Response(JSON.stringify({ status: finalStatus, accountCount: normalizedAccounts.length }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -321,17 +398,26 @@ serve(async (req) => {
   } catch (error) {
     console.error("Worker error:", error);
 
-    // Try to mark job as failed
-    try {
-      const { jobId } = await req.json();
-      if (jobId) {
-        await updateJob(client, jobId, {
+    // Try to mark job as failed and clean up storage
+    if (parsedJobId) {
+      try {
+        const { data: failedJob } = await client
+          .from("analysis_jobs")
+          .select("user_id")
+          .eq("id", parsedJobId)
+          .maybeSingle();
+
+        await updateJob(client, parsedJobId, {
           status: "FAILED",
           error_code: "WORKER_ERROR",
           error_message: error instanceof Error ? error.message : "Unknown worker error",
         });
-      }
-    } catch {}
+
+        if (failedJob?.user_id) {
+          await cleanupJobStorage(client, failedJob.user_id, parsedJobId);
+        }
+      } catch {}
+    }
 
     return new Response(JSON.stringify({ error: "Worker failed" }), {
       status: 500,

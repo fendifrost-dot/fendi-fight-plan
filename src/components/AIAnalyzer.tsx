@@ -11,7 +11,8 @@ import { supabase } from "@/integrations/supabase/client";
 import { Session } from "@supabase/supabase-js";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { pdfToImages, extractTextFromPdf, detectBureauFromText, isHeicFile, isPdfFile, isSupportedImage } from "@/lib/pdf-utils";
+import { pdfToImagesStreaming, extractTextFromPdf, detectBureauFromText, isHeicFile, isPdfFile, isSupportedImage } from "@/lib/pdf-utils";
+import { uploadPageBlob, uploadImageFile, deleteJobObjects } from "@/lib/storage-upload";
 import DisputeLetterBuilder from "./DisputeLetterBuilder";
 import { useChunkedAnalysis } from "@/hooks/useChunkedAnalysis";
 import { AnalysisProgress } from "./AnalysisProgress";
@@ -113,7 +114,9 @@ interface UploadedFile {
   id: string;
   file: File;
   name: string;
-  images: string[]; // Base64 images (converted from PDF or direct upload)
+  storagePaths: string[]; // Object keys in analysis-images bucket (NOT base64)
+  uploadId: string; // UUID grouping all pages for this file
+  pageCount: number;
   detectedBureau: 'experian' | 'equifax' | 'transunion' | 'multi-bureau' | 'unknown';
   selectedBureau: 'experian' | 'equifax' | 'transunion' | 'multi-bureau' | 'unknown';
   label: string; // UI-only metadata - NEVER sent to AI per invariant
@@ -313,12 +316,16 @@ const AIAnalyzer = () => {
 
       const fileId = generateFileId();
       
+      const uploadId = crypto.randomUUID();
+
       // Add file with processing state
       setUploadedFiles(prev => [...prev, {
         id: fileId,
         file,
         name: file.name,
-        images: [],
+        storagePaths: [],
+        uploadId,
+        pageCount: 0,
         detectedBureau: 'unknown',
         selectedBureau: 'unknown',
         label: '', // Label is UI-only metadata, never sent to AI
@@ -328,42 +335,62 @@ const AIAnalyzer = () => {
 
       // Process file with timeout
       try {
+        if (!session?.user?.id) {
+          throw new Error('Authentication required for upload');
+        }
+        const userId = session.user.id;
+
         if (isPdfFile(file)) {
-          // Wrap PDF processing in a timeout promise
+          // Extract text for bureau detection
+          const text = await extractTextFromPdf(file);
+          const detectedBureau = detectBureauFromText(text);
+
+          const storagePaths: string[] = [];
+          let totalPages = 0;
+
+          // Stream pages: render → blob → upload → release. No base64 array.
           const processPdf = async () => {
-            // Extract text for bureau detection
-            const text = await extractTextFromPdf(file);
-            const detectedBureau = detectBureauFromText(text);
-            
-            // Convert PDF to images - ALL PAGES (no truncation per invariant)
-            const { images, pageCount } = await pdfToImages(file);
-            return { images, detectedBureau, pageCount };
+            const { pageCount } = await pdfToImagesStreaming(
+              file,
+              async (pageIndex, blob, _mimeType, pgCount) => {
+                totalPages = pgCount;
+                const path = await uploadPageBlob(userId, uploadId, pageIndex, blob);
+                storagePaths.push(path);
+
+                // Update processing status as pages upload
+                setUploadedFiles(prev => prev.map(f =>
+                  f.id === fileId
+                    ? { ...f, processingStatus: `Uploading page ${pageIndex + 1}/${pgCount}...` }
+                    : f
+                ));
+              }
+            );
+            return pageCount;
           };
 
           const timeoutPromise = new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error('PDF processing timed out')), 60000); // 60s for full doc
+            setTimeout(() => reject(new Error('PDF processing timed out')), 120000); // 120s for streaming upload
           });
 
           try {
-            const { images, detectedBureau, pageCount } = await Promise.race([
-              processPdf(),
-              timeoutPromise
-            ]);
-            
-            setUploadedFiles(prev => prev.map(f => 
-              f.id === fileId 
-                ? { 
-                    ...f, 
-                    images, 
-                    detectedBureau, 
+            const pageCount = await Promise.race([processPdf(), timeoutPromise]);
+
+            setUploadedFiles(prev => prev.map(f =>
+              f.id === fileId
+                ? {
+                    ...f,
+                    storagePaths,
+                    pageCount,
+                    detectedBureau,
                     selectedBureau: detectedBureau,
                     isProcessing: false,
-                    processingStatus: `${pageCount} page${pageCount > 1 ? 's' : ''} processed`,
+                    processingStatus: `${pageCount} page${pageCount > 1 ? 's' : ''} uploaded`,
                   }
                 : f
             ));
           } catch (timeoutErr) {
-            // INVARIANT: If processing fails, reject entirely - no partial processing
+            // Cleanup any partially uploaded pages
+            await deleteJobObjects(userId, uploadId).catch(() => {});
             setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
             toast({
               title: "PDF processing failed",
@@ -372,20 +399,16 @@ const AIAnalyzer = () => {
             });
           }
         } else if (isSupportedImage(file)) {
-          // Read as base64
-          const reader = new FileReader();
-          reader.onload = (event) => {
-            const base64 = event.target?.result as string;
-            setUploadedFiles(prev => prev.map(f => 
-              f.id === fileId 
-                ? { ...f, images: [base64], isProcessing: false }
-                : f
-            ));
-          };
-          reader.readAsDataURL(file);
+          // Upload single image directly (no base64 in memory)
+          const path = await uploadImageFile(userId, uploadId, file, 0);
+          setUploadedFiles(prev => prev.map(f =>
+            f.id === fileId
+              ? { ...f, storagePaths: [path], pageCount: 1, isProcessing: false, processingStatus: '1 page uploaded' }
+              : f
+          ));
         } else {
-          setUploadedFiles(prev => prev.map(f => 
-            f.id === fileId 
+          setUploadedFiles(prev => prev.map(f =>
+            f.id === fileId
               ? { ...f, isProcessing: false, error: 'Unsupported file format' }
               : f
           ));
@@ -397,8 +420,8 @@ const AIAnalyzer = () => {
         }
       } catch (err) {
         console.error('File processing error:', err);
-        setUploadedFiles(prev => prev.map(f => 
-          f.id === fileId 
+        setUploadedFiles(prev => prev.map(f =>
+          f.id === fileId
             ? { ...f, isProcessing: false, error: 'Failed to process file' }
             : f
         ));
@@ -554,10 +577,10 @@ const AIAnalyzer = () => {
       // Group files by bureau
       const bureauGroups = filesToAnalyze.reduce((acc, f) => {
         const key = f.label ? `${f.selectedBureau}_${f.label}` : f.selectedBureau;
-        if (!acc[key]) acc[key] = { bureau: f.selectedBureau, label: f.label, images: [] };
-        acc[key].images.push(...f.images);
+        if (!acc[key]) acc[key] = { bureau: f.selectedBureau, label: f.label, storagePaths: [] };
+        acc[key].storagePaths.push(...f.storagePaths);
         return acc;
-      }, {} as Record<string, { bureau: string; label: string; images: string[] }>);
+      }, {} as Record<string, { bureau: string; label: string; storagePaths: string[] }>);
 
       // If only text input, analyze as single request (no chunking needed)
       if (responseText && Object.keys(bureauGroups).length === 0) {
@@ -587,138 +610,24 @@ const AIAnalyzer = () => {
           clearTimeout(timeoutId);
         }
       } else {
-        // Check if any multi-bureau files with many pages (use async job analysis)
-        const hasLargeMultiBureau = Object.values(bureauGroups).some(
-          g => g.bureau === 'multi-bureau' && g.images.length > 10
-        );
+        // All image-based analysis goes through async job with storage paths
+        const totalPageCount = Object.values(bureauGroups).reduce((sum, g) => sum + g.storagePaths.length, 0);
+        const allStoragePaths = Object.values(bureauGroups).flatMap(g => g.storagePaths);
         
-        // Check total image count for async job (>15 pages uses async job to avoid timeout)
-        const totalImageCount = Object.values(bureauGroups).reduce((sum, g) => sum + g.images.length, 0);
-        const useAsyncJob = totalImageCount > 15;
-
-        if (useAsyncJob) {
-          // Use async job system for large reports to avoid timeout
-          const allImages = Object.values(bureauGroups).flatMap(g => g.images);
-          
-          toast({
-            title: "Starting background analysis",
-            description: `Analyzing ${totalImageCount} pages. This may take a few minutes. You can refresh and resume.`,
-          });
-          
-          const jobId = await startJobAnalysis(allImages, questionnaire);
-          
-          if (!jobId) {
-            throw new Error("Failed to start analysis job");
-          }
-          
-          // Job started - polling will handle the rest
-          // Don't set isAnalyzing to false yet - let the job progress handle it
-          return;
-        } else if (hasLargeMultiBureau) {
-          // Use chunked analysis for large multi-bureau reports (legacy fallback)
-          for (const [key, group] of Object.entries(bureauGroups)) {
-            if (group.bureau === 'multi-bureau' && group.images.length > 10) {
-              const displayName = group.label 
-                ? `Multi-Bureau (${group.label})`
-                : 'Multi-Bureau';
-
-              const chunkedResult = await analyzeChunked(
-                group.images,
-                questionnaire,
-                session.access_token
-              );
-
-              if (chunkedResult) {
-                setDocumentMap(chunkedResult.documentMap);
-                const detectedBureaus = (chunkedResult.result.detected_bureaus || []).filter(
-                  (b): b is BureauName => ['experian', 'equifax', 'transunion'].includes(b)
-                );
-                newResults[key] = {
-                  ...chunkedResult.result,
-                  detected_bureaus: detectedBureaus,
-                  bureau: displayName,
-                  summary: `Analyzed ${chunkedResult.documentMap.total_pages} pages across ${detectedBureaus.length || 3} bureaus.`,
-                  next_steps: [
-                    "Review each bureau tab for specific discrepancies",
-                    "Generate dispute letters for inaccurate items",
-                    "Keep documentation of all disputed items"
-                  ],
-                  warnings: chunkedProgress.sectionsFailed.length > 0 
-                    ? [`Some sections had issues: ${chunkedProgress.sectionsFailed.join(', ')}`]
-                    : [],
-                };
-              } else {
-                throw new Error("Chunked analysis failed. Try uploading screenshots instead.");
-              }
-            } else {
-              // Small files or single-bureau: use original endpoint with timeout
-              const controller = new AbortController();
-              const timeoutId = setTimeout(() => controller.abort(), 60000);
-              
-              try {
-                const displayName = group.label 
-                  ? `${group.bureau.charAt(0).toUpperCase() + group.bureau.slice(1)} (${group.label})`
-                  : group.bureau.charAt(0).toUpperCase() + group.bureau.slice(1);
-
-                const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-response`, {
-                  method: "POST",
-                  headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${session.access_token}`,
-                  },
-                  body: JSON.stringify({
-                    questionnaire,
-                    responseImages: group.images,
-                    bureau: group.bureau,
-                    hasIdentityDocs: identityDocs || undefined,
-                  }),
-                  signal: controller.signal,
-                });
-
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error || `Analysis failed for ${displayName}`);
-                
-                newResults[key] = { ...data, bureau: displayName };
-              } finally {
-                clearTimeout(timeoutId);
-              }
-            }
-          }
-        } else {
-          // All files are small enough for single requests
-          for (const [key, group] of Object.entries(bureauGroups)) {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 60000);
-            
-            try {
-              const displayName = group.label 
-                ? `${group.bureau.charAt(0).toUpperCase() + group.bureau.slice(1)} (${group.label})`
-                : group.bureau.charAt(0).toUpperCase() + group.bureau.slice(1);
-
-              const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-response`, {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  "Authorization": `Bearer ${session.access_token}`,
-                },
-                body: JSON.stringify({
-                  questionnaire,
-                  responseImages: group.images,
-                  bureau: group.bureau,
-                  hasIdentityDocs: identityDocs || undefined,
-                }),
-                signal: controller.signal,
-              });
-
-              const data = await response.json();
-              if (!response.ok) throw new Error(data.error || `Analysis failed for ${displayName}`);
-              
-              newResults[key] = { ...data, bureau: displayName };
-            } finally {
-              clearTimeout(timeoutId);
-            }
-          }
+        toast({
+          title: "Starting background analysis",
+          description: `Analyzing ${totalPageCount} pages. This may take a few minutes. You can refresh and resume.`,
+        });
+        
+        // Send storage paths (tiny strings) — NOT base64 data
+        const jobId = await startJobAnalysis(allStoragePaths, questionnaire);
+        
+        if (!jobId) {
+          throw new Error("Failed to start analysis job");
         }
+        
+        // Job started - polling will handle the rest
+        return;
       }
 
       setResults(newResults);
@@ -1533,8 +1442,8 @@ const AIAnalyzer = () => {
                             <FileText className="w-4 h-4 text-primary flex-shrink-0" />
                           )}
                           <span className="truncate text-sm">{file.name}</span>
-                          {file.images.length > 1 && (
-                            <span className="text-xs text-muted-foreground">({file.images.length} pages)</span>
+                          {file.pageCount > 1 && (
+                            <span className="text-xs text-muted-foreground">({file.pageCount} pages)</span>
                           )}
                         </div>
                         
