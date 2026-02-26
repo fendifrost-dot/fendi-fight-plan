@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // Build fingerprint — proves THIS code is deployed
-console.log("ANALYSIS_WORKER_BUILD", { version: "2026-02-26_abortchain_verify", abortControllerSelfChain: true });
+console.log("ANALYSIS_WORKER_BUILD", { version: "2026-02-26_chain_bugs_fixed_v2", abortControllerSelfChain: true, sendsStartChunk: true });
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -332,7 +332,7 @@ async function selfChain(supabaseUrl: string, serviceKey: string, jobId: string,
         "Content-Type": "application/json",
         "Authorization": `Bearer ${serviceKey}`,
       },
-      body: JSON.stringify({ jobId }),
+      body: JSON.stringify({ jobId, startChunk: nextChunk }),
       signal: controller.signal,
     });
     clearTimeout(abortTimer);
@@ -362,7 +362,7 @@ serve(async (req) => {
   let parsedJobId: string | null = null;
 
   try {
-    const { jobId } = await req.json();
+    const { jobId, startChunk } = await req.json();
     parsedJobId = jobId;
 
     if (!jobId) {
@@ -507,7 +507,8 @@ serve(async (req) => {
     }
 
     const totalChunks = chunks.length;
-    let processedChunks = checkpoints.processedChunks || 0;
+    const resumeFromDb = checkpoints.processedChunks ?? 0;
+    let processedChunks = Number.isFinite(startChunk) ? startChunk : resumeFromDb;
     const allAccounts: any[] = checkpoints.accounts || [];
     const failedChunks: number[] = checkpoints.failedChunks || [];
     const chunkTimings: ChunkTiming[] = checkpoints.chunkTimings || [];
