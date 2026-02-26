@@ -14,7 +14,7 @@ serve(async (req) => {
   try {
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
-      return new Response(JSON.stringify({ error: "Authentication required" }), {
+      return new Response(JSON.stringify({ error: { code: "STORAGE_401", message: "Authentication required", stage: "START" } }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -30,7 +30,7 @@ serve(async (req) => {
 
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     if (authError || !user) {
-      return new Response(JSON.stringify({ error: "Invalid session" }), {
+      return new Response(JSON.stringify({ error: { code: "STORAGE_401", message: "Invalid session", stage: "START" } }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -39,24 +39,22 @@ serve(async (req) => {
     const { sessionId, storagePaths, questionnaire, reportType } = await req.json();
 
     if (!storagePaths || !Array.isArray(storagePaths) || storagePaths.length === 0) {
-      return new Response(JSON.stringify({ error: "No storage paths provided" }), {
+      return new Response(JSON.stringify({ error: { code: "START_BAD_REQUEST", message: "No storage paths provided", stage: "START" } }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // Validate all paths belong to this user (RLS enforcement at API level)
     const userPrefix = `${user.id}/`;
     for (const path of storagePaths) {
       if (!path.startsWith(userPrefix)) {
-        return new Response(JSON.stringify({ error: "Invalid storage path: access denied" }), {
+        return new Response(JSON.stringify({ error: { code: "START_PATH_VALIDATION_FAILED", message: `Invalid storage path: access denied for ${path}`, stage: "START", step: "path_validation" } }), {
           status: 403,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
     }
 
-    // Create job record
     const jobId = crypto.randomUUID();
     const adminClient = createClient(supabaseUrl, supabaseServiceKey);
 
@@ -78,7 +76,7 @@ serve(async (req) => {
 
     if (insertError) {
       console.error("Failed to create job:", insertError);
-      return new Response(JSON.stringify({ error: "Failed to create analysis job" }), {
+      return new Response(JSON.stringify({ error: { code: "START_BAD_REQUEST", message: "Failed to create analysis job", stage: "START", cause: insertError.message } }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -102,7 +100,7 @@ serve(async (req) => {
     });
   } catch (error) {
     console.error("Error in analysis-start:", error);
-    return new Response(JSON.stringify({ error: "Failed to start analysis" }), {
+    return new Response(JSON.stringify({ error: { code: "UNKNOWN", message: "Failed to start analysis", stage: "START", cause: error instanceof Error ? error.message : String(error) } }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });

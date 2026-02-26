@@ -1,4 +1,5 @@
-import { Loader2, CheckCircle, AlertCircle, AlertTriangle, RefreshCw, ArrowRight, Bug } from 'lucide-react';
+import { Loader2, CheckCircle, AlertCircle, AlertTriangle, RefreshCw, ArrowRight, Bug, Copy, Check } from 'lucide-react';
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { cn } from '@/lib/utils';
@@ -30,14 +31,35 @@ export function AnalysisJobProgress({
   onCancel,
   isStale = false,
 }: AnalysisJobProgressProps) {
-  const { status, step, progress, errorMessage, checkpoints, jobId } = state;
+  const { status, step, progress, errorMessage, error, checkpoints, jobId } = state;
   const config = STATUS_CONFIG[status];
   const Icon = config.icon;
   const isProcessing = status === 'QUEUED' || status === 'RUNNING';
+  const [copiedDiag, setCopiedDiag] = useState(false);
 
   if (status === 'IDLE') {
     return null;
   }
+
+  const copyDiagnostics = () => {
+    const diagnostics = {
+      jobId,
+      status,
+      step,
+      progress,
+      error: error || (errorMessage ? { code: 'UNKNOWN', message: errorMessage, stage: 'UI' } : null),
+      checkpoints: {
+        processedChunks: checkpoints.processedChunks,
+        totalChunks: checkpoints.totalChunks,
+        failedChunks: checkpoints.failedChunks,
+        accountsExtracted: checkpoints.accounts?.length || 0,
+      },
+      timestamp: new Date().toISOString(),
+    };
+    navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2));
+    setCopiedDiag(true);
+    setTimeout(() => setCopiedDiag(false), 2000);
+  };
 
   return (
     <div className="rounded-lg border bg-card p-4 space-y-4">
@@ -80,8 +102,22 @@ export function AnalysisJobProgress({
         </div>
       )}
 
-      {/* Error Message */}
-      {errorMessage && (
+      {/* Structured Error Display */}
+      {error && (
+        <div className="text-sm text-destructive bg-destructive/10 rounded p-3 space-y-1">
+          <div className="font-mono text-xs flex flex-wrap gap-2">
+            <span className="bg-destructive/20 px-1.5 py-0.5 rounded">{error.stage}</span>
+            <span className="bg-destructive/20 px-1.5 py-0.5 rounded">{error.code}</span>
+          </div>
+          <div>{error.message}</div>
+          {error.step && <div className="text-xs text-muted-foreground">Step: {error.step}</div>}
+          {error.chunk != null && <div className="text-xs text-muted-foreground">Chunk: {error.chunk}</div>}
+          {error.page != null && <div className="text-xs text-muted-foreground">Page: {error.page}</div>}
+        </div>
+      )}
+
+      {/* Fallback: legacy errorMessage without structured error */}
+      {!error && errorMessage && (
         <div className="text-sm text-destructive bg-destructive/10 rounded p-2">
           {errorMessage}
         </div>
@@ -123,6 +159,14 @@ export function AnalysisJobProgress({
             Continue in Manual Mode
           </Button>
         )}
+
+        {/* Copy Diagnostics — always available when there's a jobId */}
+        {jobId && (
+          <Button variant="outline" size="sm" onClick={copyDiagnostics}>
+            {copiedDiag ? <Check className="h-4 w-4 mr-1" /> : <Copy className="h-4 w-4 mr-1" />}
+            {copiedDiag ? 'Copied!' : 'Copy Diagnostics'}
+          </Button>
+        )}
       </div>
 
       {/* Resume Note */}
@@ -132,7 +176,7 @@ export function AnalysisJobProgress({
         </p>
       )}
 
-      {/* Debug Info (always show job ID for troubleshooting) */}
+      {/* Debug Info */}
       {jobId && (
         <details className="text-xs text-muted-foreground">
           <summary className="cursor-pointer flex items-center gap-1 hover:text-foreground">
@@ -145,6 +189,7 @@ export function AnalysisJobProgress({
             <div>Progress: {progress}%</div>
             <div>Step: {step || 'N/A'}</div>
             <div>Accounts extracted: {checkpoints.accounts?.length || 0}</div>
+            {error && <div>Error: [{error.stage}] {error.code}: {error.message}</div>}
           </div>
         </details>
       )}
