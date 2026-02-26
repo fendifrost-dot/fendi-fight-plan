@@ -13,7 +13,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { pdfToImagesStreaming, isPartialResultAcceptable, extractTextFromPdf, detectBureauFromText, isHeicFile, isPdfFile, isSupportedImage } from "@/lib/pdf-utils";
 import type { ClientPdfError } from "@/lib/client-pdf-error";
-import { uploadPageBlob, uploadImageFile, deleteJobObjects } from "@/lib/storage-upload";
+import { uploadImageFile, deleteJobObjects } from "@/lib/storage-upload";
 import DisputeLetterBuilder from "./DisputeLetterBuilder";
 import { useChunkedAnalysis } from "@/hooks/useChunkedAnalysis";
 import { AnalysisProgress } from "./AnalysisProgress";
@@ -281,6 +281,13 @@ const AIAnalyzer = () => {
   }, []);
 
   const generateFileId = () => Math.random().toString(36).substring(2, 9);
+  const ANALYSIS_IMAGE_BUCKET = 'analysis-images';
+
+  const getRenderedPageFileInfo = (mimeType: string) => {
+    const normalized = mimeType === 'image/webp' ? 'image/webp' : 'image/jpeg';
+    const ext = normalized === 'image/webp' ? 'webp' : 'jpg';
+    return { contentType: normalized, ext };
+  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
@@ -350,22 +357,33 @@ const AIAnalyzer = () => {
           const detectedBureau = detectBureauFromText(text);
 
           const storagePaths: string[] = [];
-          let uploadIndex = 0;
 
           // Stream pages: render → blob → upload → release. No base64 array.
           // Best-effort: failed pages are skipped, not fatal.
           const processPdf = async () => {
             const result = await pdfToImagesStreaming(
               file,
-              async (_pageIndex, blob, _mimeType, pgCount) => {
-                const path = await uploadPageBlob(userId, uploadId, uploadIndex, blob);
-                storagePaths.push(path);
-                uploadIndex++;
+              async (pdfPageNumber, blob, mimeType, pgCount) => {
+                const { contentType, ext } = getRenderedPageFileInfo(mimeType);
+                const objectName = `${userId}/${uploadId}/page-${String(pdfPageNumber).padStart(3, '0')}.${ext}`;
+
+                const { error: uploadError } = await supabase.storage
+                  .from(ANALYSIS_IMAGE_BUCKET)
+                  .upload(objectName, blob, {
+                    contentType,
+                    upsert: true,
+                  });
+
+                if (uploadError) {
+                  throw new Error(`Upload failed for PDF page ${pdfPageNumber}: ${uploadError.message}`);
+                }
+
+                storagePaths.push(objectName);
 
                 // Update processing status as pages upload
                 setUploadedFiles(prev => prev.map(f =>
                   f.id === fileId
-                    ? { ...f, processingStatus: `Uploading page ${uploadIndex}/${pgCount}...` }
+                    ? { ...f, processingStatus: `Uploading PDF page ${pdfPageNumber}/${pgCount}...` }
                     : f
                 ));
               }
@@ -381,14 +399,14 @@ const AIAnalyzer = () => {
             const result = await Promise.race([processPdf(), timeoutPromise]);
 
             // Check if we got enough pages for a useful analysis
-            if (result.pagesSucceeded === 0) {
-              // Total failure — clean up and report
+            const isAcceptable = isPartialResultAcceptable(result);
+            if (!isAcceptable) {
               await deleteJobObjects(userId, uploadId).catch(() => {});
               const firstErr = result.errors[0];
               setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
               toast({
                 title: "PDF processing failed",
-                description: `${file.name}: No pages could be rendered. ${firstErr?.message || 'Try uploading screenshots instead.'}`,
+                description: `${file.name}: Processed ${result.pagesSucceeded}/${result.pageCount} pages, below minimum threshold. ${firstErr?.message || 'Try uploading screenshots instead.'}`,
                 variant: "destructive",
               });
               return;
@@ -458,19 +476,25 @@ const AIAnalyzer = () => {
         console.error('File processing error:', err);
         const isStructured = err?.stage === 'CLIENT_PDF';
         const errorMsg = isStructured ? err.message : 'Failed to process file';
+        const failingPage = isStructured ? err?.meta?.failingPage : undefined;
+
         setUploadedFiles(prev => prev.map(f =>
           f.id === fileId
             ? {
                 ...f,
                 isProcessing: false,
                 error: errorMsg,
+                failedPages: failingPage ? [failingPage] : f.failedPages,
                 clientPdfErrors: isStructured ? [err] : undefined,
               }
             : f
         ));
+
         toast({
           title: isStructured ? `PDF error: ${err.code}` : "Processing failed",
-          description: isStructured ? err.message : `Failed to process ${file.name}. Try uploading screenshots instead.`,
+          description: isStructured
+            ? `${err.message}${failingPage ? ` (failing page: ${failingPage})` : ''}`
+            : `Failed to process ${file.name}. Try uploading screenshots instead.`,
           variant: "destructive",
         });
       }
@@ -1655,7 +1679,23 @@ const AIAnalyzer = () => {
                           pageCount: f.pageCount,
                           pagesSucceeded: f.pagesSucceeded,
                           failedPages: f.failedPages,
-                          clientPdfErrors: f.clientPdfErrors,
+                          clientPdfErrors: (f.clientPdfErrors || []).map((e) => ({
+                            stage: e.stage,
+                            code: e.code,
+                            message: e.message,
+                            meta: {
+                              fileName: e.meta?.fileName,
+                              fileSize: e.meta?.fileSize,
+                              mimeType: e.meta?.mimeType,
+                              pageCount: e.meta?.pageCount,
+                              failingPage: e.meta?.failingPage,
+                              operation: e.meta?.operation,
+                              usedScale: e.meta?.scale,
+                              usedFormat: e.meta?.format,
+                              usedQuality: e.meta?.quality,
+                              pdfjsError: e.meta?.pdfjsError,
+                            },
+                          })),
                         })),
                       };
                       navigator.clipboard.writeText(JSON.stringify(diagData, null, 2));
