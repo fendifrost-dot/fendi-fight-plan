@@ -394,6 +394,17 @@ export function useDisputeSession(): UseDisputeSessionReturn {
 
   // Account actions
   const updateAccount = useCallback((id: string, changes: Partial<DisputeAccount>) => {
+    // Sync isSelected from triageState (single source of truth)
+    if (changes.triageState) {
+      if (changes.triageState === "excluded" || changes.triageState === "pending") {
+        changes.isSelected = false;
+      } else if (changes.triageState === "included") {
+        changes.isSelected = true;
+      }
+      if (changes.triageState === "excluded") {
+        changes.reviewedAt = new Date().toISOString();
+      }
+    }
     setState(prev => ({
       ...prev,
       accounts: prev.accounts.map(acc => 
@@ -405,7 +416,12 @@ export function useDisputeSession(): UseDisputeSessionReturn {
   const selectAllAccounts = useCallback((selected: boolean) => {
     setState(prev => ({
       ...prev,
-      accounts: prev.accounts.map(acc => ({ ...acc, isSelected: selected })),
+      accounts: prev.accounts.map(acc => ({
+        ...acc,
+        isSelected: selected,
+        triageState: selected ? "included" : "excluded",
+        reviewedAt: !selected ? new Date().toISOString() : acc.reviewedAt,
+      })),
     }));
   }, []);
 
@@ -661,22 +677,35 @@ function mapAccountToDb(acc: DisputeAccount, sessionId: string, userId: string) 
     source_file: acc.sourceFile,
     source_page: acc.sourcePage,
     confidence: acc.confidence,
+    triage_state: acc.triageState || "included",
+    exclude_reason: acc.excludeReason || null,
+    reviewed_at: acc.reviewedAt || null,
   };
 }
 
 function mapDbAccountToState(data: any): DisputeAccount {
+  // triageState is the single source of truth for inclusion
+  const triageState = data.triage_state || "included";
+  // If triage exists, derive isSelected from it; otherwise legacy fallback
+  const isSelected = data.triage_state
+    ? triageState === "included"
+    : (data.is_selected ?? true);
+
   return {
     id: data.id,
     maskedAccountNumber: data.masked_account_number,
     creditorName: data.creditor_name,
     dateOpened: data.date_opened,
     bureauStatuses: parseJson(data.bureau_statuses, {}),
-    isSelected: data.is_selected || false,
+    isSelected,
     disputeReason: data.dispute_reason,
     customReason: data.custom_reason,
     sourceFile: data.source_file,
     sourcePage: data.source_page,
     confidence: data.confidence || 0.8,
+    triageState,
+    excludeReason: data.exclude_reason || undefined,
+    reviewedAt: data.reviewed_at || undefined,
   };
 }
 
