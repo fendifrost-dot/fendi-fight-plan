@@ -536,7 +536,7 @@ serve(async (req) => {
 
         // Fire off the next invocation
         await selfChain(supabaseUrl, supabaseServiceKey, jobId, i, invocationId);
-        return new Response(JSON.stringify({ ok: true, chainedAt: i }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        return new Response(null, { status: 202 });
       }
 
       const progressPct = 20 + Math.round((i / totalChunks) * 70);
