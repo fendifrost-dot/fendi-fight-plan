@@ -32,6 +32,7 @@ export type Database = {
           progress: number | null
           result_data: Json | null
           session_id: string | null
+          stale_after_seconds: number
           started_at: string | null
           status: string
           step: string | null
@@ -55,6 +56,7 @@ export type Database = {
           progress?: number | null
           result_data?: Json | null
           session_id?: string | null
+          stale_after_seconds?: number
           started_at?: string | null
           status?: string
           step?: string | null
@@ -78,6 +80,7 @@ export type Database = {
           progress?: number | null
           result_data?: Json | null
           session_id?: string | null
+          stale_after_seconds?: number
           started_at?: string | null
           status?: string
           step?: string | null

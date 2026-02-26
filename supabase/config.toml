@@ -9,6 +9,9 @@ verify_jwt = false
 [functions.analysis-worker]
 verify_jwt = false
 
+[functions.analysis-cleanup]
+verify_jwt = false
+
 [functions.analyze-chunk]
 verify_jwt = false
 
