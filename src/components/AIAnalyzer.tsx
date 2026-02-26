@@ -11,7 +11,8 @@ import { supabase } from "@/integrations/supabase/client";
 import { Session } from "@supabase/supabase-js";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { pdfToImagesStreaming, extractTextFromPdf, detectBureauFromText, isHeicFile, isPdfFile, isSupportedImage } from "@/lib/pdf-utils";
+import { pdfToImagesStreaming, isPartialResultAcceptable, extractTextFromPdf, detectBureauFromText, isHeicFile, isPdfFile, isSupportedImage } from "@/lib/pdf-utils";
+import type { ClientPdfError } from "@/lib/client-pdf-error";
 import { uploadPageBlob, uploadImageFile, deleteJobObjects } from "@/lib/storage-upload";
 import DisputeLetterBuilder from "./DisputeLetterBuilder";
 import { useChunkedAnalysis } from "@/hooks/useChunkedAnalysis";
@@ -117,12 +118,15 @@ interface UploadedFile {
   storagePaths: string[]; // Object keys in analysis-images bucket (NOT base64)
   uploadId: string; // UUID grouping all pages for this file
   pageCount: number;
+  pagesSucceeded?: number;
+  failedPages?: number[]; // 1-based page numbers that failed rendering
   detectedBureau: 'experian' | 'equifax' | 'transunion' | 'multi-bureau' | 'unknown';
   selectedBureau: 'experian' | 'equifax' | 'transunion' | 'multi-bureau' | 'unknown';
   label: string; // UI-only metadata - NEVER sent to AI per invariant
   isProcessing: boolean;
   processingStatus?: string; // Read-only status for display (e.g., "21 pages processed")
   error?: string;
+  clientPdfErrors?: ClientPdfError[]; // Structured errors from PDF processing
 }
 
 const AIAnalyzer = () => {
@@ -346,55 +350,87 @@ const AIAnalyzer = () => {
           const detectedBureau = detectBureauFromText(text);
 
           const storagePaths: string[] = [];
-          let totalPages = 0;
+          let uploadIndex = 0;
 
           // Stream pages: render → blob → upload → release. No base64 array.
+          // Best-effort: failed pages are skipped, not fatal.
           const processPdf = async () => {
-            const { pageCount } = await pdfToImagesStreaming(
+            const result = await pdfToImagesStreaming(
               file,
-              async (pageIndex, blob, _mimeType, pgCount) => {
-                totalPages = pgCount;
-                const path = await uploadPageBlob(userId, uploadId, pageIndex, blob);
+              async (_pageIndex, blob, _mimeType, pgCount) => {
+                const path = await uploadPageBlob(userId, uploadId, uploadIndex, blob);
                 storagePaths.push(path);
+                uploadIndex++;
 
                 // Update processing status as pages upload
                 setUploadedFiles(prev => prev.map(f =>
                   f.id === fileId
-                    ? { ...f, processingStatus: `Uploading page ${pageIndex + 1}/${pgCount}...` }
+                    ? { ...f, processingStatus: `Uploading page ${uploadIndex}/${pgCount}...` }
                     : f
                 ));
               }
             );
-            return pageCount;
+            return result;
           };
 
           const timeoutPromise = new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error('PDF processing timed out')), 120000); // 120s for streaming upload
+            setTimeout(() => reject(new Error('PDF processing timed out')), 120000);
           });
 
           try {
-            const pageCount = await Promise.race([processPdf(), timeoutPromise]);
+            const result = await Promise.race([processPdf(), timeoutPromise]);
+
+            // Check if we got enough pages for a useful analysis
+            if (result.pagesSucceeded === 0) {
+              // Total failure — clean up and report
+              await deleteJobObjects(userId, uploadId).catch(() => {});
+              const firstErr = result.errors[0];
+              setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
+              toast({
+                title: "PDF processing failed",
+                description: `${file.name}: No pages could be rendered. ${firstErr?.message || 'Try uploading screenshots instead.'}`,
+                variant: "destructive",
+              });
+              return;
+            }
+
+            // Partial or full success
+            const hasFailures = result.failedPages.length > 0;
+            const statusMsg = hasFailures
+              ? `${result.pagesSucceeded}/${result.pageCount} pages uploaded (pages ${result.failedPages.join(', ')} failed)`
+              : `${result.pageCount} page${result.pageCount > 1 ? 's' : ''} uploaded`;
 
             setUploadedFiles(prev => prev.map(f =>
               f.id === fileId
                 ? {
                     ...f,
                     storagePaths,
-                    pageCount,
+                    pageCount: result.pageCount,
+                    pagesSucceeded: result.pagesSucceeded,
+                    failedPages: result.failedPages,
                     detectedBureau,
                     selectedBureau: detectedBureau,
                     isProcessing: false,
-                    processingStatus: `${pageCount} page${pageCount > 1 ? 's' : ''} uploaded`,
+                    processingStatus: statusMsg,
+                    clientPdfErrors: result.errors.length > 0 ? result.errors : undefined,
                   }
                 : f
             ));
+
+            if (hasFailures) {
+              toast({
+                title: "Partial PDF processing",
+                description: `${file.name}: Processed ${result.pagesSucceeded}/${result.pageCount} pages. Pages ${result.failedPages.join(', ')} failed. Results may be incomplete.`,
+                variant: "default",
+              });
+            }
           } catch (timeoutErr) {
             // Cleanup any partially uploaded pages
             await deleteJobObjects(userId, uploadId).catch(() => {});
             setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
             toast({
               title: "PDF processing failed",
-              description: `${file.name} could not be fully processed. Upload screenshots instead to ensure complete analysis.`,
+              description: `${file.name} timed out. Upload screenshots instead to ensure complete analysis.`,
               variant: "destructive",
             });
           }
@@ -418,16 +454,23 @@ const AIAnalyzer = () => {
             variant: "destructive",
           });
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error('File processing error:', err);
+        const isStructured = err?.stage === 'CLIENT_PDF';
+        const errorMsg = isStructured ? err.message : 'Failed to process file';
         setUploadedFiles(prev => prev.map(f =>
           f.id === fileId
-            ? { ...f, isProcessing: false, error: 'Failed to process file' }
+            ? {
+                ...f,
+                isProcessing: false,
+                error: errorMsg,
+                clientPdfErrors: isStructured ? [err] : undefined,
+              }
             : f
         ));
         toast({
-          title: "Processing failed",
-          description: `Failed to process ${file.name}. Try uploading screenshots instead.`,
+          title: isStructured ? `PDF error: ${err.code}` : "Processing failed",
+          description: isStructured ? err.message : `Failed to process ${file.name}. Try uploading screenshots instead.`,
           variant: "destructive",
         });
       }
@@ -1581,11 +1624,47 @@ const AIAnalyzer = () => {
                     Analysis completed but results failed to load into the UI. 
                     This can happen due to a temporary issue.
                   </p>
-                  <div className="text-xs font-mono bg-muted/50 p-2 rounded">
+                  <div className="text-xs font-mono bg-muted/50 p-2 rounded space-y-1">
                     <div>Job ID: {lastJobInfo.jobId || 'N/A'}</div>
                     <div>Result Count: {lastJobInfo.resultCount}</div>
                     <div>Results State: {Object.keys(results).length} keys</div>
+                    {uploadedFiles.some(f => f.clientPdfErrors?.length) && (
+                      <>
+                        <div className="mt-2 font-semibold">Client PDF Errors:</div>
+                        {uploadedFiles.filter(f => f.clientPdfErrors?.length).map(f => (
+                          <div key={f.id}>
+                            <div>{f.name}: {f.pagesSucceeded ?? '?'}/{f.pageCount} pages OK, failed: [{f.failedPages?.join(', ') || 'none'}]</div>
+                            {f.clientPdfErrors!.map((e, i) => (
+                              <div key={i} className="ml-2 text-destructive">• {e.code}: {e.message}</div>
+                            ))}
+                          </div>
+                        ))}
+                      </>
+                    )}
                   </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const diagData = {
+                        jobId: lastJobInfo.jobId,
+                        resultCount: lastJobInfo.resultCount,
+                        resultsKeys: Object.keys(results).length,
+                        files: uploadedFiles.map(f => ({
+                          name: f.name,
+                          pageCount: f.pageCount,
+                          pagesSucceeded: f.pagesSucceeded,
+                          failedPages: f.failedPages,
+                          clientPdfErrors: f.clientPdfErrors,
+                        })),
+                      };
+                      navigator.clipboard.writeText(JSON.stringify(diagData, null, 2));
+                      toast({ title: "Diagnostics copied", description: "Paste to support for analysis." });
+                    }}
+                  >
+                    <Copy className="w-4 h-4 mr-1" />
+                    Copy Diagnostics
+                  </Button>
                   <div className="flex gap-2">
                     <Button
                       variant="outline"
