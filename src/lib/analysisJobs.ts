@@ -227,11 +227,15 @@ export async function fetchActiveJob(): Promise<AnalysisJob | null> {
   }
 
   try {
+    // Only resume jobs updated within the last hour to avoid zombie jobs
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    
     const { data, error } = await supabase
       .from('analysis_jobs')
       .select('*')
       .eq('user_id', authData.session.user.id)
       .in('status', ['QUEUED', 'RUNNING'])
+      .gte('updated_at', oneHourAgo)
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();
