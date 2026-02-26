@@ -76,7 +76,15 @@ function AccountRow({
 
   return (
     <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
-      <div className={`border rounded-lg transition-colors ${account.isSelected ? "border-primary/50 bg-primary/5" : "border-border"}`}>
+        <div className={`border rounded-lg transition-colors ${
+          account.triageState === "excluded" 
+            ? "border-destructive/30 bg-destructive/5 opacity-60" 
+            : account.triageState === "pending"
+            ? "border-amber-500/30 bg-amber-500/5"
+            : account.isSelected 
+            ? "border-primary/50 bg-primary/5" 
+            : "border-border"
+        }`}>
         {/* Main row */}
         <div className="flex items-center gap-4 p-4">
           <Checkbox
@@ -149,8 +157,54 @@ function AccountRow({
               </div>
             </div>
 
-            {/* Dispute reason */}
-            {account.isSelected && (
+            {/* Triage controls */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <Badge 
+                variant={account.triageState === "included" ? "default" : "outline"}
+                className="cursor-pointer"
+                onClick={() => onAccountChange(account.id, { triageState: "included" })}
+              >
+                ✓ Include
+              </Badge>
+              <Badge 
+                variant={account.triageState === "excluded" ? "destructive" : "outline"}
+                className="cursor-pointer"
+                onClick={() => onAccountChange(account.id, { triageState: "excluded" })}
+              >
+                ✗ Exclude
+              </Badge>
+              {account.confidence < 0.8 && (
+                <Badge variant="secondary" className="text-xs">
+                  {Math.round(account.confidence * 100)}% confidence
+                </Badge>
+              )}
+            </div>
+
+            {/* Pending indicator */}
+            {account.triageState === "pending" && (
+              <div className="flex items-center gap-2 text-amber-500 text-sm">
+                <AlertTriangle className="w-4 h-4" />
+                <span>Medium confidence — review before including</span>
+              </div>
+            )}
+
+            {/* Exclude reason input */}
+            {account.triageState === "excluded" && (
+              <div>
+                <Label className="text-sm">Reason for exclusion</Label>
+                <Textarea
+                  value={account.excludeReason || ""}
+                  onChange={(e) => onAccountChange(account.id, { excludeReason: e.target.value })}
+                  placeholder="e.g., Account is current, never late"
+                  rows={2}
+                  disabled={disabled}
+                  className="mt-1"
+                />
+              </div>
+            )}
+
+            {/* Dispute reason (only for included) */}
+            {account.triageState === "included" && (
               <div className="space-y-3">
                 <div>
                   <Label className="text-sm">Dispute Reason</Label>

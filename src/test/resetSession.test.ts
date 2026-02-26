@@ -55,7 +55,7 @@ describe("resetSession lifecycle", () => {
     const prior = makeSessionInStatus("DONE", {
       latestAnalyzerResultId: "job-456",
       isAnalyzed: true,
-      accounts: [{ id: "a1", maskedAccountNumber: "****1234", creditorName: "Test", bureauStatuses: {}, isSelected: true, confidence: 0.9 }],
+      accounts: [{ id: "a1", maskedAccountNumber: "****1234", creditorName: "Test", bureauStatuses: {}, isSelected: true, confidence: 0.9, triageState: "included" as const }],
       analysisResult: { bureau: "experian", outcome: "verified", itemsVerified: [], itemsDeleted: [], itemsPartial: [], legalImplications: [], nextSteps: [], rawSummary: "", accounts: [] },
     });
     const result = simulateReset(prior);

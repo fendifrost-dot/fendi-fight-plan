@@ -106,12 +106,15 @@ export type Database = {
           custom_reason: string | null
           date_opened: string | null
           dispute_reason: string | null
+          exclude_reason: string | null
           id: string
           is_selected: boolean | null
           masked_account_number: string
+          reviewed_at: string | null
           session_id: string
           source_file: string | null
           source_page: number | null
+          triage_state: string
           updated_at: string
           user_id: string
         }
@@ -123,12 +126,15 @@ export type Database = {
           custom_reason?: string | null
           date_opened?: string | null
           dispute_reason?: string | null
+          exclude_reason?: string | null
           id?: string
           is_selected?: boolean | null
           masked_account_number: string
+          reviewed_at?: string | null
           session_id: string
           source_file?: string | null
           source_page?: number | null
+          triage_state?: string
           updated_at?: string
           user_id: string
         }
@@ -140,12 +146,15 @@ export type Database = {
           custom_reason?: string | null
           date_opened?: string | null
           dispute_reason?: string | null
+          exclude_reason?: string | null
           id?: string
           is_selected?: boolean | null
           masked_account_number?: string
+          reviewed_at?: string | null
           session_id?: string
           source_file?: string | null
           source_page?: number | null
+          triage_state?: string
           updated_at?: string
           user_id?: string
         }

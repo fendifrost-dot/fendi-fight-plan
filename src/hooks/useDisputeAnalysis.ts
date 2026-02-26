@@ -567,19 +567,22 @@ function normalizeAccounts(rawAccounts: any[], documentMap: DocumentMap): Disput
         }
       }
 
+      const confidence = acc.confidence === 'high' ? 0.95 : 
+                    acc.confidence === 'medium' ? 0.75 :
+                    acc.confidence === 'low' ? 0.5 :
+                    typeof acc.confidence === 'number' ? acc.confidence : 0.8;
+
       accountMap.set(key, {
         id: crypto.randomUUID(),
         maskedAccountNumber: acc.account_number || acc.maskedAccountNumber || 'Unknown',
         creditorName: acc.creditor_name || acc.creditorName || 'Unknown Creditor',
         dateOpened: acc.date_opened || acc.dateOpened,
         bureauStatuses,
-        isSelected: false,
+        isSelected: confidence >= 0.7,
         disputeReason: acc.isCollection ? 'Collection account' : 
                        acc.isChargeOff ? 'Charge-off' : undefined,
-        confidence: acc.confidence === 'high' ? 0.95 : 
-                    acc.confidence === 'medium' ? 0.75 :
-                    acc.confidence === 'low' ? 0.5 :
-                    typeof acc.confidence === 'number' ? acc.confidence : 0.8,
+        confidence,
+        triageState: confidence >= 0.7 ? "included" : "pending",
       });
     }
   }

@@ -331,10 +331,17 @@ const Disputes = () => {
     // In AI mode with completed analysis, require selected accounts
     // In MANUAL mode, accounts are optional if manualClaimsText exists
     const selectedAccounts = state.accounts.filter(a => a.isSelected);
-    if (state.mode === "AI" && state.analysisStatus === "DONE" && selectedAccounts.length === 0) {
-      // Check if there's manual claims text as fallback
+    // Safety: double-check no excluded/pending items leak through
+    const safeAccounts = selectedAccounts.filter(a => 
+      !a.triageState || a.triageState === "included"
+    );
+    if (state.mode === "AI" && state.analysisStatus === "DONE" && safeAccounts.length === 0) {
       if (!state.manualClaimsText?.trim()) {
-        toast.error("Please select at least one account to dispute, or add manual claims text.");
+        if (state.accounts.length > 0) {
+          toast.error("All accounts are excluded. Include at least one account or add manual claims text.");
+        } else {
+          toast.error("Please select at least one account to dispute, or add manual claims text.");
+        }
         return;
       }
     }
@@ -352,8 +359,8 @@ const Disputes = () => {
         const extractedData = state.importedAnalyzerData?.analysisResults || {
           inaccurateNames: [],
           inaccurateAddresses: [],
-          derogatoryAccounts: selectedAccounts.length > 0 
-            ? selectedAccounts.map(acc => ({
+          derogatoryAccounts: safeAccounts.length > 0 
+            ? safeAccounts.map(acc => ({
                 creditor_name: acc.creditorName,
                 account_number: acc.maskedAccountNumber,
                 date_opened: acc.dateOpened || "Unknown",
@@ -384,7 +391,7 @@ const Disputes = () => {
             },
             analysisContext: state.analysisResult,
             priorLetterText: state.priorLetterText,
-            selectedAccounts: selectedAccounts.map(acc => ({
+            selectedAccounts: safeAccounts.map(acc => ({
               creditorName: acc.creditorName,
               maskedAccountNumber: acc.maskedAccountNumber,
               disputeReason: acc.disputeReason,

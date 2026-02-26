@@ -71,6 +71,15 @@ export interface DisputeAccount {
   sourceFile?: string;
   sourcePage?: number;
   confidence: number;
+  triageState: "included" | "excluded" | "pending";
+  excludeReason?: string;
+  reviewedAt?: string;
+}
+
+/** Derive isSelected from triageState (backward-compatible) */
+export function isAccountIncluded(account: DisputeAccount): boolean {
+  if (!account.triageState || account.triageState === "included") return true;
+  return false;
 }
 
 export interface AccountStatus {
