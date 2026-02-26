@@ -11,6 +11,7 @@ const AI_TIMEOUT_MS = 25000;
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 1000;
 const STORAGE_BUCKET = "analysis-images";
+const CHUNK_RETRY_BACKOFF_MS = 3000; // backoff before retrying a failed chunk
 
 interface Job {
   id: string;
@@ -32,10 +33,21 @@ interface Job {
     processedChunks?: number;
     totalChunks?: number;
     failedChunks?: number[];
+    chunkTimings?: ChunkTiming[];
   };
 }
 
-// ---- Structured error helpers (mirrors src/lib/pipelineError.ts shape) ----
+interface ChunkTiming {
+  chunkIndex: number;
+  startedAt: string;
+  endedAt: string;
+  elapsedMs: number;
+  status: "ok" | "failed" | "retried_ok" | "retried_failed";
+  error?: string;
+  retryElapsedMs?: number;
+}
+
+// ---- Structured error helpers ----
 interface StructuredError {
   code: string;
   message: string;
@@ -44,6 +56,9 @@ interface StructuredError {
   chunk?: number;
   page?: number;
   cause?: string;
+  where?: string;
+  elapsedMs?: number;
+  lastHeartbeatAt?: string;
 }
 
 function safeCause(cause: any): string {
@@ -60,27 +75,31 @@ function classifyWorkerError(err: Error, step?: string, chunk?: number): Structu
   const lower = msg.toLowerCase();
 
   if (lower.includes("failed to download")) {
-    return { code: "WORKER_DOWNLOAD_FAILED", message: msg, stage: "WORKER", step, chunk, cause: safeCause(msg) };
+    return { code: "WORKER_DOWNLOAD_FAILED", message: msg, stage: "WORKER", step, chunk, cause: safeCause(msg), where: "edge_fn" };
   }
   if (lower.includes("base64") || lower.includes("call stack") || lower.includes("fromcharcode")) {
-    return { code: "WORKER_BASE64_ENCODE_FAILED", message: msg, stage: "WORKER", step, chunk, cause: safeCause(msg) };
+    return { code: "WORKER_BASE64_ENCODE_FAILED", message: msg, stage: "WORKER", step, chunk, cause: safeCause(msg), where: "edge_fn" };
   }
-  if (lower.includes("abort") || lower.includes("timeout")) {
-    return { code: "WORKER_AI_TIMEOUT", message: msg, stage: "WORKER", step, chunk, cause: safeCause(msg) };
+  if (lower.includes("abort") || lower.includes("timeout") || lower.includes("signal")) {
+    return { code: "WORKER_AI_TIMEOUT", message: msg, stage: "WORKER", step, chunk, cause: safeCause(msg), where: "model_call" };
   }
   if (lower.includes("ai error") || lower.includes("json")) {
-    return { code: "WORKER_AI_BAD_RESPONSE", message: msg, stage: "WORKER", step, chunk, cause: safeCause(msg) };
+    return { code: "WORKER_AI_BAD_RESPONSE", message: msg, stage: "WORKER", step, chunk, cause: safeCause(msg), where: "model_call" };
   }
-  return { code: "UNKNOWN", message: msg, stage: "WORKER", step, chunk, cause: safeCause(msg) };
+  return { code: "UNKNOWN", message: msg, stage: "WORKER", step, chunk, cause: safeCause(msg), where: "edge_fn" };
 }
 
-async function heartbeat(client: any, jobId: string) {
+async function heartbeat(client: any, jobId: string, extra?: Record<string, any>) {
   const now = new Date().toISOString();
-  const { error } = await client.from("analysis_jobs").update({
+  const updates: Record<string, any> = {
     last_heartbeat_at: now,
     updated_at: now,
-  }).eq("id", jobId);
+  };
+  if (extra) Object.assign(updates, extra);
+  
+  const { error } = await client.from("analysis_jobs").update(updates).eq("id", jobId);
   if (error) console.error(`Heartbeat failed for ${jobId}:`, error);
+  else console.log(`[heartbeat] job=${jobId} at=${now}${extra?.step ? ` step=${extra.step}` : ""}`);
 }
 
 async function updateJob(client: any, jobId: string, updates: Record<string, any>) {
@@ -101,7 +120,8 @@ async function failJob(client: any, jobId: string, se: StructuredError) {
     error_code: se.code,
     error_message: se.message,
     error_stage: se.stage,
-    error_meta: { step: se.step, chunk: se.chunk, page: se.page, cause: se.cause },
+    error_meta: { step: se.step, chunk: se.chunk, page: se.page, cause: se.cause, where: se.where, elapsedMs: se.elapsedMs },
+    completed_at: new Date().toISOString(),
   });
 }
 
@@ -207,11 +227,89 @@ async function callAIWithRetry(apiKey: string, messages: any[], retries = MAX_RE
   throw lastError;
 }
 
+/**
+ * Process a single chunk of images. Returns extracted accounts or throws.
+ */
+async function processChunk(
+  client: any,
+  jobId: string,
+  lovableApiKey: string,
+  chunkPaths: string[],
+  chunkIndex: number,
+  totalChunks: number,
+  accountsPrompt: string,
+): Promise<{ accounts: any[]; timing: ChunkTiming }> {
+  const startedAt = new Date();
+  
+  console.log(`[chunk] job=${jobId} chunk=${chunkIndex + 1}/${totalChunks} pages=${chunkPaths.length} started`);
+
+  try {
+    await heartbeat(client, jobId, { step: `chunk_${chunkIndex + 1}_download` });
+
+    const chunkImages: string[] = [];
+    for (const path of chunkPaths) {
+      const dataUrl = await downloadImageAsDataUrl(client, path);
+      chunkImages.push(dataUrl);
+    }
+
+    await heartbeat(client, jobId, { step: `chunk_${chunkIndex + 1}_ai_call` });
+
+    const userContent: any[] = [
+      { type: "text", text: `Analyze chunk ${chunkIndex + 1} of ${totalChunks}. ${accountsPrompt}` },
+    ];
+    for (const img of chunkImages) {
+      userContent.push({ type: "image_url", image_url: { url: img } });
+    }
+
+    const result = await callAIWithRetry(lovableApiKey, [
+      { role: "system", content: "Extract credit account data. Output valid JSON only." },
+      { role: "user", content: userContent },
+    ]);
+
+    await heartbeat(client, jobId, { step: `chunk_${chunkIndex + 1}_complete` });
+
+    const endedAt = new Date();
+    const elapsedMs = endedAt.getTime() - startedAt.getTime();
+    
+    console.log(`[chunk] job=${jobId} chunk=${chunkIndex + 1}/${totalChunks} completed in ${elapsedMs}ms accounts=${result.accounts?.length || 0}`);
+
+    return {
+      accounts: result.accounts && Array.isArray(result.accounts) ? result.accounts : [],
+      timing: {
+        chunkIndex,
+        startedAt: startedAt.toISOString(),
+        endedAt: endedAt.toISOString(),
+        elapsedMs,
+        status: "ok",
+      },
+    };
+  } catch (error) {
+    const endedAt = new Date();
+    const elapsedMs = endedAt.getTime() - startedAt.getTime();
+    const errMsg = error instanceof Error ? error.message : String(error);
+    
+    console.error(`[chunk] job=${jobId} chunk=${chunkIndex + 1}/${totalChunks} FAILED in ${elapsedMs}ms: ${errMsg}`);
+
+    throw {
+      error,
+      timing: {
+        chunkIndex,
+        startedAt: startedAt.toISOString(),
+        endedAt: endedAt.toISOString(),
+        elapsedMs,
+        status: "failed" as const,
+        error: errMsg.slice(0, 300),
+      },
+    };
+  }
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
+  const workerStartedAt = Date.now();
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const lovableApiKey = Deno.env.get("LOVABLE_API_KEY")!;
@@ -230,6 +328,8 @@ serve(async (req) => {
       });
     }
 
+    console.log(`[worker] Starting job=${jobId}`);
+
     const { data: job, error: fetchError } = await client
       .from("analysis_jobs")
       .select("*")
@@ -245,6 +345,7 @@ serve(async (req) => {
     }
 
     if (job.status === "DONE" || job.status === "RUNNING") {
+      console.log(`[worker] job=${jobId} already ${job.status}, skipping`);
       return new Response(JSON.stringify({ status: job.status }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -255,7 +356,6 @@ serve(async (req) => {
       step: "mapping",
       started_at: new Date().toISOString(),
       attempt_count: (job.attempt_count || 0) + 1,
-      // Clear previous error state on retry
       error_code: null,
       error_message: null,
       error_stage: null,
@@ -265,6 +365,8 @@ serve(async (req) => {
     const inputData = job.input_data as Job["input_data"];
     const checkpoints = (job.checkpoints || {}) as Job["checkpoints"];
     const storagePaths = inputData.storagePaths;
+
+    console.log(`[worker] job=${jobId} totalPages=${storagePaths.length} attempt=${(job.attempt_count || 0) + 1}`);
 
     // Step 1: Document Mapping
     let documentMap = checkpoints.documentMap;
@@ -290,6 +392,7 @@ serve(async (req) => {
           } catch (dlErr) {
             const se = classifyWorkerError(dlErr instanceof Error ? dlErr : new Error(String(dlErr)), `download_page_${idx}`, undefined);
             se.page = idx;
+            se.elapsedMs = Date.now() - workerStartedAt;
             await failJob(client, jobId, se);
             await cleanupJobStorage(client, job.user_id, jobId);
             return new Response(JSON.stringify({ error: se }), {
@@ -317,9 +420,10 @@ serve(async (req) => {
           checkpoints: { ...checkpoints, documentMap },
           progress: 15,
         });
+
+        console.log(`[worker] job=${jobId} document mapping complete`);
       } catch (error) {
-        console.error("Document mapping failed:", error);
-        // Non-fatal: fall back to analyzing all pages
+        console.error(`[worker] job=${jobId} document mapping failed, using fallback:`, error);
         documentMap = {
           is_multi_bureau: false,
           detected_bureaus: [],
@@ -351,6 +455,9 @@ serve(async (req) => {
     let processedChunks = checkpoints.processedChunks || 0;
     const allAccounts: any[] = checkpoints.accounts || [];
     const failedChunks: number[] = checkpoints.failedChunks || [];
+    const chunkTimings: ChunkTiming[] = checkpoints.chunkTimings || [];
+
+    console.log(`[worker] job=${jobId} chunkCount=${totalChunks} resumeFrom=${processedChunks}`);
 
     const accountsPrompt = `Extract ALL accounts from these credit report pages. Output JSON: { "accounts": [{ "creditor_name": "...", "account_number": "XXXX...", "date_opened": "MM/YYYY", "status": "...", "balance": "$X,XXX", "derogatory_triggers": [], "bureaus": [] }] }`;
 
@@ -359,44 +466,63 @@ serve(async (req) => {
       await updateJob(client, jobId, {
         step: `chunk_${i + 1}_of_${totalChunks}`,
         progress: progressPct,
-        checkpoints: { documentMap, accounts: allAccounts, processedChunks: i, totalChunks, failedChunks },
+        checkpoints: { documentMap, accounts: allAccounts, processedChunks: i, totalChunks, failedChunks, chunkTimings },
       });
 
       try {
-        await heartbeat(client, jobId);
-
-        const chunkImages: string[] = [];
-        for (const path of chunks[i]) {
-          const dataUrl = await downloadImageAsDataUrl(client, path);
-          chunkImages.push(dataUrl);
-        }
-
-        await heartbeat(client, jobId);
-
-        const userContent: any[] = [
-          { type: "text", text: `Analyze chunk ${i + 1} of ${totalChunks}. ${accountsPrompt}` },
-        ];
-        for (const img of chunkImages) {
-          userContent.push({ type: "image_url", image_url: { url: img } });
-        }
-
-        const result = await callAIWithRetry(lovableApiKey, [
-          { role: "system", content: "Extract credit account data. Output valid JSON only." },
-          { role: "user", content: userContent },
-        ]);
-
-        await heartbeat(client, jobId);
-
-        if (result.accounts && Array.isArray(result.accounts)) {
-          allAccounts.push(...result.accounts);
-        }
-
+        const result = await processChunk(client, jobId, lovableApiKey, chunks[i], i, totalChunks, accountsPrompt);
+        allAccounts.push(...result.accounts);
+        chunkTimings.push(result.timing);
         processedChunks = i + 1;
-      } catch (error) {
-        const se = classifyWorkerError(error instanceof Error ? error : new Error(String(error)), `chunk_${i + 1}`, i);
-        console.error(`Chunk ${i + 1} failed [${se.code}]:`, se.message);
-        failedChunks.push(i);
+      } catch (chunkErr: any) {
+        const failedTiming: ChunkTiming = chunkErr.timing || {
+          chunkIndex: i,
+          startedAt: new Date().toISOString(),
+          endedAt: new Date().toISOString(),
+          elapsedMs: 0,
+          status: "failed",
+          error: String(chunkErr),
+        };
+
+        // Retry this chunk ONCE with backoff
+        console.log(`[worker] job=${jobId} chunk=${i + 1} retrying after ${CHUNK_RETRY_BACKOFF_MS}ms backoff`);
+        await new Promise(r => setTimeout(r, CHUNK_RETRY_BACKOFF_MS));
+        await heartbeat(client, jobId, { step: `chunk_${i + 1}_retry` });
+
+        try {
+          const retryResult = await processChunk(client, jobId, lovableApiKey, chunks[i], i, totalChunks, accountsPrompt);
+          allAccounts.push(...retryResult.accounts);
+          
+          // Mark as retried_ok
+          const retryTiming: ChunkTiming = {
+            ...retryResult.timing,
+            status: "retried_ok",
+            retryElapsedMs: retryResult.timing.elapsedMs,
+          };
+          chunkTimings.push(retryTiming);
+          processedChunks = i + 1;
+          console.log(`[worker] job=${jobId} chunk=${i + 1} retry SUCCEEDED`);
+        } catch (retryErr: any) {
+          // Both attempts failed — record and continue
+          const retryFailedTiming: ChunkTiming = {
+            ...failedTiming,
+            status: "retried_failed",
+            retryElapsedMs: retryErr.timing?.elapsedMs || 0,
+          };
+          chunkTimings.push(retryFailedTiming);
+          
+          const origError = chunkErr.error instanceof Error ? chunkErr.error : new Error(String(chunkErr));
+          const se = classifyWorkerError(origError, `chunk_${i + 1}`, i);
+          console.error(`[worker] job=${jobId} chunk=${i + 1} retry also FAILED [${se.code}]:`, se.message);
+          failedChunks.push(i);
+          processedChunks = i + 1; // Move past this chunk
+        }
       }
+
+      // Save checkpoint after every chunk (for resume)
+      await updateJob(client, jobId, {
+        checkpoints: { documentMap, accounts: allAccounts, processedChunks, totalChunks, failedChunks, chunkTimings },
+      });
 
       if (i < chunks.length - 1) {
         await new Promise(r => setTimeout(r, 500));
@@ -429,6 +555,8 @@ serve(async (req) => {
     const finalStatus = failedChunks.length > 0 && normalizedAccounts.length === 0 ? "FAILED" :
                          failedChunks.length > 0 ? "PARTIAL" : "DONE";
 
+    const workerElapsedMs = Date.now() - workerStartedAt;
+
     const resultData = {
       accounts: normalizedAccounts,
       documentMap,
@@ -436,6 +564,8 @@ serve(async (req) => {
       processedChunks,
       totalChunks,
       failedChunks,
+      chunkTimings,
+      workerElapsedMs,
     };
 
     const errorFields: Record<string, any> = {};
@@ -443,12 +573,12 @@ serve(async (req) => {
       errorFields.error_code = "WORKER_ALL_CHUNKS_FAILED";
       errorFields.error_message = `All ${totalChunks} chunk(s) failed during analysis`;
       errorFields.error_stage = "WORKER";
-      errorFields.error_meta = { failedChunks, totalChunks };
+      errorFields.error_meta = { failedChunks, totalChunks, chunkTimings, workerElapsedMs, where: "model_call" };
     } else if (finalStatus === "PARTIAL") {
       errorFields.error_code = "WORKER_PARTIAL_CHUNKS_FAILED";
       errorFields.error_message = `${failedChunks.length} of ${totalChunks} chunk(s) failed`;
       errorFields.error_stage = "WORKER";
-      errorFields.error_meta = { failedChunks, totalChunks };
+      errorFields.error_meta = { failedChunks, totalChunks, chunkTimings, workerElapsedMs, where: "model_call" };
     }
 
     await updateJob(client, jobId, {
@@ -456,25 +586,27 @@ serve(async (req) => {
       step: "complete",
       progress: 100,
       result_data: resultData,
-      checkpoints: { documentMap, accounts: normalizedAccounts, processedChunks, totalChunks, failedChunks },
+      checkpoints: { documentMap, accounts: normalizedAccounts, processedChunks, totalChunks, failedChunks, chunkTimings },
       completed_at: new Date().toISOString(),
       ...errorFields,
     });
 
     await cleanupJobStorage(client, job.user_id, jobId);
 
-    console.log(`Job ${jobId} completed with status ${finalStatus}. Found ${normalizedAccounts.length} accounts. Storage cleaned.`);
+    console.log(`[worker] job=${jobId} DONE status=${finalStatus} accounts=${normalizedAccounts.length} elapsed=${workerElapsedMs}ms`);
 
-    return new Response(JSON.stringify({ status: finalStatus, accountCount: normalizedAccounts.length }), {
+    return new Response(JSON.stringify({ status: finalStatus, accountCount: normalizedAccounts.length, workerElapsedMs }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error("Worker error:", error);
+    const workerElapsedMs = Date.now() - workerStartedAt;
+    console.error(`[worker] job=${parsedJobId} FATAL error after ${workerElapsedMs}ms:`, error);
 
     if (parsedJobId) {
       try {
         const se = classifyWorkerError(error instanceof Error ? error : new Error(String(error)), "top_level");
         se.code = se.code || "UNKNOWN";
+        se.elapsedMs = workerElapsedMs;
 
         const { data: failedJob } = await client
           .from("analysis_jobs")
@@ -490,7 +622,7 @@ serve(async (req) => {
       } catch {}
     }
 
-    return new Response(JSON.stringify({ error: "Worker failed" }), {
+    return new Response(JSON.stringify({ error: "Worker failed", elapsedMs: workerElapsedMs }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });

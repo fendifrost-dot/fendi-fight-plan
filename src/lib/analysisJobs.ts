@@ -11,12 +11,25 @@ import { supabase } from '@/integrations/supabase/client';
 
 export type JobStatus = 'IDLE' | 'QUEUED' | 'RUNNING' | 'PARTIAL' | 'DONE' | 'FAILED';
 
+export type TimeoutSource = 'client_wait' | 'edge_fn' | 'model_call' | 'db' | 'unknown';
+
+export interface ChunkTiming {
+  chunkIndex: number;
+  startedAt: string;
+  endedAt: string;
+  elapsedMs: number;
+  status: 'ok' | 'failed' | 'retried_ok' | 'retried_failed';
+  error?: string;
+  retryElapsedMs?: number;
+}
+
 export interface JobCheckpoints {
   documentMap: any | null;
   accounts: any[];
   processedChunks: number;
   totalChunks: number;
   failedChunks: number[];
+  chunkTimings?: ChunkTiming[];
 }
 
 export interface AnalysisJob {
@@ -47,6 +60,8 @@ export interface JobError {
   step?: string | null;
   page?: number | null;
   chunk?: number | null;
+  where?: TimeoutSource | null;
+  elapsedMs?: number | null;
   meta?: any | null;
 }
 
@@ -61,6 +76,17 @@ export interface JobState {
   checkpoints: JobCheckpoints;
   result: any | null;
   lastUpdated: number;
+  // Heartbeat/timing fields for timeout triage
+  lastHeartbeatAt: string | null;
+  heartbeatAgeMs: number | null;
+  isHeartbeatStale: boolean;
+  startedAt: string | null;
+  createdAt: string | null;
+  completedAt: string | null;
+  totalPages: number;
+  attemptCount: number;
+  // Client-side timeout classification
+  timeoutSource: TimeoutSource | null;
 }
 
 export const DEFAULT_JOB_STATE: JobState = {
@@ -77,24 +103,63 @@ export const DEFAULT_JOB_STATE: JobState = {
     processedChunks: 0,
     totalChunks: 0,
     failedChunks: [],
+    chunkTimings: [],
   },
   result: null,
   lastUpdated: 0,
+  lastHeartbeatAt: null,
+  heartbeatAgeMs: null,
+  isHeartbeatStale: false,
+  startedAt: null,
+  createdAt: null,
+  completedAt: null,
+  totalPages: 0,
+  attemptCount: 0,
+  timeoutSource: null,
 };
 
 // ============= CONSTANTS =============
 
 const POLL_INTERVAL_MS = 1500;
-const WATCHDOG_THRESHOLD_MS = 10000; // Show "Still working..." after 10s of no updates
+const WATCHDOG_THRESHOLD_MS = 10000;
 const MAX_POLL_DURATION_MS = 10 * 60 * 1000; // 10 minutes max
+
+// ============= TIMEOUT CLASSIFICATION =============
+
+/**
+ * Classify the source of a timeout based on available evidence.
+ */
+export function classifyTimeout(state: JobState, pollStartTime: number): TimeoutSource {
+  // If the worker reported a specific 'where' in the error
+  if (state.error?.where) {
+    return state.error.where as TimeoutSource;
+  }
+
+  // If the job has a heartbeat that's stale, the edge function likely crashed/timed out
+  if (state.isHeartbeatStale && state.lastHeartbeatAt) {
+    return 'edge_fn';
+  }
+
+  // If the job never started (no startedAt), it may be a DB or queue issue
+  if (!state.startedAt && state.status === 'QUEUED') {
+    return 'edge_fn'; // worker never picked it up
+  }
+
+  // If the client poll expired but the job is still RUNNING with recent heartbeats
+  if (isPollExpired(pollStartTime) && !state.isHeartbeatStale) {
+    return 'client_wait';
+  }
+
+  // If error code indicates AI timeout
+  if (state.errorCode === 'WORKER_AI_TIMEOUT') {
+    return 'model_call';
+  }
+
+  return 'unknown';
+}
 
 // ============= CORE JOB FUNCTIONS =============
 
-/**
- * Start a new analysis job.
- * Returns the jobId immediately (<2s target).
- * Persists activeJobId to the session.
- */
 export async function startJob(
   storagePaths: string[],
   questionnaire: any,
@@ -136,10 +201,6 @@ export async function startJob(
   }
 }
 
-/**
- * Fetch the current status of a job.
- * Returns the full job state for UI rendering.
- */
 export async function fetchJobStatus(jobId: string): Promise<JobState | { fetchError: string }> {
   const { data: authData } = await supabase.auth.getSession();
   
@@ -176,15 +237,22 @@ export async function fetchJobStatus(jobId: string): Promise<JobState | { fetchE
       checkpoints: data.partialResults || DEFAULT_JOB_STATE.checkpoints,
       result: data.result || null,
       lastUpdated: Date.now(),
+      // Timing fields
+      lastHeartbeatAt: data.lastHeartbeatAt || null,
+      heartbeatAgeMs: data.heartbeatAgeMs || null,
+      isHeartbeatStale: data.isHeartbeatStale || false,
+      startedAt: data.startedAt || null,
+      createdAt: data.createdAt || null,
+      completedAt: data.completedAt || null,
+      totalPages: data.totalPages || 0,
+      attemptCount: data.attemptCount || 0,
+      timeoutSource: data.error?.where || null,
     };
   } catch (e) {
     return { fetchError: e instanceof Error ? e.message : 'Network error' };
   }
 }
 
-/**
- * Retry a failed job by triggering the worker again.
- */
 export async function retryJob(jobId: string): Promise<{ success: boolean } | { error: string }> {
   const { data: authData } = await supabase.auth.getSession();
   
@@ -216,9 +284,6 @@ export async function retryJob(jobId: string): Promise<{ success: boolean } | { 
   }
 }
 
-/**
- * Fetch the most recent job for a user (for resume on refresh).
- */
 export async function fetchActiveJob(): Promise<AnalysisJob | null> {
   const { data: authData } = await supabase.auth.getSession();
   
@@ -227,7 +292,6 @@ export async function fetchActiveJob(): Promise<AnalysisJob | null> {
   }
 
   try {
-    // Only resume jobs updated within the last hour to avoid zombie jobs
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
     
     const { data, error } = await supabase
@@ -250,9 +314,6 @@ export async function fetchActiveJob(): Promise<AnalysisJob | null> {
   }
 }
 
-/**
- * Fetch a specific job by ID.
- */
 export async function fetchJobById(jobId: string): Promise<AnalysisJob | null> {
   const { data: authData } = await supabase.auth.getSession();
   
@@ -278,9 +339,6 @@ export async function fetchJobById(jobId: string): Promise<AnalysisJob | null> {
   }
 }
 
-/**
- * Check if a job needs the "Still working..." watchdog message.
- */
 export function isJobStale(state: JobState): boolean {
   if (!['QUEUED', 'RUNNING'].includes(state.status)) {
     return false;
@@ -288,23 +346,14 @@ export function isJobStale(state: JobState): boolean {
   return Date.now() - state.lastUpdated > WATCHDOG_THRESHOLD_MS;
 }
 
-/**
- * Check if polling has exceeded max duration.
- */
 export function isPollExpired(pollStartTime: number): boolean {
   return Date.now() - pollStartTime > MAX_POLL_DURATION_MS;
 }
 
-/**
- * Get the poll interval.
- */
 export function getPollInterval(): number {
   return POLL_INTERVAL_MS;
 }
 
-/**
- * Check if a status is terminal (no more polling needed).
- */
 export function isTerminalStatus(status: JobStatus): boolean {
   return ['DONE', 'FAILED', 'PARTIAL'].includes(status);
 }
@@ -334,10 +383,6 @@ function mapDbJobToJob(data: any): AnalysisJob {
   };
 }
 
-/**
- * Parse job results into normalized account format.
- * This is called AFTER results are persisted, for UI rendering.
- */
 export function parseJobResultAccounts(resultData: any): any[] {
   if (!resultData) return [];
   
@@ -345,7 +390,6 @@ export function parseJobResultAccounts(resultData: any): any[] {
     return resultData.accounts;
   }
   
-  // Handle legacy format
   const accounts: any[] = [];
   if (resultData.derogatory_accounts) {
     accounts.push(...resultData.derogatory_accounts);
@@ -360,9 +404,6 @@ export function parseJobResultAccounts(resultData: any): any[] {
   return accounts;
 }
 
-/**
- * Format a job result for display.
- */
 export function formatJobResult(job: AnalysisJob | JobState): {
   accountCount: number;
   summary: string;

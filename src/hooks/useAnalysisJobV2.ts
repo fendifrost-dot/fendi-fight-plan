@@ -20,23 +20,16 @@ import {
   isJobStale,
   getPollInterval,
   parseJobResultAccounts,
+  classifyTimeout,
   JobState,
   JobStatus,
   DEFAULT_JOB_STATE,
 } from '@/lib/analysisJobs';
 
 export interface UseAnalysisJobOptions {
-  /** 
-   * Callback when job completes successfully.
-   * MUST return true after hydrating results into state.
-   * Toast will ONLY fire if this returns true.
-   */
   onComplete?: (result: any, accounts: any[]) => boolean | void;
-  /** Callback when job fails */
   onError?: (errorCode: string | null, errorMessage: string | null) => void;
-  /** Callback when job has partial results */
   onPartial?: (accounts: any[]) => void;
-  /** Auto-resume an in-progress job on mount */
   autoResume?: boolean;
 }
 
@@ -45,7 +38,6 @@ export interface UseAnalysisJobReturn {
   isProcessing: boolean;
   isStale: boolean;
   
-  // Actions
   startAnalysis: (imageUrls: string[], questionnaire?: any, sessionId?: string | null) => Promise<string | null>;
   resumeJob: (jobId: string) => void;
   retryJob: () => Promise<void>;
@@ -60,7 +52,7 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
   const pollIntervalRef = useRef<number | null>(null);
   const pollStartRef = useRef<number>(0);
   const isProcessingRef = useRef(false);
-  const completedRef = useRef(false); // Track if we've already called onComplete
+  const completedRef = useRef(false);
   
   const stopPolling = useCallback(() => {
     if (pollIntervalRef.current) {
@@ -82,13 +74,11 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
     
     if ('fetchError' in result) {
       console.error('Poll error:', result.fetchError);
-      // Don't stop polling on transient errors
       return;
     }
 
     setState(result);
 
-    // Check for terminal states
     if (isTerminalStatus(result.status)) {
       stopPolling();
       
@@ -96,21 +86,15 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
         completedRef.current = true;
         const accounts = parseJobResultAccounts(result.result);
         
-        // CRITICAL: Call onComplete and only show toast if it returns true
-        // This ensures results are hydrated before the success message
         try {
           const hydrationSuccess = onComplete?.(result.result, accounts);
           
-          // Only show toast if hydration was successful (callback returned true)
           if (hydrationSuccess === true) {
             toast.success(`Analysis complete. Found ${accounts.length} account(s).`);
           } else if (hydrationSuccess === undefined) {
-            // Legacy behavior for callbacks that don't return anything
-            // Still show toast but warn in console
             console.warn('[useAnalysisJobV2] onComplete callback should return true after hydrating results');
             toast.success(`Analysis complete. Found ${accounts.length} account(s).`);
           }
-          // If hydrationSuccess === false, don't show toast (hydration failed)
         } catch (err) {
           console.error('[useAnalysisJobV2] onComplete callback failed:', err);
           toast.error('Analysis complete but failed to load results. Use the reload button.');
@@ -120,15 +104,40 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
         toast.warning(`Analysis partially complete. Extracted ${accounts.length} account(s).`);
         onPartial?.(accounts);
       } else if (result.status === 'FAILED') {
-        toast.error(result.errorMessage || 'Analysis failed');
+        // Classify timeout source for the error message
+        const timeoutSrc = classifyTimeout(result, pollStartRef.current);
+        const enhancedMsg = result.errorCode?.includes('TIMEOUT')
+          ? `${result.errorMessage} [source: ${timeoutSrc}]`
+          : result.errorMessage;
+        toast.error(enhancedMsg || 'Analysis failed');
         onError?.(result.errorCode, result.errorMessage);
       }
     }
 
-    // Check poll expiry
+    // Check poll expiry — classify as client_wait timeout
     if (isPollExpired(pollStartRef.current)) {
       stopPolling();
-      toast.error('Analysis timed out. Refresh to check status.');
+      
+      const timeoutSrc = classifyTimeout(result, pollStartRef.current);
+      
+      // Update state with timeout classification
+      setState(prev => ({
+        ...prev,
+        timeoutSource: timeoutSrc,
+        errorCode: 'ANALYSIS_TIMEOUT',
+        errorMessage: `Analysis timed out [source: ${timeoutSrc}]`,
+        error: {
+          code: 'ANALYSIS_TIMEOUT',
+          message: `Client polling expired after 10 minutes`,
+          stage: 'CLIENT',
+          where: timeoutSrc,
+          elapsedMs: Date.now() - pollStartRef.current,
+          step: prev.step,
+          chunk: prev.checkpoints?.processedChunks || null,
+        },
+      }));
+      
+      toast.error(`Analysis timed out [${timeoutSrc}]. Use "Copy Diagnostics" for details.`);
     }
   }, [stopPolling, onComplete, onError, onPartial]);
 
@@ -138,16 +147,13 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
     isProcessingRef.current = true;
     completedRef.current = false;
     
-    // Poll immediately
     pollStatus(jobId);
     
-    // Then poll periodically
     pollIntervalRef.current = window.setInterval(() => {
       pollStatus(jobId);
     }, getPollInterval());
   }, [stopPolling, pollStatus]);
 
-  // Start a new analysis
   const startAnalysis = useCallback(async (
     imageUrls: string[],
     questionnaire?: any,
@@ -182,13 +188,11 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
       status: result.status,
     }));
 
-    // Start polling
     startPolling(result.jobId);
     
     return result.jobId;
   }, [reset, startPolling]);
 
-  // Resume polling for an existing job
   const resumeJob = useCallback((jobId: string) => {
     setState(prev => ({
       ...prev,
@@ -202,7 +206,6 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
     startPolling(jobId);
   }, [startPolling]);
 
-  // Retry a failed job
   const retryJob = useCallback(async () => {
     if (!state.jobId) {
       toast.error('No job to retry');
@@ -215,6 +218,8 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
       step: 'Retrying...',
       errorCode: null,
       errorMessage: null,
+      error: null,
+      timeoutSource: null,
       lastUpdated: Date.now(),
     }));
     isProcessingRef.current = true;
@@ -236,7 +241,6 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
     startPolling(state.jobId);
   }, [state.jobId, startPolling]);
 
-  // Use partial results
   const usePartialResults = useCallback(() => {
     const accounts = state.checkpoints?.accounts || [];
     if (accounts.length > 0) {
