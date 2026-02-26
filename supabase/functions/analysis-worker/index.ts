@@ -310,19 +310,28 @@ async function processChunk(
  */
 async function selfChain(supabaseUrl: string, serviceKey: string, jobId: string) {
   const workerUrl = `${supabaseUrl}/functions/v1/analysis-worker`;
-  console.log(`[worker] self-chaining for job=${jobId}`);
-  try {
-    await fetch(workerUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${serviceKey}`,
-      },
-      body: JSON.stringify({ jobId }),
-    });
-  } catch (err) {
+  console.log(`[worker] self-chaining for job=${jobId} (fire-and-forget)`);
+
+  // CRITICAL: Do NOT await the fetch response. The previous code awaited the
+  // chained invocation's full response, which kept this invocation alive for
+  // the entire duration of ALL subsequent chains — cascading wall-clock usage
+  // and eventually hitting the ~150s edge function limit.
+  //
+  // Instead: fire the request, wait just long enough to ensure it's dispatched,
+  // then return so this invocation can exit cleanly.
+  fetch(workerUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${serviceKey}`,
+    },
+    body: JSON.stringify({ jobId }),
+  }).catch(err => {
     console.error(`[worker] self-chain trigger failed for ${jobId}:`, err);
-  }
+  });
+
+  // Brief pause to ensure the HTTP request is dispatched before this invocation exits
+  await new Promise(r => setTimeout(r, 200));
 }
 
 serve(async (req) => {

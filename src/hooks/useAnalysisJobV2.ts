@@ -9,6 +9,7 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import {
   startJob,
@@ -68,6 +69,36 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
     completedRef.current = false;
   }, [stopPolling]);
 
+  // Auto-mark stale RUNNING jobs as FAILED so user can retry
+  const markStaleJobFailed = useCallback(async (jobId: string, jobState: JobState) => {
+    console.warn(`[useAnalysisJobV2] marking stale job ${jobId} as FAILED (heartbeat age: ${jobState.heartbeatAgeMs}ms)`);
+    
+    const { error } = await supabase
+      .from('analysis_jobs')
+      .update({
+        status: 'FAILED',
+        error_code: 'JOB_STALE',
+        error_message: `Worker stopped responding. Last heartbeat ${Math.round((jobState.heartbeatAgeMs || 0) / 1000)}s ago at chunk ${jobState.checkpoints?.processedChunks || '?'}/${jobState.checkpoints?.totalChunks || '?'}`,
+        error_stage: 'WORKER',
+        error_meta: {
+          where: 'edge_fn',
+          lastHeartbeatAt: jobState.lastHeartbeatAt,
+          heartbeatAgeMs: jobState.heartbeatAgeMs,
+          processedChunks: jobState.checkpoints?.processedChunks,
+          totalChunks: jobState.checkpoints?.totalChunks,
+          step: jobState.step,
+        },
+        completed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', jobId)
+      .eq('status', 'RUNNING');
+    
+    if (error) {
+      console.error('[useAnalysisJobV2] failed to mark job stale:', error);
+    }
+  }, []);
+
   // Poll for job status
   const pollStatus = useCallback(async (jobId: string) => {
     const result = await fetchJobStatus(jobId);
@@ -78,6 +109,27 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
     }
 
     setState(result);
+
+    // AUTO-DETECT stale heartbeat: if RUNNING but heartbeat stale, mark FAILED
+    if (result.status === 'RUNNING' && result.isHeartbeatStale && result.heartbeatAgeMs && result.heartbeatAgeMs > 60_000) {
+      stopPolling();
+      await markStaleJobFailed(jobId, result);
+      
+      // Re-fetch to get the updated FAILED status
+      const updated = await fetchJobStatus(jobId);
+      if (!('fetchError' in updated)) {
+        setState(updated);
+        const accounts = updated.checkpoints?.accounts || [];
+        if (accounts.length > 0) {
+          toast.warning(`Worker stopped at chunk ${updated.checkpoints?.processedChunks}/${updated.checkpoints?.totalChunks}. ${accounts.length} account(s) recovered. You can retry or use partial results.`);
+          onPartial?.(accounts);
+        } else {
+          toast.error('Worker stopped responding. Click "Retry" to resume from the last checkpoint.');
+        }
+        onError?.('JOB_STALE', updated.errorMessage);
+      }
+      return;
+    }
 
     if (isTerminalStatus(result.status)) {
       stopPolling();
@@ -104,9 +156,8 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
         toast.warning(`Analysis partially complete. Extracted ${accounts.length} account(s).`);
         onPartial?.(accounts);
       } else if (result.status === 'FAILED') {
-        // Classify timeout source for the error message
         const timeoutSrc = classifyTimeout(result, pollStartRef.current);
-        const enhancedMsg = result.errorCode?.includes('TIMEOUT')
+        const enhancedMsg = result.errorCode?.includes('TIMEOUT') || result.errorCode === 'JOB_STALE'
           ? `${result.errorMessage} [source: ${timeoutSrc}]`
           : result.errorMessage;
         toast.error(enhancedMsg || 'Analysis failed');
@@ -114,13 +165,12 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
       }
     }
 
-    // Check poll expiry — classify as client_wait timeout
+    // Check poll expiry
     if (isPollExpired(pollStartRef.current)) {
       stopPolling();
       
       const timeoutSrc = classifyTimeout(result, pollStartRef.current);
       
-      // Update state with timeout classification
       setState(prev => ({
         ...prev,
         timeoutSource: timeoutSrc,
@@ -139,7 +189,7 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
       
       toast.error(`Analysis timed out [${timeoutSrc}]. Use "Copy Diagnostics" for details.`);
     }
-  }, [stopPolling, onComplete, onError, onPartial]);
+  }, [stopPolling, markStaleJobFailed, onComplete, onError, onPartial]);
 
   const startPolling = useCallback((jobId: string) => {
     stopPolling();
