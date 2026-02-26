@@ -13,7 +13,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { pdfToImagesStreaming, isPartialResultAcceptable, extractTextFromPdf, detectBureauFromText, isHeicFile, isPdfFile, isSupportedImage } from "@/lib/pdf-utils";
 import type { ClientPdfError } from "@/lib/client-pdf-error";
-import { uploadImageFile, deleteJobObjects } from "@/lib/storage-upload";
+import { uploadPageBlob, uploadImageFile, deleteJobObjects, isUploadTriageModeEnabled, setUploadTriageMode, runUploadSelfTest, type UploadFailureDetails, type UploadSelfTestReport, type UploadTriageEvent } from "@/lib/storage-upload";
 import DisputeLetterBuilder from "./DisputeLetterBuilder";
 import { useChunkedAnalysis } from "@/hooks/useChunkedAnalysis";
 import { AnalysisProgress } from "./AnalysisProgress";
@@ -151,6 +151,10 @@ const AIAnalyzer = () => {
   const [error, setError] = useState<string | null>(null);
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
   const [session, setSession] = useState<Session | null>(null);
+  const [triageMode, setTriageModeState] = useState(false);
+  const [triageReport, setTriageReport] = useState<UploadSelfTestReport | null>(null);
+  const [lastUploadFailure, setLastUploadFailure] = useState<UploadFailureDetails | null>(null);
+  const [uploadEvents, setUploadEvents] = useState<UploadTriageEvent[]>([]);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
@@ -268,7 +272,7 @@ const AIAnalyzer = () => {
 
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, session) => {
+      (_event, session) => {
         setSession(session);
       }
     );
@@ -277,17 +281,56 @@ const AIAnalyzer = () => {
       setSession(session);
     });
 
+    setTriageModeState(isUploadTriageModeEnabled());
+
     return () => subscription.unsubscribe();
   }, []);
 
   const generateFileId = () => Math.random().toString(36).substring(2, 9);
-  const ANALYSIS_IMAGE_BUCKET = 'analysis-images';
+  
 
   const getRenderedPageFileInfo = (mimeType: string) => {
     const normalized = mimeType === 'image/webp' ? 'image/webp' : 'image/jpeg';
-    const ext = normalized === 'image/webp' ? 'webp' : 'jpg';
-    return { contentType: normalized, ext };
+    return { contentType: normalized };
   };
+
+  const appendUploadEvent = useCallback((event: UploadTriageEvent) => {
+    setUploadEvents(prev => [...prev.slice(-19), event]);
+  }, []);
+
+  const buildDiagnosticsPayload = useCallback(() => ({
+    jobId: lastJobInfo?.jobId ?? null,
+    resultCount: lastJobInfo?.resultCount ?? 0,
+    resultsKeys: Object.keys(results).length,
+    triageMode,
+    triageReport,
+    lastUploadFailure,
+    uploadEvents,
+    files: uploadedFiles.map(f => ({
+      name: f.name,
+      pageCount: f.pageCount,
+      pagesSucceeded: f.pagesSucceeded,
+      failedPages: f.failedPages,
+      error: f.error,
+      clientPdfErrors: (f.clientPdfErrors || []).map((e) => ({
+        stage: e.stage,
+        code: e.code,
+        message: e.message,
+        meta: {
+          fileName: e.meta?.fileName,
+          fileSize: e.meta?.fileSize,
+          mimeType: e.meta?.mimeType,
+          pageCount: e.meta?.pageCount,
+          failingPage: e.meta?.failingPage,
+          operation: e.meta?.operation,
+          usedScale: e.meta?.scale,
+          usedFormat: e.meta?.format,
+          usedQuality: e.meta?.quality,
+          pdfjsError: e.meta?.pdfjsError,
+        },
+      })),
+    })),
+  }), [lastJobInfo, results, triageMode, triageReport, lastUploadFailure, uploadEvents, uploadedFiles]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
@@ -346,10 +389,21 @@ const AIAnalyzer = () => {
 
       // Process file with timeout
       try {
-        if (!session?.user?.id) {
-          throw new Error('Authentication required for upload');
+        const authUser = await supabase.auth.getUser();
+        const userId = authUser.data.user?.id;
+        if (!userId) {
+          throw {
+            stage: 'CLIENT_PDF',
+            code: 'AUTH_NOT_READY',
+            message: 'Upload blocked: auth not ready at upload time',
+            meta: {
+              fileName: file.name,
+              fileSize: file.size,
+              mimeType: file.type,
+              operation: 'upload',
+            },
+          };
         }
-        const userId = session.user.id;
 
         if (isPdfFile(file)) {
           // Extract text for bureau detection
@@ -364,19 +418,16 @@ const AIAnalyzer = () => {
             const result = await pdfToImagesStreaming(
               file,
               async (pdfPageNumber, blob, mimeType, pgCount) => {
-                const { contentType, ext } = getRenderedPageFileInfo(mimeType);
-                const objectName = `${userId}/${uploadId}/page-${String(pdfPageNumber).padStart(3, '0')}.${ext}`;
-
-                const { error: uploadError } = await supabase.storage
-                  .from(ANALYSIS_IMAGE_BUCKET)
-                  .upload(objectName, blob, {
-                    contentType,
-                    upsert: true,
-                  });
-
-                if (uploadError) {
-                  throw new Error(`Upload failed for PDF page ${pdfPageNumber}: ${uploadError.message}`);
-                }
+                const { contentType } = getRenderedPageFileInfo(mimeType);
+                const objectName = await uploadPageBlob(
+                  userId,
+                  uploadId,
+                  pdfPageNumber,
+                  blob,
+                  contentType,
+                  file.name,
+                  appendUploadEvent,
+                );
 
                 storagePaths.push(objectName);
 
@@ -454,7 +505,7 @@ const AIAnalyzer = () => {
           }
         } else if (isSupportedImage(file)) {
           // Upload single image directly (no base64 in memory)
-          const path = await uploadImageFile(userId, uploadId, file, 0);
+          const path = await uploadImageFile(userId, uploadId, file, 1, appendUploadEvent);
           setUploadedFiles(prev => prev.map(f =>
             f.id === fileId
               ? { ...f, storagePaths: [path], pageCount: 1, isProcessing: false, processingStatus: '1 page uploaded' }
@@ -478,6 +529,10 @@ const AIAnalyzer = () => {
         const errorMsg = isStructured ? err.message : 'Failed to process file';
         const failingPage = isStructured ? err?.meta?.failingPage : undefined;
 
+        if (isStructured) {
+          setLastUploadFailure(err as UploadFailureDetails);
+        }
+
         setUploadedFiles(prev => prev.map(f =>
           f.id === fileId
             ? {
@@ -485,13 +540,13 @@ const AIAnalyzer = () => {
                 isProcessing: false,
                 error: errorMsg,
                 failedPages: failingPage ? [failingPage] : f.failedPages,
-                clientPdfErrors: isStructured ? [err] : undefined,
+                clientPdfErrors: isStructured && err?.operation !== 'upload' ? [err] : f.clientPdfErrors,
               }
             : f
         ));
 
         toast({
-          title: isStructured ? `PDF error: ${err.code}` : "Processing failed",
+          title: isStructured ? `Upload error: ${err.code}` : "Processing failed",
           description: isStructured
             ? `${err.message}${failingPage ? ` (failing page: ${failingPage})` : ''}`
             : `Failed to process ${file.name}. Try uploading screenshots instead.`,
@@ -607,6 +662,16 @@ const AIAnalyzer = () => {
       toast({
         title: "Bureau assignment required",
         description: validation.message,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const invalidUploads = filesToAnalyze.filter(f => !!f.error || f.storagePaths.length === 0);
+    if (invalidUploads.length > 0) {
+      toast({
+        title: "Upload issue detected",
+        description: `Resolve failed uploads before analysis: ${invalidUploads.map(f => f.name).join(', ')}`,
         variant: "destructive",
       });
       return;
@@ -913,6 +978,32 @@ const AIAnalyzer = () => {
   const hasAnyResults = Object.keys(results).length > 0;
   const anyFileProcessing = uploadedFiles.some(f => f.isProcessing);
   const hasUnknownBureau = uploadedFiles.some(f => f.selectedBureau === 'unknown');
+
+  const handleRunUploadSelfTest = useCallback(async () => {
+    try {
+      const report = await runUploadSelfTest();
+      setTriageReport(report);
+      toast({
+        title: report.conclusion === 'pass' ? 'Upload self-test passed' : 'Upload self-test found issues',
+        description: report.conclusion,
+        variant: report.conclusion === 'pass' ? 'default' : 'destructive',
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Self-test failed to run';
+      toast({ title: 'Self-test failed', description: message, variant: 'destructive' });
+    }
+  }, [toast]);
+
+  const toggleTriageMode = useCallback(() => {
+    const next = !triageMode;
+    setUploadTriageMode(next);
+    setTriageModeState(next);
+    if (!next) {
+      setTriageReport(null);
+      setLastUploadFailure(null);
+      setUploadEvents([]);
+    }
+  }, [triageMode]);
 
   const renderResultContent = (result: DisputeAnalysisResult, showSource = false) => (
     <div className="space-y-6">
@@ -1597,6 +1688,47 @@ const AIAnalyzer = () => {
                 </Select>
               </div>
 
+              <div className="flex items-center justify-end gap-2">
+                <Button type="button" variant="ghost" size="sm" onClick={toggleTriageMode}>
+                  <Bug className="w-4 h-4 mr-1" />
+                  Triage: {triageMode ? 'On' : 'Off'}
+                </Button>
+              </div>
+
+              {triageMode && (
+                <div className="p-3 rounded-lg border border-border/60 bg-muted/20 space-y-3">
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" variant="outline" size="sm" onClick={handleRunUploadSelfTest}>
+                      Run Upload Self-Test
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        navigator.clipboard.writeText(JSON.stringify(buildDiagnosticsPayload(), null, 2));
+                        toast({ title: 'Diagnostics copied', description: 'Triage report copied.' });
+                      }}
+                    >
+                      <Copy className="w-4 h-4 mr-1" />
+                      Copy Diagnostics
+                    </Button>
+                  </div>
+
+                  {triageReport && (
+                    <pre className="text-xs overflow-auto rounded bg-background/60 p-2 border border-border/50 max-h-52">
+{JSON.stringify(triageReport, null, 2)}
+                    </pre>
+                  )}
+
+                  {lastUploadFailure && (
+                    <pre className="text-xs overflow-auto rounded bg-destructive/5 p-2 border border-destructive/30 max-h-52">
+{JSON.stringify(lastUploadFailure, null, 2)}
+                    </pre>
+                  )}
+                </div>
+              )}
+
               {/* Analyze button */}
               <Button
                 onClick={() => handleAnalyze()}
@@ -1670,34 +1802,7 @@ const AIAnalyzer = () => {
                     variant="outline"
                     size="sm"
                     onClick={() => {
-                      const diagData = {
-                        jobId: lastJobInfo.jobId,
-                        resultCount: lastJobInfo.resultCount,
-                        resultsKeys: Object.keys(results).length,
-                        files: uploadedFiles.map(f => ({
-                          name: f.name,
-                          pageCount: f.pageCount,
-                          pagesSucceeded: f.pagesSucceeded,
-                          failedPages: f.failedPages,
-                          clientPdfErrors: (f.clientPdfErrors || []).map((e) => ({
-                            stage: e.stage,
-                            code: e.code,
-                            message: e.message,
-                            meta: {
-                              fileName: e.meta?.fileName,
-                              fileSize: e.meta?.fileSize,
-                              mimeType: e.meta?.mimeType,
-                              pageCount: e.meta?.pageCount,
-                              failingPage: e.meta?.failingPage,
-                              operation: e.meta?.operation,
-                              usedScale: e.meta?.scale,
-                              usedFormat: e.meta?.format,
-                              usedQuality: e.meta?.quality,
-                              pdfjsError: e.meta?.pdfjsError,
-                            },
-                          })),
-                        })),
-                      };
+                      const diagData = buildDiagnosticsPayload();
                       navigator.clipboard.writeText(JSON.stringify(diagData, null, 2));
                       toast({ title: "Diagnostics copied", description: "Paste to support for analysis." });
                     }}
