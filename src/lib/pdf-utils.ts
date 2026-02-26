@@ -18,6 +18,80 @@ async function getPdfJs(): Promise<typeof import('pdfjs-dist')> {
 }
 
 /**
+ * Callback signature for streaming page processing.
+ * Called once per page with a JPEG Blob. The caller must consume or upload
+ * the blob before the next page is yielded — no pages accumulate in memory.
+ */
+export interface PageCallback {
+  (pageIndex: number, blob: Blob, mimeType: string, pageCount: number): Promise<void>;
+}
+
+/**
+ * Convert a PDF file to images ONE PAGE AT A TIME via callback.
+ * 
+ * INVARIANT: No base64 strings or data URLs are created.
+ * INVARIANT: Only one page canvas exists at a time.
+ * INVARIANT: Process ALL pages or throw. No silent truncation.
+ * 
+ * Memory profile: O(1) with respect to page count — each page's canvas
+ * and blob are released before the next is rendered.
+ */
+export async function pdfToImagesStreaming(
+  file: File,
+  onPage: PageCallback,
+  options: { scale?: number; quality?: number } = {}
+): Promise<{ pageCount: number }> {
+  const pdfjs = await getPdfJs();
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+  
+  const pageCount = pdf.numPages;
+  const scale = options.scale ?? 2;
+  const quality = options.quality ?? 0.85;
+
+  for (let i = 1; i <= pageCount; i++) {
+    const page = await pdf.getPage(i);
+    const viewport = page.getViewport({ scale });
+
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    
+    if (!context) {
+      throw new Error(`Could not create canvas context for page ${i}`);
+    }
+
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+
+    await page.render({
+      canvasContext: context,
+      viewport: viewport,
+    }).promise;
+
+    // Use canvas.toBlob — never creates a data URL string
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (b) => b ? resolve(b) : reject(new Error(`toBlob failed for page ${i}`)),
+        'image/jpeg',
+        quality
+      );
+    });
+
+    // Deliver to caller — they upload/consume before we continue
+    await onPage(i - 1, blob, 'image/jpeg', pageCount);
+
+    // Explicitly release canvas memory
+    canvas.width = 0;
+    canvas.height = 0;
+    page.cleanup();
+  }
+
+  return { pageCount };
+}
+
+/**
+ * @deprecated Use pdfToImagesStreaming instead.
+ * Kept only for non-upload paths (e.g. small previews).
  * Convert a PDF file to an array of base64 image strings (one per page)
  * INVARIANT: Process ALL pages or throw an error. No silent truncation.
  */

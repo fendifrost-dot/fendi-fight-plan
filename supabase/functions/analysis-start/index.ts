@@ -36,13 +36,24 @@ serve(async (req) => {
       });
     }
 
-    const { sessionId, imageUrls, questionnaire, reportType } = await req.json();
+    const { sessionId, storagePaths, questionnaire, reportType } = await req.json();
 
-    if (!imageUrls || !Array.isArray(imageUrls) || imageUrls.length === 0) {
-      return new Response(JSON.stringify({ error: "No images provided" }), {
+    if (!storagePaths || !Array.isArray(storagePaths) || storagePaths.length === 0) {
+      return new Response(JSON.stringify({ error: "No storage paths provided" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+    }
+
+    // Validate all paths belong to this user (RLS enforcement at API level)
+    const userPrefix = `${user.id}/`;
+    for (const path of storagePaths) {
+      if (!path.startsWith(userPrefix)) {
+        return new Response(JSON.stringify({ error: "Invalid storage path: access denied" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
     }
 
     // Create job record
@@ -57,10 +68,10 @@ serve(async (req) => {
       step: "pending",
       progress: 0,
       input_data: {
-        imageUrls,
+        storagePaths,
         questionnaire: questionnaire || {},
         reportType: reportType || "unknown",
-        totalPages: imageUrls.length,
+        totalPages: storagePaths.length,
       },
       checkpoints: {},
     });
@@ -84,7 +95,7 @@ serve(async (req) => {
       body: JSON.stringify({ jobId }),
     }).catch((err) => console.error("Failed to trigger worker:", err));
 
-    console.log(`Job ${jobId} created for user ${user.id} with ${imageUrls.length} images`);
+    console.log(`Job ${jobId} created for user ${user.id} with ${storagePaths.length} pages (storage paths)`);
 
     return new Response(JSON.stringify({ jobId, status: "QUEUED" }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
