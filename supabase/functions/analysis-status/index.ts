@@ -47,7 +47,7 @@ serve(async (req) => {
 
     const { data: job, error: fetchError } = await supabase
       .from("analysis_jobs")
-      .select("id, status, step, progress, error_code, error_message, error_stage, error_meta, checkpoints, result_data, created_at, updated_at")
+      .select("id, status, step, progress, error_code, error_message, error_stage, error_meta, checkpoints, result_data, created_at, updated_at, last_heartbeat_at, started_at, completed_at, stale_after_seconds, attempt_count, max_attempts, input_data")
       .eq("id", jobId)
       .maybeSingle();
 
@@ -72,9 +72,10 @@ serve(async (req) => {
       processedChunks: job.checkpoints?.processedChunks || 0,
       totalChunks: job.checkpoints?.totalChunks || 0,
       failedChunks: job.checkpoints?.failedChunks || [],
+      chunkTimings: job.checkpoints?.chunkTimings || [],
     };
 
-    // Build structured error (always present when FAILED/PARTIAL, null otherwise)
+    // Build structured error
     let structuredError = null;
     if (job.error_code || job.error_message) {
       structuredError = {
@@ -84,9 +85,18 @@ serve(async (req) => {
         step: job.error_meta?.step || job.step || null,
         page: job.error_meta?.page || null,
         chunk: job.error_meta?.chunk || null,
+        where: job.error_meta?.where || null,
+        elapsedMs: job.error_meta?.elapsedMs || null,
         meta: job.error_meta || null,
       };
     }
+
+    // Compute heartbeat staleness
+    const now = Date.now();
+    const lastHeartbeatAt = job.last_heartbeat_at;
+    const staleAfterSeconds = job.stale_after_seconds || 900;
+    const heartbeatAgeMs = lastHeartbeatAt ? now - new Date(lastHeartbeatAt).getTime() : null;
+    const isHeartbeatStale = heartbeatAgeMs !== null && heartbeatAgeMs > staleAfterSeconds * 1000;
 
     return new Response(JSON.stringify({
       jobId: job.id,
@@ -96,8 +106,18 @@ serve(async (req) => {
       error: structuredError,
       partialResults,
       result: job.result_data,
+      // Timing fields for timeout triage
       createdAt: job.created_at,
       updatedAt: job.updated_at,
+      startedAt: job.started_at,
+      completedAt: job.completed_at,
+      lastHeartbeatAt,
+      heartbeatAgeMs,
+      isHeartbeatStale,
+      staleAfterSeconds,
+      attemptCount: job.attempt_count || 0,
+      maxAttempts: job.max_attempts || 3,
+      totalPages: job.input_data?.totalPages || 0,
     }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
