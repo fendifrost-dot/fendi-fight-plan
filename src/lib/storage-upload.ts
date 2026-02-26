@@ -8,6 +8,7 @@ import { supabase } from "@/integrations/supabase/client";
 const BUCKET = "analysis-images";
 const TRIAGE_LOCAL_KEY = "cc_upload_triage_mode";
 const CLIENT_SINGLETON_KEY = "__cc_supabase_client_singleton__";
+const CLIENT_INSTANCE_IDS_KEY = "__cc_supabase_client_instance_ids__";
 
 export interface UploadFailureDetails {
   stage: "CLIENT_PDF";
@@ -34,6 +35,7 @@ export interface UploadFailureDetails {
     expires_at: number | null;
     authTokenPresent: boolean;
     projectUrlHash: string;
+    clientInstanceId: string;
     storageStatus?: number;
     storageError?: string;
   };
@@ -53,7 +55,15 @@ export interface UploadTriageEvent {
   fileName?: string;
   upsert: boolean;
   projectUrlHash: string;
+  clientInstanceId: string;
+  clientSingletonMatched: boolean;
+  uploadOptions: {
+    upsert: boolean;
+    contentType: string;
+  };
   error?: {
+    name?: string;
+    code?: string;
     message: string;
     status?: number;
     details?: string;
@@ -65,6 +75,7 @@ export interface UploadSelfTestReport {
   sessionPresent: boolean;
   expires_at: number | null;
   objectNameUsed: string;
+  clientInstanceId: string;
   tests: {
     authHydration: { pass: boolean; code?: string; details?: string };
     pathContract: { pass: boolean; code?: string; details?: string };
@@ -74,6 +85,7 @@ export interface UploadSelfTestReport {
       objectPath: string;
       status?: number;
       error?: string;
+      errorPayload?: Record<string, unknown>;
     };
   };
   errors: Array<{ code: string; message: string; meta?: Record<string, unknown> }>;
@@ -98,6 +110,15 @@ export function getProjectUrlHash(): string {
   return simpleHash(raw);
 }
 
+function normalizeStatusCode(status: unknown): number | undefined {
+  if (typeof status === "number") return status;
+  if (typeof status === "string") {
+    const parsed = Number(status);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
 export function isUploadTriageModeEnabled(): boolean {
   if (import.meta.env.VITE_UPLOAD_TRIAGE_MODE === "true") return true;
   if (typeof window === "undefined") return false;
@@ -112,6 +133,19 @@ export function isUploadTriageModeEnabled(): boolean {
 export function setUploadTriageMode(enabled: boolean): void {
   if (typeof window === "undefined") return;
   localStorage.setItem(TRIAGE_LOCAL_KEY, enabled ? "true" : "false");
+}
+
+function getClientInstanceId(): string {
+  const g = globalThis as Record<string, unknown>;
+  if (!g[CLIENT_INSTANCE_IDS_KEY]) {
+    g[CLIENT_INSTANCE_IDS_KEY] = new WeakMap<object, string>();
+  }
+  const ids = g[CLIENT_INSTANCE_IDS_KEY] as WeakMap<object, string>;
+  const clientObject = supabase as unknown as object;
+  if (!ids.has(clientObject)) {
+    ids.set(clientObject, `sb-${simpleHash(`${Date.now()}-${Math.random()}`)}`);
+  }
+  return ids.get(clientObject)!;
 }
 
 function ensureClientSingleton(): { pass: boolean; details: string } {
@@ -157,9 +191,12 @@ function toUploadFailure(details: UploadTriageEvent): UploadFailureDetails {
       expires_at: details.expires_at,
       authTokenPresent: details.authTokenPresent,
       projectUrlHash: details.projectUrlHash,
+      clientInstanceId: details.clientInstanceId,
       storageStatus: details.error?.status,
       storageError: details.error?.details,
-      pdfjsError: details.error ? `${details.error.message}${details.error.details ? ` | ${details.error.details}` : ""}` : undefined,
+      pdfjsError: details.error
+        ? `${details.error.name ? `[${details.error.name}] ` : ""}${details.error.message}${details.error.details ? ` | ${details.error.details}` : ""}`
+        : undefined,
     },
   };
 }
@@ -179,80 +216,13 @@ export async function uploadBlobWithTriage(params: UploadBlobParams): Promise<st
   const { data: sessionData } = await supabase.auth.getSession();
   const uid = userData.user?.id ?? null;
   const session = sessionData.session;
-
-  if (!uid) {
-    const authMissing: UploadFailureDetails = {
-      stage: "CLIENT_PDF",
-      code: "AUTH_NOT_READY",
-      message: "Auth hydration incomplete: no user available at upload time",
-      meta: {
-        fileName: params.fileName,
-        fileSize: params.blob.size,
-        mimeType: params.mimeType,
-        operation: "upload",
-        bucket: BUCKET,
-        uid: null,
-        expectedUid: params.expectedUserId,
-        upsert: false,
-        sessionPresent: Boolean(session),
-        expires_at: session?.expires_at ?? null,
-        authTokenPresent: Boolean(session?.access_token),
-        projectUrlHash: getProjectUrlHash(),
-      },
-    };
-    throw authMissing;
-  }
-
+  const clientInstanceId = getClientInstanceId();
   const singleton = ensureClientSingleton();
-  if (!singleton.pass) {
-    const singletonError: UploadFailureDetails = {
-      stage: "CLIENT_PDF",
-      code: "CLIENT_INSTANCE_MISMATCH",
-      message: "Storage/auth are not using the same client instance",
-      meta: {
-        fileName: params.fileName,
-        fileSize: params.blob.size,
-        mimeType: params.mimeType,
-        operation: "upload",
-        bucket: BUCKET,
-        uid,
-        expectedUid: params.expectedUserId,
-        upsert: false,
-        sessionPresent: Boolean(session),
-        expires_at: session?.expires_at ?? null,
-        authTokenPresent: Boolean(session?.access_token),
-        projectUrlHash: getProjectUrlHash(),
-        pdfjsError: singleton.details,
-      },
-    };
-    throw singletonError;
-  }
-
-  if (params.expectedUserId && params.expectedUserId !== uid) {
-    const mismatchError: UploadFailureDetails = {
-      stage: "CLIENT_PDF",
-      code: "PATH_MISMATCH",
-      message: "Expected UID does not match hydrated UID",
-      meta: {
-        fileName: params.fileName,
-        fileSize: params.blob.size,
-        mimeType: params.mimeType,
-        operation: "upload",
-        bucket: BUCKET,
-        uid,
-        expectedUid: params.expectedUserId,
-        upsert: false,
-        sessionPresent: Boolean(session),
-        expires_at: session?.expires_at ?? null,
-        authTokenPresent: Boolean(session?.access_token),
-        projectUrlHash: getProjectUrlHash(),
-      },
-    };
-    throw mismatchError;
-  }
 
   const ext = extFromMime(params.mimeType);
-  const objectPath = buildObjectPath(uid, params.uploadId, params.pageNumber, ext);
+  const objectPath = uid
+    ? buildObjectPath(uid, params.uploadId, params.pageNumber, ext)
+    : `unknown/${params.uploadId}/page-${String(params.pageNumber).padStart(3, "0")}.${ext}`;
   const prefixFolder = objectPath.split("/")[0] || "";
 
   const triageEvent: UploadTriageEvent = {
@@ -269,7 +239,108 @@ export async function uploadBlobWithTriage(params: UploadBlobParams): Promise<st
     fileName: params.fileName,
     upsert: false,
     projectUrlHash: getProjectUrlHash(),
+    clientInstanceId,
+    clientSingletonMatched: singleton.pass,
+    uploadOptions: {
+      upsert: false,
+      contentType: params.mimeType,
+    },
   };
+
+  if (!uid) {
+    triageEvent.error = {
+      name: "AuthHydrationError",
+      code: "AUTH_NOT_READY",
+      message: "Auth hydration incomplete: no user available at upload time",
+    };
+    params.onTriageEvent?.(triageEvent);
+    throw {
+      stage: "CLIENT_PDF",
+      code: "AUTH_NOT_READY",
+      message: "Auth hydration incomplete: no user available at upload time",
+      meta: {
+        fileName: params.fileName,
+        fileSize: params.blob.size,
+        mimeType: params.mimeType,
+        operation: "upload",
+        bucket: BUCKET,
+        uid: null,
+        expectedUid: params.expectedUserId,
+        objectPath,
+        prefixFolder,
+        upsert: false,
+        sessionPresent: Boolean(session),
+        expires_at: session?.expires_at ?? null,
+        authTokenPresent: Boolean(session?.access_token),
+        projectUrlHash: getProjectUrlHash(),
+        clientInstanceId,
+      },
+    } as UploadFailureDetails;
+  }
+
+  if (!singleton.pass) {
+    triageEvent.error = {
+      name: "SupabaseClientMismatchError",
+      code: "CLIENT_INSTANCE_MISMATCH",
+      message: "Storage/auth are not using the same client instance",
+      details: singleton.details,
+    };
+    params.onTriageEvent?.(triageEvent);
+    throw {
+      stage: "CLIENT_PDF",
+      code: "CLIENT_INSTANCE_MISMATCH",
+      message: "Storage/auth are not using the same client instance",
+      meta: {
+        fileName: params.fileName,
+        fileSize: params.blob.size,
+        mimeType: params.mimeType,
+        operation: "upload",
+        bucket: BUCKET,
+        uid,
+        expectedUid: params.expectedUserId,
+        objectPath,
+        prefixFolder,
+        upsert: false,
+        sessionPresent: Boolean(session),
+        expires_at: session?.expires_at ?? null,
+        authTokenPresent: Boolean(session?.access_token),
+        projectUrlHash: getProjectUrlHash(),
+        clientInstanceId,
+        pdfjsError: singleton.details,
+      },
+    } as UploadFailureDetails;
+  }
+
+  if (params.expectedUserId && params.expectedUserId !== uid) {
+    triageEvent.error = {
+      name: "UidPathMismatchError",
+      code: "UID_PATH_MISMATCH",
+      message: "Expected UID does not match hydrated UID",
+    };
+    params.onTriageEvent?.(triageEvent);
+    throw {
+      stage: "CLIENT_PDF",
+      code: "UID_PATH_MISMATCH",
+      message: "Expected UID does not match hydrated UID",
+      meta: {
+        fileName: params.fileName,
+        fileSize: params.blob.size,
+        mimeType: params.mimeType,
+        operation: "upload",
+        bucket: BUCKET,
+        uid,
+        expectedUid: params.expectedUserId,
+        objectPath,
+        prefixFolder,
+        upsert: false,
+        sessionPresent: Boolean(session),
+        expires_at: session?.expires_at ?? null,
+        authTokenPresent: Boolean(session?.access_token),
+        projectUrlHash: getProjectUrlHash(),
+        clientInstanceId,
+      },
+    } as UploadFailureDetails;
+  }
 
   const { error } = await supabase.storage.from(BUCKET).upload(objectPath, params.blob, {
     contentType: params.mimeType,
@@ -277,9 +348,12 @@ export async function uploadBlobWithTriage(params: UploadBlobParams): Promise<st
   });
 
   if (error) {
+    const normalizedStatus = normalizeStatusCode((error as { statusCode?: unknown }).statusCode);
     triageEvent.error = {
+      name: (error as { name?: string }).name,
+      code: (error as { error?: string }).error,
       message: error.message,
-      status: (error as { statusCode?: number }).statusCode,
+      status: normalizedStatus,
       details: (error as { details?: string }).details,
     };
     params.onTriageEvent?.(triageEvent);
@@ -393,6 +467,7 @@ export async function runUploadSelfTest(uploadId: string = "selftest"): Promise<
   const { data: sessionData } = await supabase.auth.getSession();
   const uid = userData.user?.id ?? null;
   const session = sessionData.session;
+  const clientInstanceId = getClientInstanceId();
 
   const objectNameUsed = uid
     ? buildObjectPath(uid, uploadId, 1, "png")
@@ -407,18 +482,19 @@ export async function runUploadSelfTest(uploadId: string = "selftest"): Promise<
     ? new RegExp(`^${uid}/${uploadId}/page-\\d{3}\\.(jpg|jpeg|webp|png)$`).test(objectNameUsed) && objectNameUsed.split("/")[0] === uid
     : false;
   if (!pathContractPass) {
-    errors.push({ code: "PATH_MISMATCH", message: "objectName does not match required {uid}/{uploadId}/page-###.{ext}" });
+    errors.push({ code: "UID_PATH_MISMATCH", message: "objectName does not match required {uid}/{uploadId}/page-###.{ext}" });
   }
 
   const singleton = ensureClientSingleton();
   if (!singleton.pass) {
-    errors.push({ code: "CLIENT_INSTANCE_MISMATCH", message: singleton.details });
+    errors.push({ code: "MULTIPLE_SUPABASE_CLIENTS", message: singleton.details });
   }
 
-  const probePath = uid ? `${uid}/__probe__/probe.png` : "unknown/__probe__/probe.png";
+  const probePath = uid ? `${uid}/probe/probe.png` : "unknown/probe/probe.png";
   let probePass = false;
   let probeStatus: number | undefined;
   let probeError: string | undefined;
+  let probeErrorPayload: Record<string, unknown> | undefined;
 
   if (uid) {
     const onePxPng = new Blob([
@@ -431,9 +507,16 @@ export async function runUploadSelfTest(uploadId: string = "selftest"): Promise<
     });
 
     if (error) {
-      probeStatus = (error as { statusCode?: number }).statusCode;
+      probeStatus = normalizeStatusCode((error as { statusCode?: unknown }).statusCode);
       probeError = `${error.message}${(error as { details?: string }).details ? ` | ${(error as { details?: string }).details}` : ""}`;
-      errors.push({ code: probeStatus === 403 ? "STORAGE_403" : "STORAGE_WRITE_PROBE_FAILED", message: probeError });
+      probeErrorPayload = {
+        name: (error as { name?: string }).name,
+        code: (error as { error?: string }).error,
+        message: error.message,
+        status: probeStatus,
+        details: (error as { details?: string }).details,
+      };
+      errors.push({ code: probeStatus === 403 ? "STORAGE_403" : "STORAGE_WRITE_PROBE_FAILED", message: probeError, meta: probeErrorPayload });
     } else {
       probePass = true;
       await supabase.storage.from(BUCKET).remove([probePath]);
@@ -455,6 +538,7 @@ export async function runUploadSelfTest(uploadId: string = "selftest"): Promise<
     sessionPresent: Boolean(session),
     expires_at: session?.expires_at ?? null,
     objectNameUsed,
+    clientInstanceId,
     tests: {
       authHydration: {
         pass: authHydrationPass,
@@ -463,19 +547,20 @@ export async function runUploadSelfTest(uploadId: string = "selftest"): Promise<
       },
       pathContract: {
         pass: pathContractPass,
-        code: pathContractPass ? undefined : "PATH_MISMATCH",
+        code: pathContractPass ? undefined : "UID_PATH_MISMATCH",
         details: objectNameUsed,
       },
       clientSingleton: {
         pass: singleton.pass,
-        code: singleton.pass ? undefined : "CLIENT_INSTANCE_MISMATCH",
-        details: singleton.details,
+        code: singleton.pass ? undefined : "MULTIPLE_SUPABASE_CLIENTS",
+        details: `${singleton.details} | clientInstanceId=${clientInstanceId}`,
       },
       storageWriteProbe: {
         pass: probePass,
         objectPath: probePath,
         status: probeStatus,
         error: probeError,
+        errorPayload: probeErrorPayload,
       },
     },
     errors,
