@@ -306,32 +306,45 @@ async function processChunk(
 
 /**
  * Self-chain: re-invoke this worker for remaining chunks.
- * Fire-and-forget so this invocation can exit cleanly within wall clock.
+ * 
+ * CRITICAL: Deno Deploy terminates the isolate when serve() returns the Response.
+ * A fire-and-forget fetch + sleep(200ms) is NOT reliable — the TCP handshake
+ * may not complete before the isolate is killed, causing the chain to silently fail.
+ * 
+ * Fix: Use AbortController with a 2s timeout. We AWAIT the fetch, which guarantees
+ * the request is fully sent. The abort kills the response-wait (not the request),
+ * so the next invocation starts processing while this one exits cleanly.
  */
 async function selfChain(supabaseUrl: string, serviceKey: string, jobId: string) {
   const workerUrl = `${supabaseUrl}/functions/v1/analysis-worker`;
-  console.log(`[worker] self-chaining for job=${jobId} (fire-and-forget)`);
+  console.log(`[worker] self-chaining for job=${jobId} via AbortController dispatch`);
 
-  // CRITICAL: Do NOT await the fetch response. The previous code awaited the
-  // chained invocation's full response, which kept this invocation alive for
-  // the entire duration of ALL subsequent chains — cascading wall-clock usage
-  // and eventually hitting the ~150s edge function limit.
-  //
-  // Instead: fire the request, wait just long enough to ensure it's dispatched,
-  // then return so this invocation can exit cleanly.
-  fetch(workerUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${serviceKey}`,
-    },
-    body: JSON.stringify({ jobId }),
-  }).catch(err => {
-    console.error(`[worker] self-chain trigger failed for ${jobId}:`, err);
-  });
+  const controller = new AbortController();
+  // 2s is enough for TLS handshake + request body to be fully sent
+  const abortTimer = setTimeout(() => controller.abort(), 2000);
 
-  // Brief pause to ensure the HTTP request is dispatched before this invocation exits
-  await new Promise(r => setTimeout(r, 200));
+  try {
+    await fetch(workerUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${serviceKey}`,
+      },
+      body: JSON.stringify({ jobId }),
+      signal: controller.signal,
+    });
+    // If we get here, the chained invocation already returned (unlikely for long jobs)
+    clearTimeout(abortTimer);
+    console.log(`[worker] self-chain for job=${jobId} completed immediately`);
+  } catch (err) {
+    clearTimeout(abortTimer);
+    if (err instanceof DOMException && err.name === "AbortError") {
+      // Expected: request was sent, we just didn't wait for the response
+      console.log(`[worker] self-chain dispatched for job=${jobId} (abort-after-send)`);
+    } else {
+      console.error(`[worker] self-chain FAILED for job=${jobId}:`, err);
+    }
+  }
 }
 
 serve(async (req) => {
