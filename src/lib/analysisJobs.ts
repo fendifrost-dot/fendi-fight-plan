@@ -40,6 +40,16 @@ export interface AnalysisJob {
   completedAt: string | null;
 }
 
+export interface JobError {
+  code: string;
+  message: string;
+  stage: string;
+  step?: string | null;
+  page?: number | null;
+  chunk?: number | null;
+  meta?: any | null;
+}
+
 export interface JobState {
   jobId: string | null;
   status: JobStatus;
@@ -47,6 +57,7 @@ export interface JobState {
   progress: number;
   errorCode: string | null;
   errorMessage: string | null;
+  error: JobError | null;
   checkpoints: JobCheckpoints;
   result: any | null;
   lastUpdated: number;
@@ -59,6 +70,7 @@ export const DEFAULT_JOB_STATE: JobState = {
   progress: 0,
   errorCode: null,
   errorMessage: null,
+  error: null,
   checkpoints: {
     documentMap: null,
     accounts: [],
@@ -112,8 +124,9 @@ export async function startJob(
     );
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Failed to start job' }));
-      return { error: error.error || 'Failed to start analysis job' };
+      const errData = await response.json().catch(() => ({ error: 'Failed to start job' }));
+      const msg = typeof errData.error === 'string' ? errData.error : errData.error?.message || 'Failed to start analysis job';
+      return { error: msg };
     }
 
     const data = await response.json();
@@ -127,11 +140,11 @@ export async function startJob(
  * Fetch the current status of a job.
  * Returns the full job state for UI rendering.
  */
-export async function fetchJobStatus(jobId: string): Promise<JobState | { error: string }> {
+export async function fetchJobStatus(jobId: string): Promise<JobState | { fetchError: string }> {
   const { data: authData } = await supabase.auth.getSession();
   
   if (!authData.session?.access_token) {
-    return { error: 'Session expired' };
+    return { fetchError: 'Session expired' };
   }
 
   try {
@@ -145,8 +158,9 @@ export async function fetchJobStatus(jobId: string): Promise<JobState | { error:
     );
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Failed to fetch status' }));
-      return { error: error.error || 'Failed to get job status' };
+      const errData = await response.json().catch(() => ({ error: 'Failed to fetch status' }));
+      const msg = typeof errData.error === 'string' ? errData.error : errData.error?.message || 'Failed to get job status';
+      return { fetchError: msg };
     }
 
     const data = await response.json();
@@ -156,14 +170,15 @@ export async function fetchJobStatus(jobId: string): Promise<JobState | { error:
       status: data.status as JobStatus,
       step: data.step || '',
       progress: data.progress || 0,
-      errorCode: data.errorCode || null,
-      errorMessage: data.errorMessage || null,
+      errorCode: data.error?.code || null,
+      errorMessage: data.error?.message || null,
+      error: data.error || null,
       checkpoints: data.partialResults || DEFAULT_JOB_STATE.checkpoints,
       result: data.result || null,
       lastUpdated: Date.now(),
     };
   } catch (e) {
-    return { error: e instanceof Error ? e.message : 'Network error' };
+    return { fetchError: e instanceof Error ? e.message : 'Network error' };
   }
 }
 

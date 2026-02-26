@@ -22,6 +22,8 @@ export type Database = {
           created_at: string
           error_code: string | null
           error_message: string | null
+          error_meta: Json | null
+          error_stage: string | null
           expires_at: string | null
           id: string
           input_data: Json | null
@@ -43,6 +45,8 @@ export type Database = {
           created_at?: string
           error_code?: string | null
           error_message?: string | null
+          error_meta?: Json | null
+          error_stage?: string | null
           expires_at?: string | null
           id?: string
           input_data?: Json | null
@@ -64,6 +68,8 @@ export type Database = {
           created_at?: string
           error_code?: string | null
           error_message?: string | null
+          error_meta?: Json | null
+          error_stage?: string | null
           expires_at?: string | null
           id?: string
           input_data?: Json | null

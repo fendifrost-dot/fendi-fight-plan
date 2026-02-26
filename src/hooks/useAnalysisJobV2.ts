@@ -80,8 +80,8 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
   const pollStatus = useCallback(async (jobId: string) => {
     const result = await fetchJobStatus(jobId);
     
-    if ('error' in result) {
-      console.error('Poll error:', result.error);
+    if ('fetchError' in result) {
+      console.error('Poll error:', result.fetchError);
       // Don't stop polling on transient errors
       return;
     }
