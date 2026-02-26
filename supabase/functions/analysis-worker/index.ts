@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // Build fingerprint — proves THIS code is deployed
-console.log("ANALYSIS_WORKER_BUILD", { version: "2026-02-26_chain_bugs_fixed_v2", abortControllerSelfChain: true, sendsStartChunk: true });
+console.log("ANALYSIS_WORKER_BUILD", { version: "chain_bugs_fixed_v2", abortControllerSelfChain: true, sendsStartChunk: true, deterministicChainLogs: true });
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -413,8 +413,6 @@ serve(async (req) => {
     } else {
       // Self-chained continuation — just heartbeat
       await heartbeat(client, jobId, { step: "resuming" });
-      const resumeChunks = ((job.checkpoints || {}) as Job["checkpoints"]).processedChunks || 0;
-      console.log("CHAIN_RESUME", { jobId, resumedFrom: resumeChunks, invocationId });
     }
 
     const inputData = job.input_data as Job["input_data"];
@@ -515,6 +513,10 @@ serve(async (req) => {
 
     console.log("CHAIN_START", { jobId, startChunk: processedChunks, totalChunks, invocationId });
 
+    if (processedChunks > 0) {
+      console.log("CHAIN_RESUME", { jobId, resumedFrom: processedChunks, invocationId });
+    }
+
     const accountsPrompt = `Extract ALL accounts from these credit report pages. Output JSON: { "accounts": [{ "creditor_name": "...", "account_number": "XXXX...", "date_opened": "MM/YYYY", "status": "...", "balance": "$X,XXX", "derogatory_triggers": [], "bureaus": [] }] }`;
 
     // Process up to MAX_CHUNKS_PER_INVOCATION chunks in this invocation
@@ -534,16 +536,7 @@ serve(async (req) => {
 
         // Fire off the next invocation
         await selfChain(supabaseUrl, supabaseServiceKey, jobId, i, invocationId);
-
-        return new Response(JSON.stringify({
-          status: "CHAINING",
-          processedThisInvocation: chunksProcessedThisInvocation,
-          totalProcessed: i,
-          totalChunks,
-          invocationElapsedMs: Date.now() - invocationStartedAt,
-        }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        return new Response(JSON.stringify({ ok: true, chainedAt: i }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
       const progressPct = 20 + Math.round((i / totalChunks) * 70);
