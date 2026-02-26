@@ -251,7 +251,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      mark_stale_analysis_jobs: {
+        Args: { grace_period_seconds?: number }
+        Returns: number
+      }
     }
     Enums: {
       [_ in never]: never
