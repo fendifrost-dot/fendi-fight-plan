@@ -11,7 +11,11 @@ const AI_TIMEOUT_MS = 25000;
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 1000;
 const STORAGE_BUCKET = "analysis-images";
-const CHUNK_RETRY_BACKOFF_MS = 3000; // backoff before retrying a failed chunk
+const CHUNK_RETRY_BACKOFF_MS = 3000;
+
+// Self-chaining: max chunks per invocation to stay within edge function wall clock (~150s)
+// Each chunk ~30-45s (download + AI), so 3 chunks ≈ 90-135s safely within limits
+const MAX_CHUNKS_PER_INVOCATION = 3;
 
 interface Job {
   id: string;
@@ -47,7 +51,6 @@ interface ChunkTiming {
   retryElapsedMs?: number;
 }
 
-// ---- Structured error helpers ----
 interface StructuredError {
   code: string;
   message: string;
@@ -96,7 +99,7 @@ async function heartbeat(client: any, jobId: string, extra?: Record<string, any>
     updated_at: now,
   };
   if (extra) Object.assign(updates, extra);
-  
+
   const { error } = await client.from("analysis_jobs").update(updates).eq("id", jobId);
   if (error) console.error(`Heartbeat failed for ${jobId}:`, error);
   else console.log(`[heartbeat] job=${jobId} at=${now}${extra?.step ? ` step=${extra.step}` : ""}`);
@@ -227,9 +230,6 @@ async function callAIWithRetry(apiKey: string, messages: any[], retries = MAX_RE
   throw lastError;
 }
 
-/**
- * Process a single chunk of images. Returns extracted accounts or throws.
- */
 async function processChunk(
   client: any,
   jobId: string,
@@ -240,7 +240,7 @@ async function processChunk(
   accountsPrompt: string,
 ): Promise<{ accounts: any[]; timing: ChunkTiming }> {
   const startedAt = new Date();
-  
+
   console.log(`[chunk] job=${jobId} chunk=${chunkIndex + 1}/${totalChunks} pages=${chunkPaths.length} started`);
 
   try {
@@ -270,7 +270,7 @@ async function processChunk(
 
     const endedAt = new Date();
     const elapsedMs = endedAt.getTime() - startedAt.getTime();
-    
+
     console.log(`[chunk] job=${jobId} chunk=${chunkIndex + 1}/${totalChunks} completed in ${elapsedMs}ms accounts=${result.accounts?.length || 0}`);
 
     return {
@@ -287,7 +287,7 @@ async function processChunk(
     const endedAt = new Date();
     const elapsedMs = endedAt.getTime() - startedAt.getTime();
     const errMsg = error instanceof Error ? error.message : String(error);
-    
+
     console.error(`[chunk] job=${jobId} chunk=${chunkIndex + 1}/${totalChunks} FAILED in ${elapsedMs}ms: ${errMsg}`);
 
     throw {
@@ -304,12 +304,33 @@ async function processChunk(
   }
 }
 
+/**
+ * Self-chain: re-invoke this worker for remaining chunks.
+ * Fire-and-forget so this invocation can exit cleanly within wall clock.
+ */
+async function selfChain(supabaseUrl: string, serviceKey: string, jobId: string) {
+  const workerUrl = `${supabaseUrl}/functions/v1/analysis-worker`;
+  console.log(`[worker] self-chaining for job=${jobId}`);
+  try {
+    await fetch(workerUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${serviceKey}`,
+      },
+      body: JSON.stringify({ jobId }),
+    });
+  } catch (err) {
+    console.error(`[worker] self-chain trigger failed for ${jobId}:`, err);
+  }
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
-  const workerStartedAt = Date.now();
+  const invocationStartedAt = Date.now();
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const lovableApiKey = Deno.env.get("LOVABLE_API_KEY")!;
@@ -328,7 +349,7 @@ serve(async (req) => {
       });
     }
 
-    console.log(`[worker] Starting job=${jobId}`);
+    console.log(`[worker] invocation start job=${jobId}`);
 
     const { data: job, error: fetchError } = await client
       .from("analysis_jobs")
@@ -344,31 +365,40 @@ serve(async (req) => {
       });
     }
 
-    if (job.status === "DONE" || job.status === "RUNNING") {
-      console.log(`[worker] job=${jobId} already ${job.status}, skipping`);
+    // Allow RUNNING status for self-chained continuations
+    if (job.status === "DONE" || job.status === "FAILED" || job.status === "PARTIAL") {
+      console.log(`[worker] job=${jobId} already terminal (${job.status}), skipping`);
       return new Response(JSON.stringify({ status: job.status }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    await updateJob(client, jobId, {
-      status: "RUNNING",
-      step: "mapping",
-      started_at: new Date().toISOString(),
-      attempt_count: (job.attempt_count || 0) + 1,
-      error_code: null,
-      error_message: null,
-      error_stage: null,
-      error_meta: null,
-    });
+    const isResume = job.status === "RUNNING";
+
+    if (!isResume) {
+      // Fresh start
+      await updateJob(client, jobId, {
+        status: "RUNNING",
+        step: "mapping",
+        started_at: new Date().toISOString(),
+        attempt_count: (job.attempt_count || 0) + 1,
+        error_code: null,
+        error_message: null,
+        error_stage: null,
+        error_meta: null,
+      });
+    } else {
+      // Self-chained continuation — just heartbeat
+      await heartbeat(client, jobId, { step: "resuming" });
+    }
 
     const inputData = job.input_data as Job["input_data"];
     const checkpoints = (job.checkpoints || {}) as Job["checkpoints"];
     const storagePaths = inputData.storagePaths;
 
-    console.log(`[worker] job=${jobId} totalPages=${storagePaths.length} attempt=${(job.attempt_count || 0) + 1}`);
+    console.log(`[worker] job=${jobId} totalPages=${storagePaths.length} resume=${isResume} processedChunks=${checkpoints.processedChunks || 0}`);
 
-    // Step 1: Document Mapping
+    // Step 1: Document Mapping (skip if already done via checkpoints)
     let documentMap = checkpoints.documentMap;
     if (!documentMap) {
       try {
@@ -392,7 +422,7 @@ serve(async (req) => {
           } catch (dlErr) {
             const se = classifyWorkerError(dlErr instanceof Error ? dlErr : new Error(String(dlErr)), `download_page_${idx}`, undefined);
             se.page = idx;
-            se.elapsedMs = Date.now() - workerStartedAt;
+            se.elapsedMs = Date.now() - invocationStartedAt;
             await failJob(client, jobId, se);
             await cleanupJobStorage(client, job.user_id, jobId);
             return new Response(JSON.stringify({ error: se }), {
@@ -457,11 +487,39 @@ serve(async (req) => {
     const failedChunks: number[] = checkpoints.failedChunks || [];
     const chunkTimings: ChunkTiming[] = checkpoints.chunkTimings || [];
 
-    console.log(`[worker] job=${jobId} chunkCount=${totalChunks} resumeFrom=${processedChunks}`);
+    console.log(`[worker] job=${jobId} chunkCount=${totalChunks} resumeFrom=${processedChunks} maxThisInvocation=${MAX_CHUNKS_PER_INVOCATION}`);
 
     const accountsPrompt = `Extract ALL accounts from these credit report pages. Output JSON: { "accounts": [{ "creditor_name": "...", "account_number": "XXXX...", "date_opened": "MM/YYYY", "status": "...", "balance": "$X,XXX", "derogatory_triggers": [], "bureaus": [] }] }`;
 
+    // Process up to MAX_CHUNKS_PER_INVOCATION chunks in this invocation
+    let chunksProcessedThisInvocation = 0;
+
     for (let i = processedChunks; i < chunks.length; i++) {
+      // Check if we should self-chain to avoid wall clock timeout
+      if (chunksProcessedThisInvocation >= MAX_CHUNKS_PER_INVOCATION) {
+        console.log(`[worker] job=${jobId} hit invocation limit (${MAX_CHUNKS_PER_INVOCATION} chunks), self-chaining for remaining ${totalChunks - i} chunks`);
+
+        // Save checkpoint before chaining
+        await updateJob(client, jobId, {
+          step: `chaining_at_${i}_of_${totalChunks}`,
+          progress: 20 + Math.round((i / totalChunks) * 70),
+          checkpoints: { documentMap, accounts: allAccounts, processedChunks: i, totalChunks, failedChunks, chunkTimings },
+        });
+
+        // Fire off the next invocation
+        await selfChain(supabaseUrl, supabaseServiceKey, jobId);
+
+        return new Response(JSON.stringify({
+          status: "CHAINING",
+          processedThisInvocation: chunksProcessedThisInvocation,
+          totalProcessed: i,
+          totalChunks,
+          invocationElapsedMs: Date.now() - invocationStartedAt,
+        }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
       const progressPct = 20 + Math.round((i / totalChunks) * 70);
       await updateJob(client, jobId, {
         step: `chunk_${i + 1}_of_${totalChunks}`,
@@ -474,6 +532,7 @@ serve(async (req) => {
         allAccounts.push(...result.accounts);
         chunkTimings.push(result.timing);
         processedChunks = i + 1;
+        chunksProcessedThisInvocation++;
       } catch (chunkErr: any) {
         const failedTiming: ChunkTiming = chunkErr.timing || {
           chunkIndex: i,
@@ -492,8 +551,7 @@ serve(async (req) => {
         try {
           const retryResult = await processChunk(client, jobId, lovableApiKey, chunks[i], i, totalChunks, accountsPrompt);
           allAccounts.push(...retryResult.accounts);
-          
-          // Mark as retried_ok
+
           const retryTiming: ChunkTiming = {
             ...retryResult.timing,
             status: "retried_ok",
@@ -501,25 +559,26 @@ serve(async (req) => {
           };
           chunkTimings.push(retryTiming);
           processedChunks = i + 1;
+          chunksProcessedThisInvocation++;
           console.log(`[worker] job=${jobId} chunk=${i + 1} retry SUCCEEDED`);
         } catch (retryErr: any) {
-          // Both attempts failed — record and continue
           const retryFailedTiming: ChunkTiming = {
             ...failedTiming,
             status: "retried_failed",
             retryElapsedMs: retryErr.timing?.elapsedMs || 0,
           };
           chunkTimings.push(retryFailedTiming);
-          
+
           const origError = chunkErr.error instanceof Error ? chunkErr.error : new Error(String(chunkErr));
           const se = classifyWorkerError(origError, `chunk_${i + 1}`, i);
           console.error(`[worker] job=${jobId} chunk=${i + 1} retry also FAILED [${se.code}]:`, se.message);
           failedChunks.push(i);
-          processedChunks = i + 1; // Move past this chunk
+          processedChunks = i + 1;
+          chunksProcessedThisInvocation++;
         }
       }
 
-      // Save checkpoint after every chunk (for resume)
+      // Save checkpoint after every chunk
       await updateJob(client, jobId, {
         checkpoints: { documentMap, accounts: allAccounts, processedChunks, totalChunks, failedChunks, chunkTimings },
       });
@@ -529,7 +588,7 @@ serve(async (req) => {
       }
     }
 
-    // Step 3: Normalize and deduplicate
+    // All chunks done — finalize
     await updateJob(client, jobId, { step: "normalizing", progress: 92 });
 
     const seenAccounts = new Map<string, any>();
@@ -555,7 +614,7 @@ serve(async (req) => {
     const finalStatus = failedChunks.length > 0 && normalizedAccounts.length === 0 ? "FAILED" :
                          failedChunks.length > 0 ? "PARTIAL" : "DONE";
 
-    const workerElapsedMs = Date.now() - workerStartedAt;
+    const totalElapsedMs = Date.now() - invocationStartedAt;
 
     const resultData = {
       accounts: normalizedAccounts,
@@ -565,7 +624,7 @@ serve(async (req) => {
       totalChunks,
       failedChunks,
       chunkTimings,
-      workerElapsedMs,
+      workerElapsedMs: totalElapsedMs,
     };
 
     const errorFields: Record<string, any> = {};
@@ -573,12 +632,12 @@ serve(async (req) => {
       errorFields.error_code = "WORKER_ALL_CHUNKS_FAILED";
       errorFields.error_message = `All ${totalChunks} chunk(s) failed during analysis`;
       errorFields.error_stage = "WORKER";
-      errorFields.error_meta = { failedChunks, totalChunks, chunkTimings, workerElapsedMs, where: "model_call" };
+      errorFields.error_meta = { failedChunks, totalChunks, chunkTimings, workerElapsedMs: totalElapsedMs, where: "model_call" };
     } else if (finalStatus === "PARTIAL") {
       errorFields.error_code = "WORKER_PARTIAL_CHUNKS_FAILED";
       errorFields.error_message = `${failedChunks.length} of ${totalChunks} chunk(s) failed`;
       errorFields.error_stage = "WORKER";
-      errorFields.error_meta = { failedChunks, totalChunks, chunkTimings, workerElapsedMs, where: "model_call" };
+      errorFields.error_meta = { failedChunks, totalChunks, chunkTimings, workerElapsedMs: totalElapsedMs, where: "model_call" };
     }
 
     await updateJob(client, jobId, {
@@ -593,20 +652,20 @@ serve(async (req) => {
 
     await cleanupJobStorage(client, job.user_id, jobId);
 
-    console.log(`[worker] job=${jobId} DONE status=${finalStatus} accounts=${normalizedAccounts.length} elapsed=${workerElapsedMs}ms`);
+    console.log(`[worker] job=${jobId} FINALIZED status=${finalStatus} accounts=${normalizedAccounts.length} elapsed=${totalElapsedMs}ms`);
 
-    return new Response(JSON.stringify({ status: finalStatus, accountCount: normalizedAccounts.length, workerElapsedMs }), {
+    return new Response(JSON.stringify({ status: finalStatus, accountCount: normalizedAccounts.length, workerElapsedMs: totalElapsedMs }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
-    const workerElapsedMs = Date.now() - workerStartedAt;
-    console.error(`[worker] job=${parsedJobId} FATAL error after ${workerElapsedMs}ms:`, error);
+    const elapsedMs = Date.now() - invocationStartedAt;
+    console.error(`[worker] job=${parsedJobId} FATAL error after ${elapsedMs}ms:`, error);
 
     if (parsedJobId) {
       try {
         const se = classifyWorkerError(error instanceof Error ? error : new Error(String(error)), "top_level");
         se.code = se.code || "UNKNOWN";
-        se.elapsedMs = workerElapsedMs;
+        se.elapsedMs = elapsedMs;
 
         const { data: failedJob } = await client
           .from("analysis_jobs")
@@ -622,7 +681,7 @@ serve(async (req) => {
       } catch {}
     }
 
-    return new Response(JSON.stringify({ error: "Worker failed", elapsedMs: workerElapsedMs }), {
+    return new Response(JSON.stringify({ error: "Worker failed", elapsedMs }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
