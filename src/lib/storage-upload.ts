@@ -87,7 +87,39 @@ export interface UploadSelfTestReport {
       error?: string;
       errorPayload?: Record<string, unknown>;
     };
+    bucketIdSanity: {
+      pass: boolean;
+      wrongBucketError?: string;
+      details?: string;
+    };
+    foldernameSanity: {
+      pass: boolean;
+      computedPrefix: string;
+      uid: string | null;
+      details?: string;
+    };
   };
+  policySnapshot: {
+    policies: Array<{
+      policyname: string;
+      permissive: string;
+      roles: string[];
+      cmd: string;
+      qual: string | null;
+      with_check: string | null;
+    }> | null;
+    policyCount: number | null;
+    rlsEnabled: boolean | null;
+    queryMethod: string;
+    queryError: string | null;
+    bucketConfig: {
+      id: string;
+      name: string;
+      public: boolean;
+      allowed_mime_types: string[] | null;
+      file_size_limit: number | null;
+    } | null;
+  } | null;
   errors: Array<{ code: string; message: string; meta?: Record<string, unknown> }>;
   conclusion:
     | "missing session at upload time"
@@ -469,15 +501,18 @@ export async function runUploadSelfTest(uploadId: string = "selftest"): Promise<
   const session = sessionData.session;
   const clientInstanceId = getClientInstanceId();
 
+  // Use PRODUCTION path format: {uid}/{uploadId}/page-001.png
   const objectNameUsed = uid
     ? buildObjectPath(uid, uploadId, 1, "png")
     : "unknown/selftest/page-001.png";
 
+  // TEST A: Auth Hydration
   const authHydrationPass = Boolean(uid);
   if (!authHydrationPass) {
     errors.push({ code: "AUTH_NOT_READY", message: "getUser() returned null user before upload" });
   }
 
+  // TEST B: Path Contract
   const pathContractPass = uid
     ? new RegExp(`^${uid}/${uploadId}/page-\\d{3}\\.(jpg|jpeg|webp|png)$`).test(objectNameUsed) && objectNameUsed.split("/")[0] === uid
     : false;
@@ -485,12 +520,14 @@ export async function runUploadSelfTest(uploadId: string = "selftest"): Promise<
     errors.push({ code: "UID_PATH_MISMATCH", message: "objectName does not match required {uid}/{uploadId}/page-###.{ext}" });
   }
 
+  // TEST C: Client Singleton
   const singleton = ensureClientSingleton();
   if (!singleton.pass) {
     errors.push({ code: "MULTIPLE_SUPABASE_CLIENTS", message: singleton.details });
   }
 
-  const probePath = uid ? `${uid}/probe/probe.png` : "unknown/probe/probe.png";
+  // TEST D: Storage Write Probe — uses PRODUCTION path format
+  const probePath = objectNameUsed;
   let probePass = false;
   let probeStatus: number | undefined;
   let probeError: string | undefined;
@@ -521,6 +558,75 @@ export async function runUploadSelfTest(uploadId: string = "selftest"): Promise<
       probePass = true;
       await supabase.storage.from(BUCKET).remove([probePath]);
     }
+  }
+
+  // TEST F: Bucket ID Sanity — upload to wrong bucket, expect non-RLS error
+  let bucketSanityPass = false;
+  let wrongBucketError: string | undefined;
+  let bucketSanityDetails: string | undefined;
+
+  if (uid) {
+    const tinyBlob = new Blob([new Uint8Array([0])], { type: "image/png" });
+    const { error: wrongBucketErr } = await supabase.storage
+      .from("analysis-images-typo")
+      .upload(`${uid}/bucket-test/probe.png`, tinyBlob, { contentType: "image/png", upsert: false });
+
+    if (wrongBucketErr) {
+      wrongBucketError = wrongBucketErr.message;
+      const wrongStatus = normalizeStatusCode((wrongBucketErr as { statusCode?: unknown }).statusCode);
+      if (wrongStatus !== 403) {
+        bucketSanityPass = true;
+        bucketSanityDetails = `Wrong bucket correctly rejected (status=${wrongStatus}): ${wrongBucketErr.message}`;
+      } else {
+        bucketSanityDetails = `Wrong bucket also returned 403 — error classifier may be unreliable`;
+        errors.push({ code: "BUCKET_SANITY_AMBIGUOUS", message: bucketSanityDetails });
+      }
+    } else {
+      bucketSanityDetails = "Wrong bucket upload unexpectedly succeeded";
+      errors.push({ code: "BUCKET_SANITY_UNEXPECTED_SUCCESS", message: bucketSanityDetails });
+    }
+  } else {
+    bucketSanityDetails = "Skipped (no uid)";
+  }
+
+  // TEST G: foldername() Sanity
+  const computedPrefix = objectNameUsed.split("/")[0] || "";
+  const foldernameSanityPass = uid
+    ? computedPrefix === uid && computedPrefix === computedPrefix.trim() && computedPrefix === decodeURIComponent(computedPrefix)
+    : false;
+  if (!foldernameSanityPass && uid) {
+    errors.push({
+      code: "FOLDERNAME_MISMATCH",
+      message: `Prefix "${computedPrefix}" does not cleanly equal uid "${uid}"`,
+      meta: { computedPrefix, uid, trimmed: computedPrefix.trim(), decoded: decodeURIComponent(computedPrefix) },
+    });
+  }
+
+  // Fetch policy snapshot via edge function
+  let policySnapshot: UploadSelfTestReport["policySnapshot"] = null;
+  try {
+    const { data, error: fnError } = await supabase.functions.invoke("storage-policy-snapshot");
+    if (fnError) {
+      policySnapshot = {
+        policies: null,
+        policyCount: null,
+        rlsEnabled: null,
+        queryMethod: "edge_function_error",
+        queryError: fnError.message,
+        bucketConfig: null,
+      };
+    } else if (data) {
+      policySnapshot = data as UploadSelfTestReport["policySnapshot"];
+    }
+  } catch (err) {
+    policySnapshot = {
+      policies: null,
+      policyCount: null,
+      rlsEnabled: null,
+      queryMethod: "edge_function_unavailable",
+      queryError: err instanceof Error ? err.message : String(err),
+      bucketConfig: null,
+    };
   }
 
   const conclusion: UploadSelfTestReport["conclusion"] = !authHydrationPass
@@ -562,7 +668,19 @@ export async function runUploadSelfTest(uploadId: string = "selftest"): Promise<
         error: probeError,
         errorPayload: probeErrorPayload,
       },
+      bucketIdSanity: {
+        pass: bucketSanityPass,
+        wrongBucketError,
+        details: bucketSanityDetails,
+      },
+      foldernameSanity: {
+        pass: foldernameSanityPass,
+        computedPrefix,
+        uid,
+        details: foldernameSanityPass ? "prefix matches uid exactly" : `prefix="${computedPrefix}" uid="${uid}"`,
+      },
     },
+    policySnapshot,
     errors,
     conclusion,
   };
