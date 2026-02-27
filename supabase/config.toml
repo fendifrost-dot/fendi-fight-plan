@@ -26,3 +26,6 @@ verify_jwt = false
 
 [functions.map-document]
 verify_jwt = false
+
+[functions.google-ai-handler]
+verify_jwt = false

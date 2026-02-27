@@ -1,5 +1,6 @@
 import { NavLink } from "react-router-dom";
-import { FileSearch, Scale, Shield } from "lucide-react";
+import { FileSearch, Scale, Shield, Zap } from "lucide-react";
+import AutomationBadge from "@/components/AutomationBadge";
 
 const AppNavigation = () => {
   return (
@@ -8,14 +9,14 @@ const AppNavigation = () => {
         <div className="flex items-center justify-between h-16">
           {/* Logo/Brand */}
           <a href="/" className="flex items-center gap-2">
-            <Shield className="w-6 h-6 text-primary" />
+            <Zap className="w-6 h-6 text-primary" />
             <span className="font-serif text-xl font-semibold text-gold-gradient">
-              Credit Dispute System
+              FanFuel Command Center
             </span>
           </a>
 
-          {/* Navigation Links */}
-          <div className="flex items-center gap-1">
+          {/* Navigation Links + Automation Badge */}
+          <div className="flex items-center gap-2">
             <NavLink
               to="/"
               end
@@ -46,6 +47,10 @@ const AppNavigation = () => {
               <span className="hidden sm:inline">Dispute & Response Engine</span>
               <span className="sm:hidden">Disputes</span>
             </NavLink>
+
+            <div className="hidden sm:block ml-2">
+              <AutomationBadge />
+            </div>
           </div>
         </div>
       </div>
