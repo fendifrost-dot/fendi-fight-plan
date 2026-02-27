@@ -8,7 +8,7 @@ const Footer = () => {
           <div className="flex items-center gap-3">
             <Scale className="w-6 h-6 text-primary" />
             <span className="text-xl font-serif font-semibold text-gold-gradient">
-              Continuum Capital Group Credit Dispute System™
+              Credit Compass
             </span>
           </div>
           
@@ -24,7 +24,7 @@ const Footer = () => {
           </div>
           
           <p className="text-xs text-muted-foreground/50 mt-6">
-            © {new Date().getFullYear()} Continuum Capital Group Credit Dispute System. All rights reserved.
+            © {new Date().getFullYear()} Credit Compass. All rights reserved.
           </p>
         </div>
       </div>

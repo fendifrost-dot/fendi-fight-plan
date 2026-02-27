@@ -11,7 +11,7 @@ const AppNavigation = () => {
           <a href="/" className="flex items-center gap-2">
             <Zap className="w-6 h-6 text-primary" />
             <span className="font-serif text-xl font-semibold text-gold-gradient">
-              FanFuel Command Center
+              Credit Compass
             </span>
           </a>
 
