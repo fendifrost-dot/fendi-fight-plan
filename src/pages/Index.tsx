@@ -1,5 +1,6 @@
 import { Suspense, lazy } from "react";
 import AppNavigation from "@/components/AppNavigation";
+import CommandBar from "@/components/CommandBar";
 import HeroSection from "@/components/HeroSection";
 import SystemGuide from "@/components/SystemGuide";
 import TemplateSection from "@/components/TemplateSection";
@@ -22,6 +23,7 @@ const Index = () => {
   return (
     <main className="min-h-screen bg-background">
       <AppNavigation />
+      <CommandBar />
       <HeroSection />
       <SystemGuide />
       <Suspense fallback={<AnalyzerFallback />}>
