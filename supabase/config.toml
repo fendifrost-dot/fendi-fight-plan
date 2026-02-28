@@ -29,3 +29,6 @@ verify_jwt = false
 
 [functions.google-ai-handler]
 verify_jwt = false
+
+[functions.project-stats]
+verify_jwt = false
