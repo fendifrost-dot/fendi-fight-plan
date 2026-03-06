@@ -1979,7 +1979,8 @@ const AIAnalyzer = () => {
 
               {/* Analyze button */}
               <Button
-                onClick={() => handleAnalyze()}
+                data-testid="analyze-all-reports-button"
+                onClick={handleAnalyzeButtonClick}
                 disabled={isAnalyzing || isJobProcessing || anyFileProcessing || hasUploadFailures || (!responseText && uploadedFiles.length === 0)}
                 className="w-full py-6 text-lg font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
