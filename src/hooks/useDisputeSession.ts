@@ -490,16 +490,23 @@ export function useDisputeSession(): UseDisputeSessionReturn {
 
   // Import analyzer data
   const importAnalyzerData = useCallback((data: any) => {
+    // CRITICAL: Never fall back to prev.consumerInfo — always use new client data or empty.
+    // Falling back to prev causes cross-client identity leaks.
+    const addr = data.questionnaire?.currentAddress || '';
     setState(prev => ({
       ...prev,
       importedAnalyzerData: data,
       consumerInfo: {
-        fullName: data.questionnaire?.fullLegalName || prev.consumerInfo.fullName,
-        addressLine1: data.questionnaire?.currentAddress?.split(',')[0] || prev.consumerInfo.addressLine1,
-        addressLine2: prev.consumerInfo.addressLine2,
-        cityStateZip: data.questionnaire?.currentAddress?.split(',').slice(1).join(',').trim() || prev.consumerInfo.cityStateZip,
+        fullName: data.questionnaire?.fullLegalName || '',
+        addressLine1: addr.split(',')[0]?.trim() || '',
+        addressLine2: '',
+        cityStateZip: addr.split(',').slice(1).join(',').trim() || '',
       },
+      // Also clear generated letters since they contain old client data
+      generatedLetters: { experian: '', equifax: '', transunion: '' },
     }));
+    // Clear the standalone letter builder localStorage too
+    localStorage.removeItem('dispute_letter_builder_state');
   }, []);
 
   // Mode action
