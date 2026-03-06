@@ -105,6 +105,7 @@ function postProcessResult(report: any): any {
   return report;
 }
 
+/**
  * Deterministic Credit Bureau Report Parser — Two-Pass + Validation
  * Adapted for JSON output while preserving the strict extraction rules.
  */
