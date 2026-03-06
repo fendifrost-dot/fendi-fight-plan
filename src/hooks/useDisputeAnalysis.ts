@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
-import { pdfToImages } from '@/lib/pdf-utils';
+import { pdfToImages, extractFullTextFromPdf } from '@/lib/pdf-utils';
 import type {
   DisputeAccount,
   AnalysisResult,
@@ -110,20 +110,58 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
     setIsProcessing(true);
 
     try {
-      // Phase 1: Extract images from PDFs
+      // Phase 1: Try text extraction first (faster, cheaper)
       setProgress({
         ...defaultProcessingProgress,
         phase: 'ingesting',
-        currentStep: 'Extracting pages from documents...',
-        message: 'Preparing documents for analysis...',
+        currentStep: 'Extracting text from documents...',
+        message: 'Attempting text-based extraction (faster path)...',
       });
 
-      const allImages: string[] = [];
       const bureauDocs = documents.filter(d => d.type === 'bureau_response');
-
-      // If the UI rehydrated from localStorage after a refresh/hot reload, the File objects
-      // will be missing (they are not serializable). Detect this early with a clear message.
       const hasBureauFiles = bureauDocs.some(d => !!d.file);
+
+      // TEXT-FIRST PATH: Try extracting text from PDFs
+      const TEXT_QUALITY_THRESHOLD = 200; // min chars per page to consider text viable
+      let fullText = '';
+      let textExtractionViable = false;
+
+      for (const doc of bureauDocs) {
+        if (doc.file && doc.file.type === 'application/pdf') {
+          try {
+            const { text, charsPerPage, pagesExtracted } = await extractFullTextFromPdf(doc.file);
+            console.log(`Text extraction: ${pagesExtracted} pages, ${charsPerPage} chars/page`);
+            
+            if (charsPerPage >= TEXT_QUALITY_THRESHOLD && pagesExtracted > 0) {
+              fullText += (fullText ? '\n\n=== NEXT DOCUMENT ===\n\n' : '') + text;
+              textExtractionViable = true;
+            }
+          } catch (e) {
+            console.warn('Text extraction failed, will fall back to vision:', e);
+          }
+        }
+      }
+
+      // If text extraction yielded good results, use text-based analysis
+      if (textExtractionViable && fullText.length > 500) {
+        console.log(`Using text-first path: ${fullText.length} chars extracted`);
+        setProgress(prev => ({
+          ...prev,
+          message: 'Text extraction successful. Sending to AI for analysis...',
+        }));
+
+        return await analyzeWithTextChunks(fullText, priorLetterText, accessToken);
+      }
+
+      // VISION FALLBACK: Extract images from PDFs
+      console.log('Text extraction insufficient, falling back to vision pipeline');
+      setProgress(prev => ({
+        ...prev,
+        currentStep: 'Extracting pages as images...',
+        message: 'Text extraction insufficient, using vision analysis...',
+      }));
+
+      const allImages: string[] = [];
 
       for (const doc of bureauDocs) {
         if (doc.file && doc.file.type === 'application/pdf') {
@@ -134,7 +172,6 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
             console.error(`Failed to extract images from ${doc.name}:`, e);
           }
         } else if (doc.file && doc.file.type.startsWith('image/')) {
-          // Convert image file to data URL
           const reader = new FileReader();
           const dataUrl = await new Promise<string>((resolve, reject) => {
             reader.onload = () => resolve(reader.result as string);
@@ -147,27 +184,23 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
 
       imagesRef.current = allImages;
 
-      // If we have images, use the chunked vision pipeline
       if (allImages.length > 0) {
         return await analyzeWithChunkedVision(allImages, priorLetterText, accessToken);
       }
 
-      // Fall back to text-based classification if no images
       if (bureauResponseText.trim()) {
         return await analyzeWithTextClassification(bureauResponseText, priorLetterText, accessToken);
       }
 
-      // Clear guidance for the common "files present but File objects missing" scenario
       if (bureauDocs.length > 0 && !hasBureauFiles) {
         throw new Error(
-          'Your Bureau Response upload needs to be re-added. For security reasons, your browser can’t restore the actual file after a refresh/hot reload. Remove the Bureau Response item(s) and upload again (or paste the response text).'
+          "Your Bureau Response upload needs to be re-added. For security reasons, your browser can\u2019t restore the actual file after a refresh/hot reload. Remove the Bureau Response item(s) and upload again (or paste the response text)."
         );
       }
 
-      // Check if only prior dispute docs were uploaded (common user error)
       const hasPriorDisputeOnly = documents.some(d => d.type === 'prior_dispute') && bureauDocs.length === 0;
       if (hasPriorDisputeOnly) {
-        throw new Error('Please upload the Bureau Response (PDF/image of the credit bureau\'s reply letter) — not just your prior dispute letter.');
+        throw new Error('Please upload the Bureau Response (PDF/image of the credit bureau\'s reply letter) \u2014 not just your prior dispute letter.');
       }
 
       throw new Error('Please upload a Bureau Response document (PDF or image) or paste the response text to analyze.');
@@ -184,6 +217,126 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
       setIsProcessing(false);
     }
   }, []);
+
+  /**
+   * Text-first analysis: split extracted text into chunks and send to analyze-chunk
+   * with reportText instead of images.
+   */
+  const analyzeWithTextChunks = async (
+    fullText: string,
+    _priorLetterText: string,
+    accessToken: string
+  ): Promise<{ result: AnalysisResult; accounts: DisputeAccount[] }> => {
+    setProgress({
+      phase: 'analyzing',
+      currentStep: 'Analyzing text content...',
+      totalSteps: 1,
+      completedSteps: 0,
+      failedChunks: [],
+      message: 'Processing extracted text through deterministic parser...',
+    });
+
+    const TEXT_CHUNK_SIZE = 50000;
+    const textChunks: string[] = [];
+    for (let i = 0; i < fullText.length; i += TEXT_CHUNK_SIZE) {
+      textChunks.push(fullText.slice(i, i + TEXT_CHUNK_SIZE));
+    }
+
+    setProgress(prev => ({
+      ...prev,
+      totalSteps: textChunks.length,
+    }));
+
+    const allAccounts: any[] = [];
+    const failedChunks: number[] = [];
+
+    for (let i = 0; i < textChunks.length && !abortRef.current; i++) {
+      try {
+        const response = await fetch(
+          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-chunk`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({
+              section: 'accounts',
+              reportText: textChunks[i],
+              chunkIndex: i,
+              totalChunks: textChunks.length,
+            }),
+          }
+        );
+
+        const payload = await safeReadJson(response);
+        if (!response.ok) {
+          console.error(`Text chunk ${i + 1} failed:`, payload);
+          failedChunks.push(i);
+        } else {
+          if (payload.derogatory_accounts) allAccounts.push(...payload.derogatory_accounts);
+          if (payload.collections) allAccounts.push(...payload.collections.map((c: any) => ({ ...c, isCollection: true })));
+          if (payload.charge_offs) allAccounts.push(...payload.charge_offs.map((c: any) => ({ ...c, isChargeOff: true })));
+        }
+      } catch {
+        failedChunks.push(i);
+      }
+
+      setProgress(prev => ({
+        ...prev,
+        completedSteps: i + 1,
+        failedChunks: failedChunks.map(String),
+        message: `Processed ${i + 1} of ${textChunks.length} text chunks...`,
+      }));
+    }
+
+    const dummyMap: DocumentMap = {
+      is_multi_bureau: false,
+      detected_bureaus: [],
+      report_type: 'unknown',
+      total_pages: 0,
+      sections: {
+        personal_info: { detected: false, start_page: null, end_page: null, page_count: 0 },
+        accounts: { detected: true, start_page: 1, end_page: 1, page_count: 1 },
+        inquiries: { detected: false, start_page: null, end_page: null, page_count: 0 },
+        payment_history: { detected: false, start_page: null, end_page: null, page_count: 0 },
+        public_records: { detected: false, start_page: null, end_page: null, page_count: 0 },
+        summary: { detected: false, start_page: null, end_page: null, page_count: 0 },
+      },
+    };
+
+    const accounts = normalizeAccounts(allAccounts, dummyMap);
+
+    const result: AnalysisResult = {
+      bureau: 'experian',
+      outcome: 'verified',
+      itemsVerified: [],
+      itemsDeleted: [],
+      itemsPartial: [],
+      legalImplications: [],
+      nextSteps: [
+        'Review extracted accounts for accuracy',
+        'Select items you wish to dispute',
+        'Complete the legal strategy survey',
+        'Generate your dispute letters',
+      ],
+      rawSummary: `Analyzed text (${fullText.length} chars). Found ${accounts.length} accounts via text-first extraction.`,
+      accounts,
+    };
+
+    setProgress({
+      phase: 'complete',
+      currentStep: '',
+      totalSteps: textChunks.length,
+      completedSteps: textChunks.length,
+      failedChunks: failedChunks.map(String),
+      message: failedChunks.length > 0
+        ? `Analysis complete. ${failedChunks.length} chunk(s) had issues.`
+        : `Found ${accounts.length} account(s) via text extraction. Review and select items to dispute.`,
+    });
+
+    return { result, accounts };
+  };
 
   const analyzeWithChunkedVision = async (
     images: string[],

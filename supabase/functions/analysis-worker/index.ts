@@ -265,7 +265,7 @@ async function processChunk(
     }
 
     const result = await callAIWithRetry(lovableApiKey, [
-      { role: "system", content: "Extract credit account data. Output valid JSON only." },
+      { role: "system", content: "You are a deterministic credit report parsing engine. Extract ALL account data from the provided pages using strict whole-word boundary matching for negative indicators. Never guess, never merge accounts, never summarize. Extract every value exactly as printed. If a field cannot be read, output 'UNEXTRACTABLE'. Output valid JSON only." },
       { role: "user", content: userContent },
     ]);
 
@@ -455,7 +455,13 @@ serve(async (req) => {
           }
         }
 
-        const mapPrompt = `Analyze these credit report sample pages and output a JSON document map with sections: personal_info, accounts, inquiries, payment_history, public_records, summary. For each: detected (boolean), start_page (1-indexed), end_page (1-indexed). Also output: is_multi_bureau, detected_bureaus, total_pages: ${storagePaths.length}, report_type.`;
+        const mapPrompt = `Analyze these credit report sample pages and output a JSON document map. Identify section boundaries using structural anchors (section headers, page breaks, content type changes).
+
+Sections to detect: personal_info, accounts, inquiries, payment_history, public_records, summary.
+For each: detected (boolean), start_page (1-indexed), end_page (1-indexed), page_count.
+Also output: is_multi_bureau (true if Experian/Equifax/TransUnion appear side-by-side), detected_bureaus (array), total_pages: ${storagePaths.length}, report_type (privacyguard|identityiq|smartcredit|experian|equifax|transunion|unknown).
+
+IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment history grids that show month-by-month data should be classified as payment_history, not accounts.`;
 
         const userContent: any[] = [{ type: "text", text: mapPrompt }];
         for (const img of sampleImages) {
@@ -517,7 +523,20 @@ serve(async (req) => {
       console.log("CHAIN_RESUME", { jobId, resumedFrom: processedChunks, invocationId });
     }
 
-    const accountsPrompt = `Extract ALL accounts from these credit report pages. Output JSON: { "accounts": [{ "creditor_name": "...", "account_number": "XXXX...", "date_opened": "MM/YYYY", "status": "...", "balance": "$X,XXX", "derogatory_triggers": [], "bureaus": [] }] }`;
+    const accountsPrompt = `Extract ALL accounts from these credit report pages using deterministic two-pass extraction.
+
+RULES:
+- Extract every tradeline individually — never merge, group, or deduplicate.
+- Use whole-word boundary matching for negative indicators: late, charge off, charged off, collection, derogatory, past due, foreclosure, repossession, settled, written off, bankruptcy.
+- "C/O" = negative ONLY in status/remark fields, NOT in address lines.
+- Past Due Amount > $0 = negative. $0 = NOT negative.
+- Payment grid codes: 2=30 late, 3=60 late, 4=90 late, 5=120+ late, X/CO/D = derogatory.
+- Closed accounts are still included if they match any negative indicator.
+- If a field cannot be read, output "UNEXTRACTABLE" — do NOT omit the account.
+- Extract account numbers exactly as printed, preserving all masking characters.
+- In multi-bureau layouts, extract per-bureau status separately.
+
+Output JSON: { "accounts": [{ "creditor_name": "...", "account_number": "XXXX... or N/A", "account_type": "Individual|Joint|Authorized User|N/A", "date_opened": "MM/YYYY or N/A", "date_closed": "or null", "status": "...", "balance": "$X,XXX or N/A", "past_due_amount": "or null", "derogatory_triggers": ["30-day late"], "payment_grid_codes": "or null", "date_first_delinquency": "or null", "confidence": "high|medium|low|incomplete", "bureaus": [], "bureau_status": {} }] }`;
 
     // Process up to MAX_CHUNKS_PER_INVOCATION chunks in this invocation
     let chunksProcessedThisInvocation = 0;
