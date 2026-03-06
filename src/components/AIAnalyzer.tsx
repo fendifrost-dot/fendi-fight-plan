@@ -719,6 +719,36 @@ const AIAnalyzer = () => {
   };
 
   const handleAnalyze = async (selectedFileIds?: string[]) => {
+    const filesToAnalyze = selectedFileIds 
+      ? uploadedFiles.filter(f => selectedFileIds.includes(f.id))
+      : uploadedFiles;
+
+    const runtimeSnapshot = {
+      isAnalyzing,
+      isJobProcessing,
+      anyFileProcessing: uploadedFiles.some(f => f.isProcessing),
+      hasUploadFailures: isAnalysisStartBlocked(uploadedFiles),
+      responseText,
+      uploadedFilesLength: uploadedFiles.length,
+      filesToAnalyzeLength: filesToAnalyze.length,
+      fullLegalName: fullLegalName.trim(),
+      currentAddress: currentAddress.trim(),
+      currentEmployer: currentEmployer.trim(),
+      hasUnknownBureau: uploadedFiles.some(f => f.selectedBureau === 'unknown'),
+      fileDiagnostics: filesToAnalyze.map(f => ({
+        name: f.name,
+        selectedBureau: f.selectedBureau,
+        label: f.label,
+        isProcessing: f.isProcessing,
+        pipelinePath: f.pipelinePath ?? null,
+        hasStoragePaths: f.storagePaths.length > 0,
+        hasExtractedText: Boolean(f.extractedText),
+        hasError: Boolean(f.error),
+      })),
+    };
+
+    console.log('[AIAnalyzer][runtime] handleAnalyze invoked', runtimeSnapshot);
+
     // Soft warnings for identity fields — never block analysis
     const softWarnings: string[] = [];
     if (!fullLegalName.trim()) softWarnings.push("Full legal name is missing");
@@ -728,18 +758,18 @@ const AIAnalyzer = () => {
     if (unknownBureauFiles.length > 0) softWarnings.push(`Bureau not detected for: ${unknownBureauFiles.map(f => f.name).join(', ')}`);
 
     if (softWarnings.length > 0) {
-      console.warn('[AIAnalyzer] Soft warnings (non-blocking):', softWarnings);
+      console.warn('[AIAnalyzer][runtime] soft warnings (non-blocking)', {
+        ...runtimeSnapshot,
+        softWarnings,
+      });
       toast({
         title: "Analysis proceeding with warnings",
         description: softWarnings.join('. ') + '. These fields improve accuracy but are not required.',
       });
     }
 
-    const filesToAnalyze = selectedFileIds 
-      ? uploadedFiles.filter(f => selectedFileIds.includes(f.id))
-      : uploadedFiles;
-
     if (!responseText && filesToAnalyze.length === 0) {
+      console.warn('[AIAnalyzer][runtime] blocked: no input', runtimeSnapshot);
       toast({
         title: "No input provided",
         description: "Please upload files or paste the credit report text",
@@ -751,6 +781,10 @@ const AIAnalyzer = () => {
     // Validate bureau assignments
     const validation = validateBureauAssignments();
     if (!validation.valid) {
+      console.warn('[AIAnalyzer][runtime] blocked: bureau validation', {
+        ...runtimeSnapshot,
+        validationMessage: validation.message,
+      });
       toast({
         title: "Bureau assignment required",
         description: validation.message,
@@ -765,6 +799,10 @@ const AIAnalyzer = () => {
 
     const invalidUploads = getInvalidUploads(imageFiles);
     if (invalidUploads.length > 0) {
+      console.warn('[AIAnalyzer][runtime] blocked: invalid uploads', {
+        ...runtimeSnapshot,
+        invalidUploads: invalidUploads.map(f => f.name),
+      });
       toast({
         title: "Upload issue detected",
         description: `Resolve failed uploads before analysis: ${invalidUploads.map(f => f.name).join(', ')}`,
@@ -776,6 +814,10 @@ const AIAnalyzer = () => {
     // Text-first files must have extracted text
     const brokenTextFirst = textFirstFiles.filter(f => !f.extractedText);
     if (brokenTextFirst.length > 0) {
+      console.warn('[AIAnalyzer][runtime] blocked: broken text-first extraction', {
+        ...runtimeSnapshot,
+        brokenTextFirst: brokenTextFirst.map(f => f.name),
+      });
       toast({
         title: "Triage error",
         description: `Text extraction failed for: ${brokenTextFirst.map(f => f.name).join(', ')}. Remove and re-upload.`,
