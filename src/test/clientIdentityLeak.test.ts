@@ -124,7 +124,7 @@ describe('Client identity leak prevention', () => {
     session = createDefaultSession();
     expect(session.consumerInfo.fullName).toBe('');
     expect(session.consumerInfo.addressLine1).toBe('');
-    expect(session.generatedLetters.experian).toBe('');
+    expect(session.generatedLetters.experian ?? '').toBe('');
   });
 
   it('manual edits persist only within same client context', () => {
