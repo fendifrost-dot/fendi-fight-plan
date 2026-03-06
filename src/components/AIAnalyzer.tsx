@@ -778,19 +778,17 @@ const AIAnalyzer = () => {
       return;
     }
 
-    // Validate bureau assignments
+    // Bureau assignment is soft-gated: warn but continue
     const validation = validateBureauAssignments();
-    if (!validation.valid) {
-      console.warn('[AIAnalyzer][runtime] blocked: bureau validation', {
+    if (!validation.valid && validation.message) {
+      console.warn('[AIAnalyzer][runtime] soft warning: bureau assignment', {
         ...runtimeSnapshot,
         validationMessage: validation.message,
       });
       toast({
-        title: "Bureau assignment required",
+        title: "Analysis proceeding with bureau warning",
         description: validation.message,
-        variant: "destructive",
       });
-      return;
     }
 
     // For text-first files, storagePaths will be empty — that's expected

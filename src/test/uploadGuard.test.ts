@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { getInvalidUploads, isAnalysisStartBlocked, runAnalysisGuardSelfTest } from "@/lib/upload-guard";
+import {
+  getInvalidUploads,
+  hasAnalyzeBlockingUploadFailures,
+  isAnalysisStartBlocked,
+  runAnalysisGuardSelfTest,
+} from "@/lib/upload-guard";
 
 describe("upload analysis guard", () => {
   it("blocks analysis when any upload failed", () => {
@@ -20,6 +25,16 @@ describe("upload analysis guard", () => {
 
     expect(getInvalidUploads(files)).toHaveLength(0);
     expect(isAnalysisStartBlocked(files)).toBe(false);
+  });
+
+  it("does not block analyze button for text-first files with no storage paths", () => {
+    const files = [{ pipelinePath: "text-first", storagePaths: [] }];
+    expect(hasAnalyzeBlockingUploadFailures(files)).toBe(false);
+  });
+
+  it("blocks analyze button for non-text-first failed uploads", () => {
+    const files = [{ pipelinePath: "vision-full", storagePaths: [], error: "UPLOAD_FAILED" }];
+    expect(hasAnalyzeBlockingUploadFailures(files)).toBe(true);
   });
 
   it("self-test reports pass", () => {
