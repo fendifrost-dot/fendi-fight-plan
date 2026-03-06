@@ -833,6 +833,7 @@ const AIAnalyzer = () => {
 
     try {
       if (!session?.access_token) {
+        console.warn('[AIAnalyzer][runtime] blocked: missing auth session', runtimeSnapshot);
         setError("Please log in to use the analyzer");
         toast({
           title: "Authentication required",
