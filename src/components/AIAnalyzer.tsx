@@ -462,7 +462,21 @@ const AIAnalyzer = () => {
           });
 
           // STEP 2: Decide path based on triage
-          if (triage.textFirstViable && triage.fullText.length > 0 && triage.fullText.length <= 500000) {
+          const textFirstConditions = {
+            textFirstViable: triage.textFirstViable,
+            textFirstReason: triage.textFirstReason,
+            fullTextLength: triage.fullText.length,
+            underCharLimit: triage.fullText.length <= 500000,
+            charsPerPage: triage.charsPerPage,
+            textRichPages: triage.textRichPages,
+            totalPages: triage.totalPages,
+            textRichRatio: triage.totalPages > 0 ? (triage.textRichPages / triage.totalPages).toFixed(2) : '0',
+            pagesExtracted: triage.pagesExtracted,
+            willUseTextFirst: triage.textFirstViable && triage.fullText.length > 0 && triage.fullText.length <= 500000,
+          };
+          console.log(`[AIAnalyzer] Text-first decision for ${file.name}:`, textFirstConditions);
+
+          if (textFirstConditions.willUseTextFirst) {
             // TEXT-FIRST PATH: No image rendering needed
             console.log(`[AIAnalyzer] Using TEXT-FIRST path for ${file.name} (${triage.charsPerPage} chars/page)`);
             
@@ -827,7 +841,7 @@ const AIAnalyzer = () => {
 
       const hasImageWork = Object.values(bureauGroups).some(g => g.storagePaths.length > 0);
 
-      // Log pipeline decision
+      // Log pipeline decision with triage diagnostics
       console.log('[AIAnalyzer] Analysis routing:', {
         textFirstFiles: textFirstFiles.length,
         imageFiles: imageFiles.length,
@@ -835,6 +849,16 @@ const AIAnalyzer = () => {
         hasImageWork,
         textLength: allTextInput.length,
         totalImagePages: Object.values(bureauGroups).reduce((s, g) => s + g.storagePaths.length, 0),
+        triageSummaries: filesToAnalyze.map(f => ({
+          name: f.name,
+          pipelinePath: f.pipelinePath || 'unknown',
+          triageViable: f.triageResult?.textFirstViable ?? null,
+          triageReason: f.triageResult?.textFirstReason ?? null,
+          charsPerPage: f.triageResult?.charsPerPage ?? null,
+          textRichPages: f.triageResult ? `${f.triageResult.textRichPages}/${f.triageResult.totalPages}` : null,
+          actionablePages: f.triageResult?.actionablePages.length ?? null,
+          storagePaths: f.storagePaths.length,
+        })),
       });
 
       // Route: text-first path (direct API call, fast)
