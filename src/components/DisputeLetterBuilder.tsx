@@ -200,9 +200,18 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
   // Load persisted state on initial render
   const persistedState = useMemo(() => loadPersistedState(), []);
 
-  // Consumer info state - prefer persisted, then extracted data
+  // Track which client's data we've hydrated so we detect client changes
+  const [hydratedClientKey, setHydratedClientKey] = useState<string>(
+    () => `${extractedData.fullLegalName}|${extractedData.currentAddress}`
+  );
+
+  // Consumer info state - prefer persisted ONLY if it matches the current client
   const [consumerInfo, setConsumerInfo] = useState<ConsumerInfo>(() => {
-    if (persistedState?.consumerInfo) return persistedState.consumerInfo;
+    // Check if persisted state matches the current client
+    if (persistedState?.consumerInfo && 
+        persistedState.consumerInfo.fullName === extractedData.fullLegalName) {
+      return persistedState.consumerInfo;
+    }
     return {
       fullName: extractedData.fullLegalName || '',
       addressLine1: parsedAddr.line1,
@@ -210,6 +219,24 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
       cityStateZip: parsedAddr.cityStateZip,
     };
   });
+
+  // CRITICAL: When extractedData changes (new client analyzed), reset consumer info
+  useEffect(() => {
+    const newKey = `${extractedData.fullLegalName}|${extractedData.currentAddress}`;
+    if (newKey !== hydratedClientKey) {
+      // New client detected - clear old state and hydrate from new data
+      const newParsedAddr = parseAddress(extractedData.currentAddress || '');
+      setConsumerInfo({
+        fullName: extractedData.fullLegalName || '',
+        addressLine1: newParsedAddr.line1,
+        addressLine2: '',
+        cityStateZip: newParsedAddr.cityStateZip,
+      });
+      setHydratedClientKey(newKey);
+      // Clear persisted state so old client data doesn't resurface
+      localStorage.removeItem(STORAGE_KEY);
+    }
+  }, [extractedData.fullLegalName, extractedData.currentAddress, hydratedClientKey]);
 
   // Bureau selection - prefer persisted
   const [selectedBureaus, setSelectedBureaus] = useState<BureauKey[]>(
