@@ -719,6 +719,36 @@ const AIAnalyzer = () => {
   };
 
   const handleAnalyze = async (selectedFileIds?: string[]) => {
+    const filesToAnalyze = selectedFileIds 
+      ? uploadedFiles.filter(f => selectedFileIds.includes(f.id))
+      : uploadedFiles;
+
+    const runtimeSnapshot = {
+      isAnalyzing,
+      isJobProcessing,
+      anyFileProcessing: uploadedFiles.some(f => f.isProcessing),
+      hasUploadFailures: isAnalysisStartBlocked(uploadedFiles),
+      responseText,
+      uploadedFilesLength: uploadedFiles.length,
+      filesToAnalyzeLength: filesToAnalyze.length,
+      fullLegalName: fullLegalName.trim(),
+      currentAddress: currentAddress.trim(),
+      currentEmployer: currentEmployer.trim(),
+      hasUnknownBureau: uploadedFiles.some(f => f.selectedBureau === 'unknown'),
+      fileDiagnostics: filesToAnalyze.map(f => ({
+        name: f.name,
+        selectedBureau: f.selectedBureau,
+        label: f.label,
+        isProcessing: f.isProcessing,
+        pipelinePath: f.pipelinePath ?? null,
+        hasStoragePaths: f.storagePaths.length > 0,
+        hasExtractedText: Boolean(f.extractedText),
+        hasError: Boolean(f.error),
+      })),
+    };
+
+    console.log('[AIAnalyzer][runtime] handleAnalyze invoked', runtimeSnapshot);
+
     // Soft warnings for identity fields — never block analysis
     const softWarnings: string[] = [];
     if (!fullLegalName.trim()) softWarnings.push("Full legal name is missing");
@@ -728,18 +758,18 @@ const AIAnalyzer = () => {
     if (unknownBureauFiles.length > 0) softWarnings.push(`Bureau not detected for: ${unknownBureauFiles.map(f => f.name).join(', ')}`);
 
     if (softWarnings.length > 0) {
-      console.warn('[AIAnalyzer] Soft warnings (non-blocking):', softWarnings);
+      console.warn('[AIAnalyzer][runtime] soft warnings (non-blocking)', {
+        ...runtimeSnapshot,
+        softWarnings,
+      });
       toast({
         title: "Analysis proceeding with warnings",
         description: softWarnings.join('. ') + '. These fields improve accuracy but are not required.',
       });
     }
 
-    const filesToAnalyze = selectedFileIds 
-      ? uploadedFiles.filter(f => selectedFileIds.includes(f.id))
-      : uploadedFiles;
-
     if (!responseText && filesToAnalyze.length === 0) {
+      console.warn('[AIAnalyzer][runtime] blocked: no input', runtimeSnapshot);
       toast({
         title: "No input provided",
         description: "Please upload files or paste the credit report text",
@@ -751,6 +781,10 @@ const AIAnalyzer = () => {
     // Validate bureau assignments
     const validation = validateBureauAssignments();
     if (!validation.valid) {
+      console.warn('[AIAnalyzer][runtime] blocked: bureau validation', {
+        ...runtimeSnapshot,
+        validationMessage: validation.message,
+      });
       toast({
         title: "Bureau assignment required",
         description: validation.message,
@@ -765,6 +799,10 @@ const AIAnalyzer = () => {
 
     const invalidUploads = getInvalidUploads(imageFiles);
     if (invalidUploads.length > 0) {
+      console.warn('[AIAnalyzer][runtime] blocked: invalid uploads', {
+        ...runtimeSnapshot,
+        invalidUploads: invalidUploads.map(f => f.name),
+      });
       toast({
         title: "Upload issue detected",
         description: `Resolve failed uploads before analysis: ${invalidUploads.map(f => f.name).join(', ')}`,
@@ -776,6 +814,10 @@ const AIAnalyzer = () => {
     // Text-first files must have extracted text
     const brokenTextFirst = textFirstFiles.filter(f => !f.extractedText);
     if (brokenTextFirst.length > 0) {
+      console.warn('[AIAnalyzer][runtime] blocked: broken text-first extraction', {
+        ...runtimeSnapshot,
+        brokenTextFirst: brokenTextFirst.map(f => f.name),
+      });
       toast({
         title: "Triage error",
         description: `Text extraction failed for: ${brokenTextFirst.map(f => f.name).join(', ')}. Remove and re-upload.`,
@@ -791,6 +833,7 @@ const AIAnalyzer = () => {
 
     try {
       if (!session?.access_token) {
+        console.warn('[AIAnalyzer][runtime] blocked: missing auth session', runtimeSnapshot);
         setError("Please log in to use the analyzer");
         toast({
           title: "Authentication required",
@@ -1120,6 +1163,39 @@ const AIAnalyzer = () => {
   const anyFileProcessing = uploadedFiles.some(f => f.isProcessing);
   const hasUnknownBureau = uploadedFiles.some(f => f.selectedBureau === 'unknown');
   const hasUploadFailures = isAnalysisStartBlocked(uploadedFiles);
+
+  const handleAnalyzeButtonClick = () => {
+    const buttonEl = document.querySelector<HTMLButtonElement>('[data-testid="analyze-all-reports-button"]');
+    const buttonRect = buttonEl?.getBoundingClientRect();
+    const centerX = buttonRect ? buttonRect.left + buttonRect.width / 2 : null;
+    const centerY = buttonRect ? buttonRect.top + buttonRect.height / 2 : null;
+    const centerElement = centerX !== null && centerY !== null
+      ? document.elementFromPoint(centerX, centerY)
+      : null;
+    const computedStyle = buttonEl ? window.getComputedStyle(buttonEl) : null;
+
+    console.log('[AIAnalyzer][runtime] analyze button click', {
+      domDisabled: buttonEl?.disabled ?? null,
+      ariaDisabled: buttonEl?.getAttribute('aria-disabled') ?? null,
+      pointerEvents: computedStyle?.pointerEvents ?? null,
+      opacity: computedStyle?.opacity ?? null,
+      centerElementTag: centerElement?.tagName ?? null,
+      centerElementClass: centerElement?.className ?? null,
+      centerElementIsButton: buttonEl ? (centerElement === buttonEl || buttonEl.contains(centerElement)) : null,
+      isAnalyzing,
+      isJobProcessing,
+      anyFileProcessing,
+      hasUploadFailures,
+      responseText,
+      uploadedFilesLength: uploadedFiles.length,
+      fullLegalName: fullLegalName.trim(),
+      currentAddress: currentAddress.trim(),
+      currentEmployer: currentEmployer.trim(),
+      hasUnknownBureau,
+    });
+
+    void handleAnalyze();
+  };
 
   const handleRunUploadSelfTest = useCallback(async () => {
     try {
@@ -1903,7 +1979,8 @@ const AIAnalyzer = () => {
 
               {/* Analyze button */}
               <Button
-                onClick={() => handleAnalyze()}
+                data-testid="analyze-all-reports-button"
+                onClick={handleAnalyzeButtonClick}
                 disabled={isAnalyzing || isJobProcessing || anyFileProcessing || hasUploadFailures || (!responseText && uploadedFiles.length === 0)}
                 className="w-full py-6 text-lg font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
