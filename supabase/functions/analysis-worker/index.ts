@@ -9,6 +9,28 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// ── Inline post-processing for final merge (mirrors parser-rules.ts) ──
+
+function _workerDetectDuplicates(accounts: any[]): any[] {
+  if (!accounts || accounts.length < 2) return [];
+  const seen = new Map<string, number[]>();
+  for (let i = 0; i < accounts.length; i++) {
+    const name = (accounts[i].creditorName || accounts[i].creditor_name || '').trim().toUpperCase();
+    const acct = (accounts[i].maskedAccountNumber || accounts[i].account_number || '').trim().toUpperCase();
+    const bureau = (accounts[i].bureaus?.[0] || 'unknown').toLowerCase();
+    const key = `${bureau}|${name}|${acct}`;
+    if (!seen.has(key)) seen.set(key, [i]); else seen.get(key)!.push(i);
+  }
+  const flags: any[] = [];
+  for (const [key, indices] of seen) {
+    if (indices.length > 1) {
+      const [bureau, name, acct] = key.split('|');
+      flags.push({ creditor_name: name, account_number: acct, bureau, indices, message: `POSSIBLE DUPLICATE — verify against source report. (${indices.length} entries)` });
+    }
+  }
+  return flags;
+}
+
 const MAX_IMAGES_PER_CHUNK = 3;
 const AI_TIMEOUT_MS = 25000;
 const MAX_RETRIES = 2;
@@ -654,6 +676,9 @@ Output JSON: { "accounts": [{ "creditor_name": "...", "account_number": "XXXX...
 
     const totalElapsedMs = Date.now() - invocationStartedAt;
 
+    // ── Deterministic post-processing on merged result ──
+    const duplicateFlags = _workerDetectDuplicates(normalizedAccounts);
+
     const resultData = {
       accounts: normalizedAccounts,
       documentMap,
@@ -663,6 +688,14 @@ Output JSON: { "accounts": [{ "creditor_name": "...", "account_number": "XXXX...
       failedChunks,
       chunkTimings,
       workerElapsedMs: totalElapsedMs,
+      duplicate_flags: duplicateFlags,
+      tradeline_inventory: {
+        total_accounts: normalizedAccounts.length,
+        total_pages: storagePaths.length,
+        processed_chunks: processedChunks,
+        failed_chunks: failedChunks.length,
+      },
+      validation_status: failedChunks.length === 0 ? 'PASS' : `WARNING: ${failedChunks.length} chunk(s) failed`,
     };
 
     const errorFields: Record<string, any> = {};

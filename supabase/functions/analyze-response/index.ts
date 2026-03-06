@@ -6,7 +6,105 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-/**
+// ── Inline post-processing (Deno edge functions cannot import src/lib) ──
+
+const _NEGATIVE_KEYWORDS = [
+  'late','late payment','late payments','30 days late','60 days late','90 days late',
+  '120 days late','150 days late','30-day late','60-day late','90-day late',
+  '120-day late','150-day late','potentially negative','past due','past-due',
+  'derogatory','charge off','charged off','charged-off','chargeoff','written off',
+  'write off','write-off','collection','collections','repossession','foreclosure',
+  'settled','settled for less','bankruptcy','included in bankruptcy','profit and loss write-off',
+];
+const _NEGATIVE_SECTIONS = ['potentially negative items','negative accounts','adverse accounts','collection accounts','derogatory'];
+const _NEGATIVE_GRID = ['2','3','4','5','X','CO','D'];
+
+function _wwm(text: string, kw: string): boolean {
+  if (!text || !kw) return false;
+  const esc = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![a-zA-Z0-9])${esc}(?![a-zA-Z0-9])`, 'i').test(text);
+}
+
+function _isPastDueNeg(val?: string | null): boolean {
+  if (!val) return false;
+  const n = parseFloat(val.replace(/[$,]/g, ''));
+  return !isNaN(n) && n > 0;
+}
+
+function _negGridCodes(codes?: string | null): string[] {
+  if (!codes) return [];
+  return codes.split(/[\s,;|]+/).filter((c: string) => _NEGATIVE_GRID.includes(c.toUpperCase()));
+}
+
+function _classifyTl(t: any): string[] {
+  const triggers: string[] = [];
+  const blockText = [t.status_as_reported, t.remarks, t.block_text].filter(Boolean).join(' ');
+  for (const kw of _NEGATIVE_KEYWORDS) { if (_wwm(blockText, kw)) triggers.push(kw); }
+  if (_isPastDueNeg(t.past_due_amount)) triggers.push(`past due > $0 (${t.past_due_amount})`);
+  const gc = _negGridCodes(t.payment_grid_codes);
+  if (gc.length) triggers.push(`grid codes: ${gc.join(', ')}`);
+  if (t.section_header && _NEGATIVE_SECTIONS.includes(t.section_header.toLowerCase())) triggers.push(`section: ${t.section_header}`);
+  if (t.date_first_delinquency) triggers.push(`date of first delinquency: ${t.date_first_delinquency}`);
+  return triggers;
+}
+
+function _detectDups(tradelines: any[]): any[] {
+  if (!tradelines || tradelines.length < 2) return [];
+  const seen = new Map<string, number[]>();
+  for (let i = 0; i < tradelines.length; i++) {
+    const name = (tradelines[i].creditor_name || '').trim().toUpperCase();
+    const acct = (tradelines[i].account_number || '').trim().toUpperCase();
+    const bureau = (tradelines[i].bureaus?.[0] || 'unknown').toLowerCase();
+    const key = `${bureau}|${name}|${acct}`;
+    if (!seen.has(key)) seen.set(key, [i]); else seen.get(key)!.push(i);
+  }
+  const flags: any[] = [];
+  for (const [key, indices] of seen) {
+    if (indices.length > 1) {
+      const [bureau, name, acct] = key.split('|');
+      flags.push({ creditor_name: name, account_number: acct, bureau, indices, message: `POSSIBLE DUPLICATE — verify against source report. (${indices.length} entries)` });
+    }
+  }
+  return flags;
+}
+
+function _validateCounts(report: any): { status: string; messages: string[] } {
+  const meta = report.metadata || report.report_metadata;
+  if (!meta || (meta.accounts_ever_late == null && meta.collections_count == null)) {
+    return { status: 'SKIPPED', messages: ['No bureau summary counts found in report.'] };
+  }
+  const msgs: string[] = [];
+  let worst = 'PASS';
+  const negCount = (report.derogatory_accounts?.length ?? 0) + (report.charge_offs?.length ?? 0);
+  const colCount = report.collections?.length ?? 0;
+  if (meta.collections_count != null && colCount < meta.collections_count) { msgs.push(`EXTRACTION INCOMPLETE — COLLECTIONS MISMATCH (extracted ${colCount}, expected ${meta.collections_count})`); worst = 'ERROR'; }
+  if (meta.accounts_ever_late != null && negCount < meta.accounts_ever_late) { msgs.push(`EXTRACTION INCOMPLETE — NEGATIVE TRADELINE MISMATCH (extracted ${negCount}, expected ${meta.accounts_ever_late})`); worst = 'ERROR'; }
+  if (meta.collections_count != null && colCount > meta.collections_count + 2) { msgs.push(`POSSIBLE OVER-EXTRACTION — COLLECTIONS (extracted ${colCount}, expected ${meta.collections_count})`); if (worst !== 'ERROR') worst = 'WARNING'; }
+  if (meta.accounts_ever_late != null && negCount > meta.accounts_ever_late + 2) { msgs.push(`POSSIBLE OVER-EXTRACTION — NEGATIVE TRADELINES (extracted ${negCount}, expected ${meta.accounts_ever_late})`); if (worst !== 'ERROR') worst = 'WARNING'; }
+  if (msgs.length === 0) msgs.push('All counts reconciled within tolerance.');
+  return { status: worst, messages: msgs };
+}
+
+function postProcessResult(report: any): any {
+  if (report.derogatory_accounts) {
+    for (const acct of report.derogatory_accounts) {
+      acct.derogatory_triggers = _classifyTl(acct);
+    }
+  }
+  const validation = _validateCounts(report);
+  report.validation_status = `${validation.status}: ${validation.messages.join('; ')}`;
+  const allTradelines = [...(report.derogatory_accounts || []), ...(report.charge_offs || [])];
+  report.duplicate_flags = _detectDups(allTradelines);
+  report.tradeline_inventory = {
+    total_blocks_detected: allTradelines.length + (report.collections?.length ?? 0),
+    negative_extracted: allTradelines.length,
+    collections_extracted: report.collections?.length ?? 0,
+    public_records_extracted: report.public_records?.length ?? 0,
+    inquiries_extracted: report.inquiries?.length ?? 0,
+  };
+  return report;
+}
+
  * Deterministic Credit Bureau Report Parser — Two-Pass + Validation
  * Adapted for JSON output while preserving the strict extraction rules.
  */
@@ -543,7 +641,7 @@ Include all derogatory items with maximum inclusion (dispute-safe approach).`;
     }
 
     // Ensure all expected fields exist
-    const result = {
+    const result: any = {
       validation_status: parsedResult.validation_status || "SKIPPED",
       validation_messages: parsedResult.validation_messages || [],
       report_metadata: parsedResult.report_metadata || {},
@@ -565,7 +663,10 @@ Include all derogatory items with maximum inclusion (dispute-safe approach).`;
       warnings: parsedResult.warnings || []
     };
 
-    return new Response(JSON.stringify(result), {
+    // ── Deterministic post-processing ──
+    const postProcessed = postProcessResult(result);
+
+    return new Response(JSON.stringify(postProcessed), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
