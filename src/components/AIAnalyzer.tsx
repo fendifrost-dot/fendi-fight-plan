@@ -1162,7 +1162,7 @@ const AIAnalyzer = () => {
   const hasAnyResults = Object.keys(results).length > 0;
   const anyFileProcessing = uploadedFiles.some(f => f.isProcessing);
   const hasUnknownBureau = uploadedFiles.some(f => f.selectedBureau === 'unknown');
-  const hasUploadFailures = isAnalysisStartBlocked(uploadedFiles);
+  const hasUploadFailures = hasAnalyzeBlockingUploadFailures(uploadedFiles);
 
   const handleAnalyzeButtonClick = () => {
     const buttonEl = document.querySelector<HTMLButtonElement>('[data-testid="analyze-all-reports-button"]');
