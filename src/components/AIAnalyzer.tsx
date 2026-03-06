@@ -1164,6 +1164,39 @@ const AIAnalyzer = () => {
   const hasUnknownBureau = uploadedFiles.some(f => f.selectedBureau === 'unknown');
   const hasUploadFailures = isAnalysisStartBlocked(uploadedFiles);
 
+  const handleAnalyzeButtonClick = () => {
+    const buttonEl = document.querySelector<HTMLButtonElement>('[data-testid="analyze-all-reports-button"]');
+    const buttonRect = buttonEl?.getBoundingClientRect();
+    const centerX = buttonRect ? buttonRect.left + buttonRect.width / 2 : null;
+    const centerY = buttonRect ? buttonRect.top + buttonRect.height / 2 : null;
+    const centerElement = centerX !== null && centerY !== null
+      ? document.elementFromPoint(centerX, centerY)
+      : null;
+    const computedStyle = buttonEl ? window.getComputedStyle(buttonEl) : null;
+
+    console.log('[AIAnalyzer][runtime] analyze button click', {
+      domDisabled: buttonEl?.disabled ?? null,
+      ariaDisabled: buttonEl?.getAttribute('aria-disabled') ?? null,
+      pointerEvents: computedStyle?.pointerEvents ?? null,
+      opacity: computedStyle?.opacity ?? null,
+      centerElementTag: centerElement?.tagName ?? null,
+      centerElementClass: centerElement?.className ?? null,
+      centerElementIsButton: buttonEl ? (centerElement === buttonEl || buttonEl.contains(centerElement)) : null,
+      isAnalyzing,
+      isJobProcessing,
+      anyFileProcessing,
+      hasUploadFailures,
+      responseText,
+      uploadedFilesLength: uploadedFiles.length,
+      fullLegalName: fullLegalName.trim(),
+      currentAddress: currentAddress.trim(),
+      currentEmployer: currentEmployer.trim(),
+      hasUnknownBureau,
+    });
+
+    void handleAnalyze();
+  };
+
   const handleRunUploadSelfTest = useCallback(async () => {
     try {
       const report = await runUploadSelfTest();
