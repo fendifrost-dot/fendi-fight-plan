@@ -727,7 +727,7 @@ const AIAnalyzer = () => {
       isAnalyzing,
       isJobProcessing,
       anyFileProcessing: uploadedFiles.some(f => f.isProcessing),
-      hasUploadFailures: isAnalysisStartBlocked(uploadedFiles),
+      hasUploadFailures: hasAnalyzeBlockingUploadFailures(uploadedFiles),
       responseText,
       uploadedFilesLength: uploadedFiles.length,
       filesToAnalyzeLength: filesToAnalyze.length,
