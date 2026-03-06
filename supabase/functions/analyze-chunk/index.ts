@@ -6,82 +6,98 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// Section-specific prompts for targeted extraction
-const SECTION_PROMPTS: Record<string, string> = {
-  personal_info: `Extract ONLY personal information from these credit report pages.
+/**
+ * Deterministic chunk extraction prompt — adapted from the Two-Pass parser for
+ * processing a subset of pages at a time via vision.
+ */
+const CHUNK_SYSTEM_PROMPT = `You are a credit report parsing engine processing a CHUNK of pages from a larger report. Extract ALL data visible on these pages using strict deterministic rules.
 
-Compare against the provided questionnaire (GROUND TRUTH):
-- Full name: Any variation = INACCURATE
-- Address: Only questionnaire address is accurate, all others = INACCURATE
-- Employer: Only questionnaire employer is accurate
+## CORE RULES
+- Never guess, never infer, never merge accounts, never summarize.
+- Only extract information explicitly present on these pages.
+- Every tradeline must be listed individually.
+- Every value must be extracted exactly as printed.
+- Use whole-word boundary matching for all keyword detection.
+- Treat each bureau's version of a tradeline as a separate entry.
+- If a field cannot be read, output "UNEXTRACTABLE" — do NOT omit the account.
+- Extract account numbers exactly as printed, preserving all masking characters (X, *, .).
 
-OUTPUT JSON:
-{
-  "inaccurate_names": [{ "reported_name": "...", "mismatch_reason": "...", "bureaus": ["experian"] }],
-  "inaccurate_addresses": [{ "reported_address": "...", "linked_to_derogatory": false, "bureaus": ["equifax"] }],
-  "inaccurate_employers": [{ "reported_employer": "...", "bureaus": ["transunion"] }],
-  "extra_identifier_mismatches": [{ "field": "DOB", "reported_value": "...", "status": "Mismatch", "bureaus": ["experian"] }]
-}`,
+## NEGATIVE INDICATOR DETECTION (whole-word boundary matching only)
+Include an account as negative if ANY of these appear:
+- Status keywords: late, late payment, 30 days late, 60 days late, 90 days late, 120 days late, 150 days late, potentially negative, past due, past-due, derogatory, charge off, charged off, charged-off, chargeoff, written off, write off, write-off, collection, collections, repossession, foreclosure, settled, settled for less, bankruptcy, included in bankruptcy, profit and loss write-off
+- C/O — ONLY in status/remark fields, NOT in address lines (where it means "care of")
+- Past Due Amount > $0 (ignore if $0)
+- Payment grid codes: 2=30 late, 3=60 late, 4=90 late, 5=120+ late, X=derogatory, CO=charge off, D=derogatory
+- Section headers: "Potentially Negative Items", "Negative Accounts", "Adverse Accounts", "Collection Accounts", "Derogatory"
+- Date of First Delinquency field present with any value
+- CLOSED accounts are still included if they match any negative indicator
 
-  accounts: `Extract ALL account information from these credit report pages.
+## PAGE BREAK HANDLING
+- If a block has payment data but no creditor name → it continues from a previous page (extract what you can, note "continuation from prior page")
+- If a block starts with a field label but no creditor → continuation (extract and note)
 
-CRITICAL RULES:
-1. Extract EVERY account block you can identify
-2. Include account name, masked number, date opened
-3. Mark as "UNEXTRACTABLE" if field cannot be read
-4. Include ALL derogatory triggers: late payments, collections, charge-offs
-5. For multi-bureau layouts, capture per-bureau status
+## MULTI-BUREAU HANDLING
+If pages show side-by-side columns for Experian/Equifax/TransUnion:
+- Extract status PER BUREAU for each account
+- Include "bureaus" array and "bureau_status" object
 
-OUTPUT JSON:
+## OUTPUT FORMAT (JSON)
 {
   "derogatory_accounts": [{
     "creditor_name": "...",
-    "account_number": "XXXX...",
-    "date_opened": "MM/YYYY or UNEXTRACTABLE",
+    "account_number": "XXXX... or N/A",
+    "account_type": "Individual|Joint|Authorized User|N/A",
+    "date_opened": "MM/YYYY or N/A",
+    "date_closed": "MM/YYYY or null",
+    "balance": "$X,XXX or N/A",
+    "past_due_amount": "$X or null",
     "derogatory_triggers": ["30-day late", "charge-off"],
     "status_as_reported": "...",
+    "payment_grid_codes": "codes if present or null",
+    "remarks": "any remarks or null",
     "confidence": "high|medium|low|incomplete",
     "bureaus": ["experian", "equifax"],
-    "bureau_status": { "experian": "Current", "equifax": "30-day late" }
+    "bureau_status": { "experian": "Current", "equifax": "30-day late" },
+    "date_first_delinquency": "if present or null",
+    "section_header": "section name or null",
+    "is_continuation": false
   }],
   "collections": [{
+    "collection_agency": "...",
     "creditor_name": "...",
-    "account_number": "...",
-    "original_creditor": "...",
+    "original_creditor": "... or N/A",
+    "account_number": "... or N/A",
+    "date_opened": "MM/YYYY or N/A",
+    "date_reported": "or null",
     "balance": "$X,XXX",
-    "bureaus": ["transunion"]
+    "status": "...",
+    "bureaus": ["experian"]
   }],
   "charge_offs": [{
     "creditor_name": "...",
     "account_number": "...",
     "date_charged_off": "MM/YYYY",
     "balance": "$X,XXX",
-    "bureaus": ["experian"]
-  }]
-}`,
-
-  inquiries: `Extract ALL credit inquiries from these pages.
-
-OUTPUT JSON:
-{
+    "bureaus": ["equifax"]
+  }],
   "inquiries": [{
     "creditor_name": "...",
     "date": "MM/DD/YYYY",
     "type": "hard|soft|unknown",
     "bureaus": ["experian"]
-  }]
-}`,
-
-  payment_history: `Extract late payment information from payment history grids/charts.
-
-Look for:
-- Payment history charts with month columns
-- Delinquency codes (1=30 days, 2=60 days, 3=90 days)
-- Symbols indicating late payments
-- Legends explaining payment status codes
-
-OUTPUT JSON:
-{
+  }],
+  "public_records": [{
+    "type": "Bankruptcy|Lien|Judgment|Child Support",
+    "court_jurisdiction": "...",
+    "filing_date": "MM/DD/YYYY",
+    "status": "...",
+    "amount": "$X,XXX or null",
+    "bureaus": ["experian", "equifax", "transunion"]
+  }],
+  "inaccurate_names": [{ "reported_name": "...", "mismatch_reason": "...", "bureaus": ["experian"] }],
+  "inaccurate_addresses": [{ "reported_address": "...", "linked_to_derogatory": false, "bureaus": ["equifax"] }],
+  "inaccurate_employers": [{ "reported_employer": "...", "bureaus": ["transunion"] }],
+  "extra_identifier_mismatches": [{ "field": "DOB", "reported_value": "...", "status": "Mismatch", "bureaus": ["experian"] }],
   "late_payment_summary": [{
     "severity": "30-day|60-day|90-day",
     "accounts": [{
@@ -91,23 +107,9 @@ OUTPUT JSON:
       "bureaus": ["equifax"]
     }]
   }]
-}`,
+}`;
 
-  public_records: `Extract ALL public records from these pages.
-
-OUTPUT JSON:
-{
-  "public_records": [{
-    "type": "Bankruptcy|Lien|Judgment|Child Support",
-    "court_jurisdiction": "...",
-    "filing_date": "MM/DD/YYYY",
-    "status": "...",
-    "bureaus": ["experian", "equifax", "transunion"]
-  }]
-}`
-};
-
-const MAX_IMAGES_PER_CHUNK = 3; // Process max 3 pages per request
+const MAX_IMAGES_PER_CHUNK = 3;
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -147,30 +149,27 @@ serve(async (req) => {
       });
     }
 
-    const { section, images, questionnaire, chunkIndex, totalChunks } = await req.json();
+    const { section, images, questionnaire, chunkIndex, totalChunks, reportText } = await req.json();
 
-    if (!section || !SECTION_PROMPTS[section]) {
-      return new Response(JSON.stringify({ error: `Invalid section: ${section}` }), {
+    // Validate: need either images or text
+    const hasImages = images && Array.isArray(images) && images.length > 0;
+    const hasText = reportText && typeof reportText === "string" && reportText.trim().length > 0;
+
+    if (!hasImages && !hasText) {
+      return new Response(JSON.stringify({ error: "No images or text provided" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    if (!images || !Array.isArray(images) || images.length === 0) {
-      return new Response(JSON.stringify({ error: "No images provided" }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    if (images.length > MAX_IMAGES_PER_CHUNK) {
+    if (hasImages && images.length > MAX_IMAGES_PER_CHUNK) {
       return new Response(JSON.stringify({ error: `Max ${MAX_IMAGES_PER_CHUNK} images per chunk` }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    console.log(`Analyzing chunk: section=${section}, chunk=${chunkIndex + 1}/${totalChunks}, images=${images.length}`);
+    console.log(`Analyzing chunk: section=${section || 'full'}, chunk=${(chunkIndex || 0) + 1}/${totalChunks || 1}, images=${hasImages ? images.length : 0}, text=${hasText ? 'yes' : 'no'}`);
 
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) {
@@ -183,10 +182,10 @@ serve(async (req) => {
     // Build user content
     const userContent: any[] = [];
     
-    let contextMessage = `Analyzing ${section.replace('_', ' ')} section (chunk ${chunkIndex + 1} of ${totalChunks}).`;
+    let contextMessage = `Analyzing chunk ${(chunkIndex || 0) + 1} of ${totalChunks || 1}.`;
     
-    // Add questionnaire context for personal_info section
-    if (section === 'personal_info' && questionnaire) {
+    // Add questionnaire context for personal info comparison
+    if (questionnaire) {
       contextMessage += `\n\n## QUESTIONNAIRE DATA (GROUND TRUTH)
 Full Legal Name: ${questionnaire.fullLegalName}
 Current Address: ${questionnaire.currentAddress}
@@ -197,17 +196,28 @@ Current Employer: ${questionnaire.currentEmployer}`;
       if (questionnaire.ssnLast4) contextMessage += `\nSSN Last 4: ${questionnaire.ssnLast4}`;
     }
 
-    userContent.push({
-      type: "text",
-      text: contextMessage + `\n\nExtract data from the ${images.length} attached page(s).`
-    });
-    
-    for (const img of images) {
+    if (hasText) {
+      // Text-based analysis
       userContent.push({
-        type: "image_url",
-        image_url: { url: img }
+        type: "text",
+        text: contextMessage + `\n\nExtract ALL data from the following credit report text using deterministic two-pass extraction.\n\n## CREDIT REPORT TEXT:\n"""\n${reportText}\n"""`
       });
+    } else {
+      // Vision-based analysis
+      userContent.push({
+        type: "text",
+        text: contextMessage + `\n\nExtract ALL data from the ${images.length} attached page(s) using deterministic extraction. Parse payment history grids/charts carefully for late payment codes.`
+      });
+      
+      for (const img of images) {
+        userContent.push({
+          type: "image_url",
+          image_url: { url: img }
+        });
+      }
     }
+
+    const model = hasText ? "google/gemini-2.5-flash" : "google/gemini-2.5-flash";
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -216,9 +226,9 @@ Current Employer: ${questionnaire.currentEmployer}`;
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "openai/gpt-5-mini",
+        model,
         messages: [
-          { role: "system", content: SECTION_PROMPTS[section] },
+          { role: "system", content: CHUNK_SYSTEM_PROMPT },
           { role: "user", content: userContent }
         ],
         response_format: { type: "json_object" },
@@ -239,8 +249,8 @@ Current Employer: ${questionnaire.currentEmployer}`;
         });
       }
       const errorText = await response.text();
-      console.error(`Chunk analysis error (${section}):`, response.status, errorText);
-      return new Response(JSON.stringify({ error: `Failed to analyze ${section}` }), {
+      console.error(`Chunk analysis error:`, response.status, errorText);
+      return new Response(JSON.stringify({ error: `Failed to analyze chunk` }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -260,16 +270,16 @@ Current Employer: ${questionnaire.currentEmployer}`;
     try {
       result = JSON.parse(content);
     } catch {
-      console.error(`Failed to parse ${section} result:`, content.substring(0, 200));
+      console.error(`Failed to parse chunk result:`, content.substring(0, 200));
       result = {};
     }
 
     // Add metadata
-    result._section = section;
-    result._chunkIndex = chunkIndex;
-    result._totalChunks = totalChunks;
+    result._section = section || "full";
+    result._chunkIndex = chunkIndex || 0;
+    result._totalChunks = totalChunks || 1;
 
-    console.log(`Chunk complete: ${section} ${chunkIndex + 1}/${totalChunks}`);
+    console.log(`Chunk complete: ${(chunkIndex || 0) + 1}/${totalChunks || 1}, accounts=${result.derogatory_accounts?.length || 0}`);
 
     return new Response(JSON.stringify(result), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },

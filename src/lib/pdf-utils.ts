@@ -284,6 +284,44 @@ export async function extractTextFromPdf(file: File): Promise<string> {
   }
 }
 
+/**
+ * Extract text from ALL pages of a PDF for text-first analysis pipeline.
+ * Returns the full text and a quality score (chars per page).
+ * Best-effort: pages that fail are skipped.
+ */
+export async function extractFullTextFromPdf(file: File): Promise<{ text: string; pageCount: number; charsPerPage: number; pagesExtracted: number }> {
+  try {
+    const pdfjs = await getPdfJs();
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+    
+    const pageCount = pdf.numPages;
+    const textParts: string[] = [];
+    let pagesExtracted = 0;
+    
+    for (let i = 1; i <= pageCount; i++) {
+      try {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items
+          .map((item: any) => item.str)
+          .join(' ');
+        textParts.push(`--- PAGE ${i} ---\n${pageText}`);
+        pagesExtracted++;
+      } catch {
+        textParts.push(`--- PAGE ${i} ---\n[TEXT EXTRACTION FAILED]`);
+      }
+    }
+    
+    const text = textParts.join('\n\n');
+    const charsPerPage = pagesExtracted > 0 ? Math.round(text.length / pagesExtracted) : 0;
+    
+    return { text, pageCount, charsPerPage, pagesExtracted };
+  } catch {
+    return { text: '', pageCount: 0, charsPerPage: 0, pagesExtracted: 0 };
+  }
+}
+
 /** Check if file is HEIC format */
 export function isHeicFile(file: File): boolean {
   return file.type === 'image/heic' || 
