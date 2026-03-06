@@ -17,9 +17,10 @@ interface AIRouterResponse {
 // ── 1 · Router classification logic (pure, no network) ─────────
 function classifyContext(prompt: string): "credit" | "marketing" {
   const creditKeywords = [
-    "dispute", "credit report", "bureau", "FCRA", "triage",
+    "dispute", "credit report", "bureau", "FCRA", "fcra", "triage",
     "charge-off", "collection", "derogatory", "inaccurate",
     "experian", "equifax", "transunion", "late payment",
+    "violation", "fair credit reporting",
   ];
   const lower = prompt.toLowerCase();
   return creditKeywords.some((kw) => lower.includes(kw)) ? "credit" : "marketing";
