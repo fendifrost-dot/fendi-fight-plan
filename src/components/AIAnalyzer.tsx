@@ -719,30 +719,20 @@ const AIAnalyzer = () => {
   };
 
   const handleAnalyze = async (selectedFileIds?: string[]) => {
-    // Validate required fields
-    if (!fullLegalName.trim()) {
+    // Soft warnings for identity fields — never block analysis
+    const softWarnings: string[] = [];
+    if (!fullLegalName.trim()) softWarnings.push("Full legal name is missing");
+    if (!currentAddress.trim()) softWarnings.push("Current address is missing");
+    if (!currentEmployer.trim()) softWarnings.push("Current employer is missing");
+    const unknownBureauFiles = uploadedFiles.filter(f => f.selectedBureau === 'unknown');
+    if (unknownBureauFiles.length > 0) softWarnings.push(`Bureau not detected for: ${unknownBureauFiles.map(f => f.name).join(', ')}`);
+
+    if (softWarnings.length > 0) {
+      console.warn('[AIAnalyzer] Soft warnings (non-blocking):', softWarnings);
       toast({
-        title: "Required field missing",
-        description: "Please enter your full legal name",
-        variant: "destructive",
+        title: "Analysis proceeding with warnings",
+        description: softWarnings.join('. ') + '. These fields improve accuracy but are not required.',
       });
-      return;
-    }
-    if (!currentAddress.trim()) {
-      toast({
-        title: "Required field missing",
-        description: "Please enter your current address",
-        variant: "destructive",
-      });
-      return;
-    }
-    if (!currentEmployer.trim()) {
-      toast({
-        title: "Required field missing",
-        description: "Please enter your current employer",
-        variant: "destructive",
-      });
-      return;
     }
 
     const filesToAnalyze = selectedFileIds 
@@ -1914,7 +1904,7 @@ const AIAnalyzer = () => {
               {/* Analyze button */}
               <Button
                 onClick={() => handleAnalyze()}
-                disabled={isAnalyzing || isJobProcessing || anyFileProcessing || hasUploadFailures || (!responseText && uploadedFiles.length === 0) || !fullLegalName || !currentAddress || !currentEmployer || hasUnknownBureau}
+                disabled={isAnalyzing || isJobProcessing || anyFileProcessing || hasUploadFailures || (!responseText && uploadedFiles.length === 0)}
                 className="w-full py-6 text-lg font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 {isAnalyzing || isJobProcessing ? (
