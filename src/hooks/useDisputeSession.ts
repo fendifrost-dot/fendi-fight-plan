@@ -441,7 +441,11 @@ export function useDisputeSession(): UseDisputeSessionReturn {
         phase: 'complete',
         message: `Found ${accounts.length} account(s). Review and select items to dispute.`,
       },
+      // CRITICAL: Clear prior client's generated letters on new analysis
+      generatedLetters: { experian: '', equifax: '', transunion: '' },
     }));
+    // Clear standalone letter builder localStorage to prevent cross-client leak
+    localStorage.removeItem('dispute_letter_builder_state');
   }, []);
 
   const setProcessingProgress = useCallback((progress: ProcessingProgress) => {
