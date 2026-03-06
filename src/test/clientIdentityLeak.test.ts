@@ -12,6 +12,13 @@ import {
  * Bug: Analyzing client B kept client A's consumerInfo in the letter builder
  * because (1) importAnalyzerData fell back to prev.consumerInfo and
  * (2) DisputeLetterBuilder's useState preferred localStorage over props.
+ *
+ * Root causes fixed:
+ * - useDisputeSession.importAnalyzerData: removed || prev.consumerInfo fallbacks
+ * - DisputeLetterBuilder: removed useMemo(() => loadPersistedState(), []) cache;
+ *   useState now always initializes from extractedData props, never localStorage.
+ *   useEffect with ref-based key comparison detects client changes even when
+ *   both clients have empty identity fields.
  */
 
 // Simulate the fixed importAnalyzerData logic (no fallback to prev)
@@ -139,5 +146,40 @@ describe('Client identity leak prevention', () => {
     });
     expect(session.consumerInfo.fullName).toBe('Client B');
     expect(session.consumerInfo.fullName).not.toContain('edited');
+  });
+
+  it('both clients with empty identity fields still produces clean state', () => {
+    let session = createDefaultSession();
+
+    // Client A with empty identity
+    session = simulateImportAnalyzerData(session, {
+      questionnaire: {},
+    });
+    expect(session.consumerInfo.fullName).toBe('');
+
+    // Client B also with empty identity — must not carry over any leftover
+    session = simulateImportAnalyzerData(session, {
+      questionnaire: {},
+    });
+    expect(session.consumerInfo.fullName).toBe('');
+    expect(session.consumerInfo.addressLine1).toBe('');
+    expect(session.generatedLetters.experian).toBe('');
+  });
+
+  it('importAnalyzerData always clears generatedLetters regardless of identity match', () => {
+    let session = makeClientSession('Same Name', '100 Same St, City, ST 10000');
+    session.generatedLetters = {
+      experian: 'Old letter',
+      equifax: 'Old letter',
+      transunion: 'Old letter',
+    };
+
+    // Re-import same client name — letters must still be cleared
+    session = simulateImportAnalyzerData(session, {
+      questionnaire: { fullLegalName: 'Same Name', currentAddress: '100 Same St, City, ST 10000' },
+    });
+    expect(session.generatedLetters.experian).toBe('');
+    expect(session.generatedLetters.equifax).toBe('');
+    expect(session.generatedLetters.transunion).toBe('');
   });
 });

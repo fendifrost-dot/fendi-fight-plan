@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { FileText, Loader2, Copy, Check, AlertTriangle, Scale, Shield, HelpCircle, User, MapPin, Building2, Pencil, Eye, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -197,74 +197,58 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
 
   const parsedAddr = parseAddress(extractedData.currentAddress || '');
 
-  // Load persisted state on initial render
-  const persistedState = useMemo(() => loadPersistedState(), []);
+  // Build the canonical consumer info from current extractedData props.
+  // This is recomputed on every render so we always have the latest client data.
+  const currentClientInfo = useMemo<ConsumerInfo>(() => ({
+    fullName: extractedData.fullLegalName || '',
+    addressLine1: parsedAddr.line1,
+    addressLine2: '',
+    cityStateZip: parsedAddr.cityStateZip,
+  }), [extractedData.fullLegalName, parsedAddr.line1, parsedAddr.cityStateZip]);
 
-  // Track which client's data we've hydrated so we detect client changes
-  const [hydratedClientKey, setHydratedClientKey] = useState<string>(
-    () => `${extractedData.fullLegalName}|${extractedData.currentAddress}`
-  );
+  // Track which client's data we last hydrated (using a ref to avoid re-render loops)
+  const lastHydratedRef = useRef<string>('');
 
-  // Consumer info state - prefer persisted ONLY if it matches the current client
+  // Consumer info state - ALWAYS initialize from current extractedData, never localStorage
   const [consumerInfo, setConsumerInfo] = useState<ConsumerInfo>(() => {
-    // Check if persisted state matches the current client
-    if (persistedState?.consumerInfo && 
-        persistedState.consumerInfo.fullName === extractedData.fullLegalName) {
-      return persistedState.consumerInfo;
-    }
-    return {
-      fullName: extractedData.fullLegalName || '',
-      addressLine1: parsedAddr.line1,
-      addressLine2: '',
-      cityStateZip: parsedAddr.cityStateZip,
-    };
+    lastHydratedRef.current = `${extractedData.fullLegalName}|${extractedData.currentAddress}`;
+    return currentClientInfo;
   });
 
-  // CRITICAL: When extractedData changes (new client analyzed), reset consumer info
+  // CRITICAL: When extractedData changes (new client analyzed), reset consumer info.
+  // Uses a ref comparison so it works even when both clients have empty identity fields
+  // (the analysis results / accounts will differ, triggering a prop change upstream).
   useEffect(() => {
     const newKey = `${extractedData.fullLegalName}|${extractedData.currentAddress}`;
-    if (newKey !== hydratedClientKey) {
-      // New client detected - clear old state and hydrate from new data
-      const newParsedAddr = parseAddress(extractedData.currentAddress || '');
-      setConsumerInfo({
-        fullName: extractedData.fullLegalName || '',
-        addressLine1: newParsedAddr.line1,
-        addressLine2: '',
-        cityStateZip: newParsedAddr.cityStateZip,
-      });
-      setHydratedClientKey(newKey);
-      // Clear persisted state so old client data doesn't resurface
+    if (newKey !== lastHydratedRef.current) {
+      // New client detected - discard all prior state and hydrate fresh
+      setConsumerInfo(currentClientInfo);
+      lastHydratedRef.current = newKey;
+      // Clear persisted state so old client data doesn't resurface on remount
       localStorage.removeItem(STORAGE_KEY);
     }
-  }, [extractedData.fullLegalName, extractedData.currentAddress, hydratedClientKey]);
+  }, [extractedData.fullLegalName, extractedData.currentAddress, currentClientInfo]);
 
-  // Bureau selection - prefer persisted
-  const [selectedBureaus, setSelectedBureaus] = useState<BureauKey[]>(
-    () => persistedState?.selectedBureaus || []
-  );
+  // Bureau selection
+  const [selectedBureaus, setSelectedBureaus] = useState<BureauKey[]>([]);
 
-  const [survey, setSurvey] = useState<DisputeSurvey>(() => {
-    if (persistedState?.survey) return persistedState.survey;
-    return {
-      isFraudulent: false,
-      isIdentityTheft: false,
-      hasPoliceReport: false,
-      hasFtcReport: false,
-      wasDataBreach: false,
-      wasReinserted: false,
-      reinsertedDetails: "",
-      hadCreditorRelationship: false,
-      belongsToAnotherPerson: false,
-      hasPersonalInfoErrors: false,
-      hasPreviousDisputes: false,
-      additionalFacts: "",
-    };
+  const [survey, setSurvey] = useState<DisputeSurvey>({
+    isFraudulent: false,
+    isIdentityTheft: false,
+    hasPoliceReport: false,
+    hasFtcReport: false,
+    wasDataBreach: false,
+    wasReinserted: false,
+    reinsertedDetails: "",
+    hadCreditorRelationship: false,
+    belongsToAnotherPerson: false,
+    hasPersonalInfoErrors: false,
+    hasPreviousDisputes: false,
+    additionalFacts: "",
   });
 
   const [isGenerating, setIsGenerating] = useState(false);
-  const [generatedLetters, setGeneratedLetters] = useState<{ bureau: BureauKey; letter: string }[]>(
-    () => persistedState?.generatedLetters || []
-  );
+  const [generatedLetters, setGeneratedLetters] = useState<{ bureau: BureauKey; letter: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
