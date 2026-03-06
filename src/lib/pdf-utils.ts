@@ -340,3 +340,221 @@ export function isSupportedImage(file: File): boolean {
   const supportedTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp'];
   return supportedTypes.includes(file.type);
 }
+
+// ============= PAGE TRIAGE =============
+
+/** Keywords that indicate a page contains actionable tradeline/account data */
+const ACTIONABLE_KEYWORDS = [
+  'account number', 'acct #', 'acct no', 'account #',
+  'balance', 'credit limit', 'high balance',
+  'date opened', 'date reported', 'date of last activity',
+  'creditor', 'original creditor', 'subscriber',
+  'collection', 'charge off', 'charged off', 'charge-off',
+  'derogatory', 'delinquent', 'past due', 'late payment',
+  'status:', 'account status', 'payment status',
+  'current balance', 'amount past due',
+  'public record', 'bankruptcy', 'civil judgment', 'tax lien',
+  'inquiry', 'inquiries',
+  'personal information', 'social security', 'date of birth',
+  'experian', 'equifax', 'transunion', 'trans union',
+  'credit score', 'fico', 'vantage',
+  'summary', 'account summary', 'negative accounts',
+  'open accounts', 'closed accounts',
+  'revolving', 'installment', 'mortgage', 'student loan', 'auto loan',
+];
+
+/** Minimum chars per page to consider text extraction viable */
+const TEXT_RICH_THRESHOLD = 200;
+
+/** Minimum average chars/page across the whole PDF to accept text-first path */
+const TEXT_FIRST_THRESHOLD = 150;
+
+export interface PageTriage {
+  pageNumber: number;
+  charCount: number;
+  isTextRich: boolean;
+  isActionable: boolean;
+  reason: string;
+}
+
+export interface TriageResult {
+  totalPages: number;
+  textRichPages: number;
+  actionablePages: number[];
+  nonActionablePages: number[];
+  textFirstViable: boolean;
+  textFirstReason: string;
+  fullText: string;
+  charsPerPage: number;
+  pagesExtracted: number;
+  pageTriages: PageTriage[];
+}
+
+/**
+ * Triage all pages in a PDF:
+ * 1. Extract text per page
+ * 2. Classify each page as actionable or not
+ * 3. Determine if text-first path is viable
+ */
+export async function triagePdfPages(file: File): Promise<TriageResult> {
+  const pdfjs = await getPdfJs();
+  
+  let pdf: any;
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+  } catch {
+    return {
+      totalPages: 0,
+      textRichPages: 0,
+      actionablePages: [],
+      nonActionablePages: [],
+      textFirstViable: false,
+      textFirstReason: 'PDF load failed',
+      fullText: '',
+      charsPerPage: 0,
+      pagesExtracted: 0,
+      pageTriages: [],
+    };
+  }
+
+  const totalPages = pdf.numPages;
+  const pageTriages: PageTriage[] = [];
+  const textParts: string[] = [];
+  let pagesExtracted = 0;
+  let textRichPages = 0;
+  const actionablePages: number[] = [];
+  const nonActionablePages: number[] = [];
+
+  for (let i = 1; i <= totalPages; i++) {
+    let pageText = '';
+    try {
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+      pageText = textContent.items.map((item: any) => item.str).join(' ');
+      pagesExtracted++;
+    } catch {
+      pageText = '';
+    }
+
+    textParts.push(`--- PAGE ${i} ---\n${pageText || '[TEXT EXTRACTION FAILED]'}`);
+
+    const charCount = pageText.length;
+    const isTextRich = charCount >= TEXT_RICH_THRESHOLD;
+    if (isTextRich) textRichPages++;
+
+    const lowerText = pageText.toLowerCase();
+    const matchedKeywords = ACTIONABLE_KEYWORDS.filter(kw => lowerText.includes(kw));
+    const isActionable = matchedKeywords.length >= 2 || (!isTextRich && charCount < 50);
+    // Pages with very little text are likely scanned images — mark actionable by default
+    
+    let reason: string;
+    if (matchedKeywords.length >= 2) {
+      reason = `actionable: matched [${matchedKeywords.slice(0, 3).join(', ')}]`;
+    } else if (!isTextRich && charCount < 50) {
+      reason = 'actionable: text-poor page (likely scanned image)';
+    } else if (matchedKeywords.length === 1) {
+      reason = `borderline: only matched [${matchedKeywords[0]}]`;
+    } else {
+      reason = 'non-actionable: no tradeline keywords found';
+    }
+
+    pageTriages.push({ pageNumber: i, charCount, isTextRich, isActionable, reason });
+
+    if (isActionable) {
+      actionablePages.push(i);
+    } else {
+      nonActionablePages.push(i);
+    }
+  }
+
+  const fullText = textParts.join('\n\n');
+  const charsPerPage = pagesExtracted > 0 ? Math.round(fullText.length / pagesExtracted) : 0;
+
+  // Text-first is viable if the average chars/page is high enough
+  let textFirstViable = false;
+  let textFirstReason = '';
+
+  if (pagesExtracted === 0) {
+    textFirstReason = 'No text extracted from any page';
+  } else if (charsPerPage < TEXT_FIRST_THRESHOLD) {
+    textFirstReason = `Average ${charsPerPage} chars/page below threshold (${TEXT_FIRST_THRESHOLD})`;
+  } else if (textRichPages / totalPages < 0.5) {
+    textFirstReason = `Only ${textRichPages}/${totalPages} pages have sufficient text`;
+  } else {
+    textFirstViable = true;
+    textFirstReason = `Text quality sufficient: ${charsPerPage} chars/page avg, ${textRichPages}/${totalPages} text-rich`;
+  }
+
+  return {
+    totalPages,
+    textRichPages,
+    actionablePages,
+    nonActionablePages,
+    textFirstViable,
+    textFirstReason,
+    fullText,
+    charsPerPage,
+    pagesExtracted,
+    pageTriages,
+  };
+}
+
+/**
+ * Render only specific pages from a PDF to images via streaming callback.
+ * Same best-effort approach as pdfToImagesStreaming but only for selected pages.
+ */
+export async function pdfToImagesSelective(
+  file: File,
+  pageNumbers: number[],
+  onPage: PageCallback,
+): Promise<StreamingResult> {
+  const pdfjs = await getPdfJs();
+
+  let pdf: any;
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+  } catch (err) {
+    const code = classifyPdfError(err);
+    throw buildClientPdfError(code, `Failed to load PDF: ${sanitizePdfjsError(err)}`, {
+      fileName: file.name,
+      fileSize: file.size,
+      mimeType: file.type,
+      operation: 'load',
+      pdfjsError: sanitizePdfjsErrorWithStack(err),
+    });
+  }
+
+  const pageCount = pdf.numPages;
+  const failedPages: number[] = [];
+  const errors: ClientPdfError[] = [];
+  let pagesSucceeded = 0;
+
+  for (const pageNum of pageNumbers) {
+    if (pageNum < 1 || pageNum > pageCount) continue;
+    try {
+      const page = await pdf.getPage(pageNum);
+      const { blob, usedFormat } = await renderPageWithFallback(page);
+      await onPage(pageNum, blob, usedFormat, pageNumbers.length);
+      pagesSucceeded++;
+      page.cleanup();
+    } catch (err) {
+      failedPages.push(pageNum);
+      errors.push(buildClientPdfError('PDF_PAGE_RENDER_FAILED', `Page ${pageNum} failed: ${sanitizePdfjsError(err)}`, {
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type,
+        pageCount,
+        failingPage: pageNum,
+        operation: 'render',
+        scale: PRIMARY_RENDER.scale,
+        format: PRIMARY_RENDER.format,
+        quality: PRIMARY_RENDER.quality,
+        pdfjsError: sanitizePdfjsErrorWithStack(err),
+      }));
+    }
+  }
+
+  return { pageCount, pagesSucceeded, failedPages, errors };
+}

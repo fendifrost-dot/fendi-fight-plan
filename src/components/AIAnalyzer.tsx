@@ -11,7 +11,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Session } from "@supabase/supabase-js";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { pdfToImagesStreaming, isPartialResultAcceptable, extractTextFromPdf, detectBureauFromText, isHeicFile, isPdfFile, isSupportedImage } from "@/lib/pdf-utils";
+import { pdfToImagesStreaming, pdfToImagesSelective, isPartialResultAcceptable, extractTextFromPdf, detectBureauFromText, isHeicFile, isPdfFile, isSupportedImage, triagePdfPages, type TriageResult } from "@/lib/pdf-utils";
 import type { ClientPdfError } from "@/lib/client-pdf-error";
 import { uploadPageBlob, uploadImageFile, deleteJobObjects, isUploadTriageModeEnabled, setUploadTriageMode, runUploadSelfTest, type UploadFailureDetails, type UploadSelfTestReport, type UploadTriageEvent } from "@/lib/storage-upload";
 import { getInvalidUploads, isAnalysisStartBlocked, runAnalysisGuardSelfTest } from "@/lib/upload-guard";
@@ -128,6 +128,10 @@ interface UploadedFile {
   processingStatus?: string; // Read-only status for display (e.g., "21 pages processed")
   error?: string;
   clientPdfErrors?: ClientPdfError[]; // Structured errors from PDF processing
+  // Text-first triage fields
+  extractedText?: string; // Full extracted text if text-first path is viable
+  triageResult?: TriageResult; // Page triage results
+  pipelinePath?: 'text-first' | 'vision-selective' | 'vision-full' | 'image-direct'; // Which path was used
 }
 
 type AnalyzerTriageReport = UploadSelfTestReport & {
@@ -317,7 +321,8 @@ const AIAnalyzer = () => {
   }, []);
 
   const buildDiagnosticsPayload = useCallback(() => ({
-    jobId: lastJobInfo?.jobId ?? null,
+    // Fix: use live jobId ref, not just lastJobInfo (which requires completion)
+    jobId: currentJobIdRef.current ?? lastJobInfo?.jobId ?? null,
     resultCount: lastJobInfo?.resultCount ?? 0,
     resultsKeys: Object.keys(results).length,
     triageMode,
@@ -330,6 +335,21 @@ const AIAnalyzer = () => {
       pagesSucceeded: f.pagesSucceeded,
       failedPages: f.failedPages,
       error: f.error,
+      // Pipeline triage diagnostics
+      pipelinePath: f.pipelinePath || null,
+      triageResult: f.triageResult ? {
+        totalPages: f.triageResult.totalPages,
+        textRichPages: f.triageResult.textRichPages,
+        actionablePages: f.triageResult.actionablePages.length,
+        nonActionablePages: f.triageResult.nonActionablePages.length,
+        textFirstViable: f.triageResult.textFirstViable,
+        textFirstReason: f.triageResult.textFirstReason,
+        charsPerPage: f.triageResult.charsPerPage,
+        pagesExtracted: f.triageResult.pagesExtracted,
+        pagesRenderedToImage: f.storagePaths.length,
+      } : null,
+      hasExtractedText: Boolean(f.extractedText),
+      extractedTextLength: f.extractedText?.length ?? 0,
       clientPdfErrors: (f.clientPdfErrors || []).map((e) => ({
         stage: e.stage,
         code: e.code,
@@ -424,102 +444,152 @@ const AIAnalyzer = () => {
         }
 
         if (isPdfFile(file)) {
-          // Extract text for bureau detection
-          const text = await extractTextFromPdf(file);
-          const detectedBureau = detectBureauFromText(text);
+          // STEP 1: Run page-level text triage BEFORE any image rendering
+          setUploadedFiles(prev => prev.map(f =>
+            f.id === fileId ? { ...f, processingStatus: 'Extracting text for triage...' } : f
+          ));
 
-          const storagePaths: string[] = [];
+          const triage = await triagePdfPages(file);
+          const detectedBureau = detectBureauFromText(triage.fullText || '');
 
-          // Stream pages: render → blob → upload → release. No base64 array.
-          // Best-effort: failed pages are skipped, not fatal.
-          const processPdf = async () => {
-            const result = await pdfToImagesStreaming(
-              file,
-              async (pdfPageNumber, blob, mimeType, pgCount) => {
-                const { contentType } = getRenderedPageFileInfo(mimeType);
-                const objectName = await uploadPageBlob(
-                  userId,
-                  uploadId,
-                  pdfPageNumber,
-                  blob,
-                  contentType,
-                  file.name,
-                  appendUploadEvent,
-                );
-
-                storagePaths.push(objectName);
-
-                // Update processing status as pages upload
-                setUploadedFiles(prev => prev.map(f =>
-                  f.id === fileId
-                    ? { ...f, processingStatus: `Uploading PDF page ${pdfPageNumber}/${pgCount}...` }
-                    : f
-                ));
-              }
-            );
-            return result;
-          };
-
-          const timeoutPromise = new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error('PDF processing timed out')), 120000);
+          console.log(`[AIAnalyzer] Triage for ${file.name}:`, {
+            totalPages: triage.totalPages,
+            textFirstViable: triage.textFirstViable,
+            textFirstReason: triage.textFirstReason,
+            actionablePages: triage.actionablePages.length,
+            nonActionablePages: triage.nonActionablePages.length,
+            charsPerPage: triage.charsPerPage,
           });
 
-          try {
-            const result = await Promise.race([processPdf(), timeoutPromise]);
-
-            // Check if we got enough pages for a useful analysis
-            const isAcceptable = isPartialResultAcceptable(result);
-            if (!isAcceptable) {
-              await deleteJobObjects(userId, uploadId).catch(() => {});
-              const firstErr = result.errors[0];
-              setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
-              toast({
-                title: "PDF processing failed",
-                description: `${file.name}: Processed ${result.pagesSucceeded}/${result.pageCount} pages, below minimum threshold. ${firstErr?.message || 'Try uploading screenshots instead.'}`,
-                variant: "destructive",
-              });
-              return;
-            }
-
-            // Partial or full success
-            const hasFailures = result.failedPages.length > 0;
-            const statusMsg = hasFailures
-              ? `${result.pagesSucceeded}/${result.pageCount} pages uploaded (pages ${result.failedPages.join(', ')} failed)`
-              : `${result.pageCount} page${result.pageCount > 1 ? 's' : ''} uploaded`;
-
+          // STEP 2: Decide path based on triage
+          if (triage.textFirstViable && triage.fullText.length > 0 && triage.fullText.length <= 500000) {
+            // TEXT-FIRST PATH: No image rendering needed
+            console.log(`[AIAnalyzer] Using TEXT-FIRST path for ${file.name} (${triage.charsPerPage} chars/page)`);
+            
             setUploadedFiles(prev => prev.map(f =>
               f.id === fileId
                 ? {
                     ...f,
-                    storagePaths,
-                    pageCount: result.pageCount,
-                    pagesSucceeded: result.pagesSucceeded,
-                    failedPages: result.failedPages,
+                    storagePaths: [], // No images needed
+                    pageCount: triage.totalPages,
+                    pagesSucceeded: triage.pagesExtracted,
+                    failedPages: [],
                     detectedBureau,
                     selectedBureau: detectedBureau,
                     isProcessing: false,
-                    processingStatus: statusMsg,
-                    clientPdfErrors: result.errors.length > 0 ? result.errors : undefined,
+                    processingStatus: `Text extracted: ${triage.totalPages} pages, ${triage.charsPerPage} chars/page avg (text-first)`,
+                    extractedText: triage.fullText,
+                    triageResult: triage,
+                    pipelinePath: 'text-first',
                   }
                 : f
             ));
+          } else {
+            // VISION PATH: Render only actionable pages
+            const pagesToRender = triage.actionablePages.length > 0
+              ? triage.actionablePages
+              : Array.from({ length: triage.totalPages }, (_, i) => i + 1); // fallback to all
 
-            if (hasFailures) {
+            const pipelinePath = triage.actionablePages.length > 0 && triage.actionablePages.length < triage.totalPages
+              ? 'vision-selective' as const
+              : 'vision-full' as const;
+
+            console.log(`[AIAnalyzer] Using ${pipelinePath} path for ${file.name}: rendering ${pagesToRender.length}/${triage.totalPages} pages`);
+
+            setUploadedFiles(prev => prev.map(f =>
+              f.id === fileId
+                ? { ...f, processingStatus: `Triage complete. Rendering ${pagesToRender.length}/${triage.totalPages} actionable pages...` }
+                : f
+            ));
+
+            const storagePaths: string[] = [];
+
+            const renderPages = async () => {
+              const result = await pdfToImagesSelective(
+                file,
+                pagesToRender,
+                async (pdfPageNumber, blob, mimeType, totalSelected) => {
+                  const { contentType } = getRenderedPageFileInfo(mimeType);
+                  const objectName = await uploadPageBlob(
+                    userId,
+                    uploadId,
+                    pdfPageNumber,
+                    blob,
+                    contentType,
+                    file.name,
+                    appendUploadEvent,
+                  );
+                  storagePaths.push(objectName);
+                  setUploadedFiles(prev => prev.map(f =>
+                    f.id === fileId
+                      ? { ...f, processingStatus: `Uploading page ${storagePaths.length}/${totalSelected}...` }
+                      : f
+                  ));
+                }
+              );
+              return result;
+            };
+
+            const timeoutPromise = new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error('PDF processing timed out')), 120000);
+            });
+
+            try {
+              const result = await Promise.race([renderPages(), timeoutPromise]);
+
+              const isAcceptable = isPartialResultAcceptable(result);
+              if (!isAcceptable) {
+                await deleteJobObjects(userId, uploadId).catch(() => {});
+                const firstErr = result.errors[0];
+                setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
+                toast({
+                  title: "PDF processing failed",
+                  description: `${file.name}: Processed ${result.pagesSucceeded}/${pagesToRender.length} selected pages, below minimum threshold. ${firstErr?.message || 'Try uploading screenshots instead.'}`,
+                  variant: "destructive",
+                });
+                return;
+              }
+
+              const hasFailures = result.failedPages.length > 0;
+              const statusMsg = hasFailures
+                ? `${result.pagesSucceeded}/${pagesToRender.length} pages uploaded (${pipelinePath}, ${triage.nonActionablePages.length} skipped)`
+                : `${result.pagesSucceeded} of ${triage.totalPages} pages uploaded (${triage.totalPages - pagesToRender.length} non-actionable skipped)`;
+
+              setUploadedFiles(prev => prev.map(f =>
+                f.id === fileId
+                  ? {
+                      ...f,
+                      storagePaths,
+                      pageCount: triage.totalPages,
+                      pagesSucceeded: result.pagesSucceeded,
+                      failedPages: result.failedPages,
+                      detectedBureau,
+                      selectedBureau: detectedBureau,
+                      isProcessing: false,
+                      processingStatus: statusMsg,
+                      clientPdfErrors: result.errors.length > 0 ? result.errors : undefined,
+                      triageResult: triage,
+                      pipelinePath,
+                    }
+                  : f
+              ));
+
+              if (hasFailures) {
+                toast({
+                  title: "Partial PDF processing",
+                  description: `${file.name}: ${result.pagesSucceeded}/${pagesToRender.length} selected pages processed. Pages ${result.failedPages.join(', ')} failed.`,
+                  variant: "default",
+                });
+              }
+            } catch (timeoutErr) {
+              await deleteJobObjects(userId, uploadId).catch(() => {});
+              setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
               toast({
-                title: "Partial PDF processing",
-                description: `${file.name}: Processed ${result.pagesSucceeded}/${result.pageCount} pages. Pages ${result.failedPages.join(', ')} failed. Results may be incomplete.`,
-                variant: "default",
+                title: "PDF processing failed",
+                description: `${file.name} timed out. Upload screenshots instead to ensure complete analysis.`,
+                variant: "destructive",
               });
             }
-          } catch (timeoutErr) {
-            // Cleanup any partially uploaded pages
-            await deleteJobObjects(userId, uploadId).catch(() => {});
-            setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
-            toast({
-              title: "PDF processing failed",
-              description: `${file.name} timed out. Upload screenshots instead to ensure complete analysis.`,
-              variant: "destructive",
-            });
           }
         } else if (isSupportedImage(file)) {
           // Upload single image directly (no base64 in memory)
@@ -685,11 +755,26 @@ const AIAnalyzer = () => {
       return;
     }
 
-    const invalidUploads = getInvalidUploads(filesToAnalyze);
+    // For text-first files, storagePaths will be empty — that's expected
+    const textFirstFiles = filesToAnalyze.filter(f => f.pipelinePath === 'text-first');
+    const imageFiles = filesToAnalyze.filter(f => f.pipelinePath !== 'text-first');
+
+    const invalidUploads = getInvalidUploads(imageFiles);
     if (invalidUploads.length > 0) {
       toast({
         title: "Upload issue detected",
         description: `Resolve failed uploads before analysis: ${invalidUploads.map(f => f.name).join(', ')}`,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Text-first files must have extracted text
+    const brokenTextFirst = textFirstFiles.filter(f => !f.extractedText);
+    if (brokenTextFirst.length > 0) {
+      toast({
+        title: "Triage error",
+        description: `Text extraction failed for: ${brokenTextFirst.map(f => f.name).join(', ')}. Remove and re-upload.`,
         variant: "destructive",
       });
       return;
@@ -724,19 +809,44 @@ const AIAnalyzer = () => {
 
       const newResults: Record<string, DisputeAnalysisResult> = {};
 
-      // Group files by bureau
-      const bureauGroups = filesToAnalyze.reduce((acc, f) => {
+      // Combine all extracted text from text-first files
+      const combinedExtractedText = textFirstFiles
+        .map(f => f.extractedText || '')
+        .join('\n\n');
+
+      // Combine pasted text + extracted text
+      const allTextInput = [responseText, combinedExtractedText].filter(Boolean).join('\n\n');
+
+      // Group image files by bureau for async job
+      const bureauGroups = imageFiles.reduce((acc, f) => {
         const key = f.label ? `${f.selectedBureau}_${f.label}` : f.selectedBureau;
         if (!acc[key]) acc[key] = { bureau: f.selectedBureau, label: f.label, storagePaths: [] };
         acc[key].storagePaths.push(...f.storagePaths);
         return acc;
       }, {} as Record<string, { bureau: string; label: string; storagePaths: string[] }>);
 
-      // If only text input, analyze as single request (no chunking needed)
-      if (responseText && Object.keys(bureauGroups).length === 0) {
+      const hasImageWork = Object.values(bureauGroups).some(g => g.storagePaths.length > 0);
+
+      // Log pipeline decision
+      console.log('[AIAnalyzer] Analysis routing:', {
+        textFirstFiles: textFirstFiles.length,
+        imageFiles: imageFiles.length,
+        hasTextInput: allTextInput.length > 0,
+        hasImageWork,
+        textLength: allTextInput.length,
+        totalImagePages: Object.values(bureauGroups).reduce((s, g) => s + g.storagePaths.length, 0),
+      });
+
+      // Route: text-first path (direct API call, fast)
+      if (allTextInput.length > 0 && !hasImageWork) {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 60000);
+        const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 min for large text
         
+        toast({
+          title: "Analyzing via text-first path",
+          description: `Processing ${textFirstFiles.length > 0 ? `${textFirstFiles.reduce((s, f) => s + (f.pageCount || 0), 0)} pages of extracted text` : 'pasted text'}. This is faster than image analysis.`,
+        });
+
         try {
           const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-response`, {
             method: "POST",
@@ -746,7 +856,7 @@ const AIAnalyzer = () => {
             },
             body: JSON.stringify({
               questionnaire,
-              responseText,
+              responseText: allTextInput,
               hasIdentityDocs: identityDocs || undefined,
             }),
             signal: controller.signal,
@@ -755,21 +865,20 @@ const AIAnalyzer = () => {
           const data = await response.json();
           if (!response.ok) throw new Error(data.error || "Analysis failed");
           
-          newResults['text'] = { ...data, bureau: 'Text Input' };
+          newResults['text'] = { ...data, bureau: textFirstFiles.length > 0 ? 'Text-First Extraction' : 'Text Input' };
         } finally {
           clearTimeout(timeoutId);
         }
-      } else {
-        // All image-based analysis goes through async job with storage paths
+      } else if (hasImageWork) {
+        // Route: async job for image-based analysis
         const totalPageCount = Object.values(bureauGroups).reduce((sum, g) => sum + g.storagePaths.length, 0);
         const allStoragePaths = Object.values(bureauGroups).flatMap(g => g.storagePaths);
         
         toast({
           title: "Starting background analysis",
-          description: `Analyzing ${totalPageCount} pages. This may take a few minutes. You can refresh and resume.`,
+          description: `Analyzing ${totalPageCount} image pages. This may take a few minutes. You can refresh and resume.`,
         });
         
-        // Send storage paths (tiny strings) — NOT base64 data
         const jobId = await startJobAnalysis(allStoragePaths, questionnaire);
         
         if (!jobId) {
