@@ -25,8 +25,10 @@ import {
   FileCheck,
   HelpCircle,
   RotateCcw,
-  Save
+  Save,
+  FileDown
 } from "lucide-react";
+import { exportAsWord, exportAsPdf } from "@/lib/letter-export";
 import { toast } from "sonner";
 import {
   Tooltip,
@@ -1082,9 +1084,34 @@ const Disputes = () => {
                       {copied ? <Check className="w-4 h-4 mr-1" /> : <Copy className="w-4 h-4 mr-1" />}
                       {copied ? "Copied" : "Copy"}
                     </Button>
-                    <Button size="sm" variant="outline">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!state.generatedLetters[currentBureauLetter]}
+                      onClick={() => {
+                        const letter = state.generatedLetters[currentBureauLetter];
+                        if (letter) {
+                          exportAsWord(letter, currentBureauLetter.charAt(0).toUpperCase() + currentBureauLetter.slice(1));
+                          toast.success("Word document downloading...");
+                        }
+                      }}
+                    >
+                      <FileDown className="w-4 h-4 mr-1" />
+                      Download Word
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!state.generatedLetters[currentBureauLetter]}
+                      onClick={() => {
+                        const letter = state.generatedLetters[currentBureauLetter];
+                        if (letter) {
+                          exportAsPdf(letter, currentBureauLetter.charAt(0).toUpperCase() + currentBureauLetter.slice(1));
+                        }
+                      }}
+                    >
                       <Download className="w-4 h-4 mr-1" />
-                      Export PDF
+                      Download PDF
                     </Button>
                   </div>
 
