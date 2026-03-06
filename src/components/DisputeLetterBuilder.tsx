@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { FileText, Loader2, Copy, Check, AlertTriangle, Scale, Shield, HelpCircle, User, MapPin, Building2, Pencil, Eye, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -229,33 +229,26 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
     }
   }, [extractedData.fullLegalName, extractedData.currentAddress, currentClientInfo]);
 
-  // Bureau selection - prefer persisted
-  const [selectedBureaus, setSelectedBureaus] = useState<BureauKey[]>(
-    () => persistedState?.selectedBureaus || []
-  );
+  // Bureau selection
+  const [selectedBureaus, setSelectedBureaus] = useState<BureauKey[]>([]);
 
-  const [survey, setSurvey] = useState<DisputeSurvey>(() => {
-    if (persistedState?.survey) return persistedState.survey;
-    return {
-      isFraudulent: false,
-      isIdentityTheft: false,
-      hasPoliceReport: false,
-      hasFtcReport: false,
-      wasDataBreach: false,
-      wasReinserted: false,
-      reinsertedDetails: "",
-      hadCreditorRelationship: false,
-      belongsToAnotherPerson: false,
-      hasPersonalInfoErrors: false,
-      hasPreviousDisputes: false,
-      additionalFacts: "",
-    };
+  const [survey, setSurvey] = useState<DisputeSurvey>({
+    isFraudulent: false,
+    isIdentityTheft: false,
+    hasPoliceReport: false,
+    hasFtcReport: false,
+    wasDataBreach: false,
+    wasReinserted: false,
+    reinsertedDetails: "",
+    hadCreditorRelationship: false,
+    belongsToAnotherPerson: false,
+    hasPersonalInfoErrors: false,
+    hasPreviousDisputes: false,
+    additionalFacts: "",
   });
 
   const [isGenerating, setIsGenerating] = useState(false);
-  const [generatedLetters, setGeneratedLetters] = useState<{ bureau: BureauKey; letter: string }[]>(
-    () => persistedState?.generatedLetters || []
-  );
+  const [generatedLetters, setGeneratedLetters] = useState<{ bureau: BureauKey; letter: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
