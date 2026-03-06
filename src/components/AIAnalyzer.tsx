@@ -14,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { pdfToImagesStreaming, pdfToImagesSelective, isPartialResultAcceptable, extractTextFromPdf, detectBureauFromText, isHeicFile, isPdfFile, isSupportedImage, triagePdfPages, type TriageResult } from "@/lib/pdf-utils";
 import type { ClientPdfError } from "@/lib/client-pdf-error";
 import { uploadPageBlob, uploadImageFile, deleteJobObjects, isUploadTriageModeEnabled, setUploadTriageMode, runUploadSelfTest, type UploadFailureDetails, type UploadSelfTestReport, type UploadTriageEvent } from "@/lib/storage-upload";
-import { getInvalidUploads, isAnalysisStartBlocked, runAnalysisGuardSelfTest } from "@/lib/upload-guard";
+import { getInvalidUploads, hasAnalyzeBlockingUploadFailures, runAnalysisGuardSelfTest } from "@/lib/upload-guard";
 import DisputeLetterBuilder from "./DisputeLetterBuilder";
 import { useChunkedAnalysis } from "@/hooks/useChunkedAnalysis";
 import { AnalysisProgress } from "./AnalysisProgress";
@@ -727,7 +727,7 @@ const AIAnalyzer = () => {
       isAnalyzing,
       isJobProcessing,
       anyFileProcessing: uploadedFiles.some(f => f.isProcessing),
-      hasUploadFailures: isAnalysisStartBlocked(uploadedFiles),
+      hasUploadFailures: hasAnalyzeBlockingUploadFailures(uploadedFiles),
       responseText,
       uploadedFilesLength: uploadedFiles.length,
       filesToAnalyzeLength: filesToAnalyze.length,
@@ -778,19 +778,17 @@ const AIAnalyzer = () => {
       return;
     }
 
-    // Validate bureau assignments
+    // Bureau assignment is soft-gated: warn but continue
     const validation = validateBureauAssignments();
-    if (!validation.valid) {
-      console.warn('[AIAnalyzer][runtime] blocked: bureau validation', {
+    if (!validation.valid && validation.message) {
+      console.warn('[AIAnalyzer][runtime] soft warning: bureau assignment', {
         ...runtimeSnapshot,
         validationMessage: validation.message,
       });
       toast({
-        title: "Bureau assignment required",
+        title: "Analysis proceeding with bureau warning",
         description: validation.message,
-        variant: "destructive",
       });
-      return;
     }
 
     // For text-first files, storagePaths will be empty — that's expected
@@ -1162,7 +1160,7 @@ const AIAnalyzer = () => {
   const hasAnyResults = Object.keys(results).length > 0;
   const anyFileProcessing = uploadedFiles.some(f => f.isProcessing);
   const hasUnknownBureau = uploadedFiles.some(f => f.selectedBureau === 'unknown');
-  const hasUploadFailures = isAnalysisStartBlocked(uploadedFiles);
+  const hasUploadFailures = hasAnalyzeBlockingUploadFailures(uploadedFiles);
 
   const handleAnalyzeButtonClick = () => {
     const buttonEl = document.querySelector<HTMLButtonElement>('[data-testid="analyze-all-reports-button"]');

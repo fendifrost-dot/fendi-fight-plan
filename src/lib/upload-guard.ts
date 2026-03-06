@@ -3,6 +3,7 @@ export interface UploadGuardFile {
   error?: string;
   storagePaths: string[];
   isProcessing?: boolean;
+  pipelinePath?: "text-first" | "vision-selective" | "vision-full" | "image-direct" | string;
 }
 
 export function getInvalidUploads(files: UploadGuardFile[]): UploadGuardFile[] {
@@ -12,6 +13,15 @@ export function getInvalidUploads(files: UploadGuardFile[]): UploadGuardFile[] {
 export function isAnalysisStartBlocked(files: UploadGuardFile[]): boolean {
   if (files.some((file) => file.isProcessing)) return true;
   return getInvalidUploads(files).length > 0;
+}
+
+/**
+ * Analyze-button upload guard: text-first PDFs are valid with zero storagePaths.
+ * True blockers are failed/empty non-text-first uploads.
+ */
+export function hasAnalyzeBlockingUploadFailures(files: UploadGuardFile[]): boolean {
+  const nonTextFirstFiles = files.filter((file) => file.pipelinePath !== "text-first");
+  return getInvalidUploads(nonTextFirstFiles).length > 0;
 }
 
 export interface AnalysisGuardSelfTestResult {
@@ -44,3 +54,4 @@ export function runAnalysisGuardSelfTest(): AnalysisGuardSelfTestResult {
       : "analysis-start guard did not enforce failed upload blocking invariant",
   };
 }
+
