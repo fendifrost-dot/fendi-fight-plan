@@ -347,8 +347,9 @@ export function classifyTradeline(tradeline: any): { isNegative: boolean; trigge
     triggers.push(`section: ${tradeline.section_header}`);
   }
 
-  // 6. Date of First Delinquency present
-  if (tradeline.date_first_delinquency) {
+  // 6. Date of First Delinquency — VALUE-AWARE
+  // Only trigger if the value is an actual date, not null/N/A/UNEXTRACTABLE/blank
+  if (hasActualDateOfFirstDelinquency(tradeline.date_first_delinquency)) {
     triggers.push(`date of first delinquency: ${tradeline.date_first_delinquency}`);
   }
 
