@@ -1,5 +1,21 @@
+/**
+ * useChunkedAnalysis — LEGACY section-sliced analysis hook.
+ * 
+ * DEPRECATED: This hook uses section-sliced document analysis which can
+ * silently drop entities (inquiries, public records) when the document map
+ * incorrectly identifies section boundaries.
+ * 
+ * The canonical analysis path is the async job system (analysis-worker)
+ * which processes ALL pages and emits the full CanonicalAnalyzerResult.
+ * 
+ * This hook is kept for backward compatibility but should NOT be used
+ * as the primary analysis path for credit reports. Its output is NOT
+ * guaranteed to match the canonical contract shape.
+ */
+
 import { useState, useCallback, useRef } from 'react';
 import { supabase } from '@/integrations/supabase/client';
+import { hydrateCanonicalResult, type CanonicalAnalyzerResult } from '@/types/disputes';
 
 // Document map from Phase 1
 interface DocumentSection {
@@ -34,22 +50,6 @@ export interface AnalysisProgress {
   sectionsFailed: string[];
   message: string;
   canSkipPaymentHistory: boolean;
-}
-
-// Result accumulator
-interface ChunkedResult {
-  inaccurate_names: any[];
-  inaccurate_addresses: any[];
-  inaccurate_employers: any[];
-  extra_identifier_mismatches: any[];
-  derogatory_accounts: any[];
-  late_payment_summary: any[];
-  collections: any[];
-  charge_offs: any[];
-  public_records: any[];
-  inquiries: any[];
-  is_multi_bureau_report?: boolean;
-  detected_bureaus?: string[];
 }
 
 const CHUNK_SIZE = 3; // Max pages per chunk
@@ -102,7 +102,7 @@ export function useChunkedAnalysis() {
       ssnLast4?: string;
     },
     accessToken: string
-  ): Promise<{ result: ChunkedResult; documentMap: DocumentMap } | null> => {
+  ): Promise<{ result: CanonicalAnalyzerResult; documentMap: DocumentMap } | null> => {
     abortControllerRef.current = new AbortController();
     const signal = abortControllerRef.current.signal;
 
@@ -133,20 +133,23 @@ export function useChunkedAnalysis() {
       }
 
       const documentMap: DocumentMap = await mapResponse.json();
-      console.log('Document map:', documentMap);
+      console.log('[useChunkedAnalysis] Document map:', documentMap);
 
       // PHASE 2: Analyze sections in chunks
-      const result: ChunkedResult = {
+      // Accumulate raw entities for hydration through canonical contract
+      const rawAccumulator: any = {
+        derogatory_accounts: [],
+        manual_review_accounts: [],
+        clean_accounts: [],
+        collections: [],
+        charge_offs: [],
+        inquiries: [],
+        public_records: [],
         inaccurate_names: [],
         inaccurate_addresses: [],
         inaccurate_employers: [],
         extra_identifier_mismatches: [],
-        derogatory_accounts: [],
         late_payment_summary: [],
-        collections: [],
-        charge_offs: [],
-        public_records: [],
-        inquiries: [],
         is_multi_bureau_report: documentMap.is_multi_bureau,
         detected_bureaus: documentMap.detected_bureaus,
       };
@@ -161,12 +164,10 @@ export function useChunkedAnalysis() {
           continue;
         }
 
-        // Get page images for this section (0-indexed)
         const startIdx = section.start_page - 1;
-        const endIdx = section.end_page; // end_page is inclusive, slice is exclusive
+        const endIdx = section.end_page;
         const sectionImages = images.slice(startIdx, endIdx);
 
-        // Split into chunks
         const chunks: string[][] = [];
         for (let i = 0; i < sectionImages.length; i += CHUNK_SIZE) {
           chunks.push(sectionImages.slice(i, i + CHUNK_SIZE));
@@ -189,17 +190,13 @@ export function useChunkedAnalysis() {
       const sectionsComplete: string[] = [];
       const sectionsFailed: string[] = [];
 
-      // Process each section
       for (const { section: sectionName, chunks } of sectionChunks) {
-        // Check if we should skip payment history
         if (sectionName === 'payment_history' && skipPaymentHistoryRef.current) {
-          console.log('Skipping payment history per user request');
           chunksProcessed += chunks.length;
           sectionsComplete.push(sectionName);
           continue;
         }
 
-        // Show skip option for payment_history
         const canSkip = sectionName === 'payment_history';
 
         setProgress(p => ({
@@ -213,16 +210,9 @@ export function useChunkedAnalysis() {
 
         let sectionFailed = false;
 
-        // Process chunks for this section
         for (let i = 0; i < chunks.length; i++) {
-          // Check abort
-          if (signal.aborted) {
-            throw new Error('Analysis cancelled');
-          }
-
-          // Check skip (payment history only)
+          if (signal.aborted) throw new Error('Analysis cancelled');
           if (sectionName === 'payment_history' && skipPaymentHistoryRef.current) {
-            console.log('Skipping remaining payment history chunks');
             chunksProcessed += (chunks.length - i);
             break;
           }
@@ -258,18 +248,14 @@ export function useChunkedAnalysis() {
               console.error(`Chunk failed: ${sectionName} ${i + 1}/${chunks.length}`, err);
               sectionFailed = true;
               chunksProcessed++;
-              continue; // Continue with next chunk
+              continue;
             }
 
             const chunkResult = await chunkResponse.json();
-            
-            // Merge chunk results into accumulator
-            mergeChunkResult(result, chunkResult);
+            mergeChunkResult(rawAccumulator, chunkResult);
             chunksProcessed++;
           } catch (err) {
-            if ((err as Error).name === 'AbortError') {
-              throw new Error('Analysis cancelled');
-            }
+            if ((err as Error).name === 'AbortError') throw new Error('Analysis cancelled');
             console.error(`Chunk error: ${sectionName} ${i + 1}/${chunks.length}`, err);
             sectionFailed = true;
             chunksProcessed++;
@@ -282,6 +268,9 @@ export function useChunkedAnalysis() {
           sectionsComplete.push(sectionName);
         }
       }
+
+      // Hydrate through canonical contract — NOT a custom shape
+      const result = hydrateCanonicalResult(rawAccumulator);
 
       setProgress({
         phase: 'complete',
@@ -316,9 +305,7 @@ export function useChunkedAnalysis() {
     accessToken: string
   ): Promise<any | null> => {
     const section = documentMap.sections[sectionName as keyof typeof documentMap.sections];
-    if (!section?.detected || section.start_page === null) {
-      return null;
-    }
+    if (!section?.detected || section.start_page === null) return null;
 
     setProgress(p => ({
       ...p,
@@ -396,6 +383,8 @@ function mergeChunkResult(target: any, chunk: any) {
     'inaccurate_employers',
     'extra_identifier_mismatches',
     'derogatory_accounts',
+    'manual_review_accounts',
+    'clean_accounts',
     'collections',
     'charge_offs',
     'public_records',

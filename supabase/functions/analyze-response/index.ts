@@ -17,6 +17,9 @@ const MAX_TEXT_LENGTH = 500000;
 const VALID_BUREAUS = ["experian", "equifax", "transunion"] as const;
 const MULTI_BUREAU_SENTINEL = "multi-bureau";
 
+/** Contract version — must match worker and frontend */
+const CONTRACT_VERSION = 'v2-canonical';
+
 const rateLimitStore = new Map<string, { count: number; resetTime: number }>();
 const RATE_LIMIT_WINDOW_MS = 60000;
 const RATE_LIMIT_MAX_REQUESTS = 10;
@@ -237,7 +240,6 @@ Include all derogatory items with maximum inclusion (dispute-safe approach).`;
     }
 
     // ── Deterministic post-processing via shared validator ──
-    // Pass responseText for Pass 1 block detection if available
     const postProcessed = postProcessAndValidate(parsedResult, responseText || undefined);
 
     // ── Enforcement: check for EXTRACTION_INCOMPLETE ──
@@ -252,36 +254,53 @@ Include all derogatory items with maximum inclusion (dispute-safe approach).`;
         postProcessed.schema.violations.slice(0, 5).map(v => `${v.entity}[${v.index}].${v.field}: ${v.reason}`));
     }
 
-    // Build output — summary/next_steps are NOT part of the contract.
-    // They are passed through as downstream convenience fields only.
+    // ── CANONICAL RESULT — same shape as analysis-worker output ──
     const result: any = {
-      validation_status: postProcessed.report.validation_status || "SKIPPED",
+      // Three-bucket accounts (deterministic)
+      derogatory_accounts: postProcessed.report.derogatory_accounts || [],
+      manual_review_accounts: postProcessed.report.manual_review_accounts || [],
+      clean_accounts: postProcessed.report.clean_accounts || [],
+      all_tradelines: postProcessed.report.all_tradelines || [],
+
+      // Non-account entities (first-class)
+      collections: postProcessed.report.collections || [],
+      charge_offs: postProcessed.report.charge_offs || [],
+      inquiries: postProcessed.report.inquiries || [],
+      public_records: postProcessed.report.public_records || [],
+
+      // Identity mismatches
+      inaccurate_names: postProcessed.report.inaccurate_names || [],
+      inaccurate_addresses: postProcessed.report.inaccurate_addresses || [],
+      inaccurate_employers: postProcessed.report.inaccurate_employers || [],
+      extra_identifier_mismatches: postProcessed.report.extra_identifier_mismatches || [],
+
+      // Validation/audit metadata
+      tradeline_inventory: postProcessed.report.tradeline_inventory || {},
+      validation_status: postProcessed.report.validation_status || postProcessed.validation.status || "SKIPPED",
       validation_messages: postProcessed.validation.messages || [],
+      duplicate_flags: postProcessed.duplicateFlags || [],
+      warnings: parsedResult.warnings || [],
       report_metadata: parsedResult.report_metadata || {},
+
+      // Display-only convenience fields
+      late_payment_summary: postProcessed.report.late_payment_summary || [],
       is_multi_bureau_report: parsedResult.is_multi_bureau_report || false,
       detected_bureaus: parsedResult.detected_bureaus || [],
-      inaccurate_names: postProcessed.report.inaccurate_names,
-      inaccurate_addresses: postProcessed.report.inaccurate_addresses,
-      inaccurate_employers: postProcessed.report.inaccurate_employers,
-      extra_identifier_mismatches: postProcessed.report.extra_identifier_mismatches,
-      derogatory_accounts: postProcessed.report.derogatory_accounts,
-      late_payment_summary: postProcessed.report.late_payment_summary,
-      collections: postProcessed.report.collections,
-      charge_offs: postProcessed.report.charge_offs,
-      public_records: postProcessed.report.public_records,
-      inquiries: postProcessed.report.inquiries,
-      tradeline_inventory: postProcessed.report.tradeline_inventory,
-      duplicate_flags: postProcessed.duplicateFlags,
-      // Non-contract downstream fields (stripped from contract by validator)
+
+      // Contract version for traceability
+      _contract_version: CONTRACT_VERSION,
+
+      // Non-contract downstream fields
       _downstream_summary: parsedResult.summary || null,
       _downstream_next_steps: parsedResult.next_steps || null,
-      warnings: parsedResult.warnings || [],
       _schema_violations: postProcessed.schema.violations.length,
       _schema_rejected: postProcessed.schema.rejectedAccounts.length,
       _extraction_error: postProcessed.report._extraction_error || null,
       _extraction_error_message: postProcessed.report._extraction_error_message || null,
       _validation_fatal: postProcessed.validation.fatal,
     };
+
+    console.log(`[analyze-response] Canonical result: ${result.derogatory_accounts.length} derog, ${result.manual_review_accounts.length} review, ${result.clean_accounts.length} clean, ${result.collections.length} collections, ${result.charge_offs.length} charge_offs, ${result.inquiries.length} inquiries, ${result.public_records.length} public_records`);
 
     return new Response(JSON.stringify(result), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },

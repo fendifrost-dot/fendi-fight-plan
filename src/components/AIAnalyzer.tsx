@@ -78,7 +78,7 @@ const AIAnalyzer = () => {
   const [responseText, setResponseText] = useState("");
   const [identityDocs, setIdentityDocs] = useState("");
   
-  // State
+  // State — results keyed by source, each a canonical result
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [results, setResults] = useState<Record<string, CanonicalAnalyzerResult>>({});
   const [activeTab, setActiveTab] = useState<string>("combined");
@@ -100,9 +100,6 @@ const AIAnalyzer = () => {
   // Track if job completed but results failed to load (for debug panel)
   const [jobCompletedButEmpty, setJobCompletedButEmpty] = useState(false);
   const [lastJobInfo, setLastJobInfo] = useState<{ jobId: string | null; resultCount: number } | null>(null);
-  
-  // Manual review accounts — tracked separately so they persist into dispute import
-  const [manualReviewAccounts, setManualReviewAccounts] = useState<any[]>([]);
 
   // Store the job ID for callbacks (avoids circular dependency)
   const currentJobIdRef = useRef<string | null>(null);
@@ -114,7 +111,7 @@ const AIAnalyzer = () => {
    */
   const handleJobComplete = useCallback((canonicalResult: CanonicalAnalyzerResult) => {
     const totalAccounts = canonicalResult.derogatory_accounts.length + canonicalResult.collections.length + canonicalResult.charge_offs.length;
-    console.log('[AIAnalyzer] handleJobComplete called with', totalAccounts, 'accounts');
+    console.log('[AIAnalyzer] handleJobComplete called with', totalAccounts, 'accounts,', canonicalResult.inquiries.length, 'inquiries,', canonicalResult.manual_review_accounts.length, 'manual_review');
     setLastJobInfo({ jobId: currentJobIdRef.current, resultCount: totalAccounts });
     
     if (totalAccounts === 0 && canonicalResult.inquiries.length === 0) {
@@ -426,135 +423,94 @@ const AIAnalyzer = () => {
               return result;
             };
 
-            const timeoutPromise = new Promise<never>((_, reject) => {
-              setTimeout(() => reject(new Error('PDF processing timed out')), 120000);
-            });
+            const pdfResult = await renderPages();
+            const pagesSucceeded = pdfResult.succeeded;
+            const failedPages = pdfResult.failed;
 
-            try {
-              const result = await Promise.race([renderPages(), timeoutPromise]);
-
-              const isAcceptable = isPartialResultAcceptable(result);
-              if (!isAcceptable) {
-                await deleteJobObjects(userId, uploadId).catch(() => {});
-                const firstErr = result.errors[0];
-                setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
-                toast({
-                  title: "PDF processing failed",
-                  description: `${file.name}: Processed ${result.pagesSucceeded}/${pagesToRender.length} selected pages, below minimum threshold. ${firstErr?.message || 'Try uploading screenshots instead.'}`,
-                  variant: "destructive",
-                });
-                return;
-              }
-
-              const hasFailures = result.failedPages.length > 0;
-              const statusMsg = hasFailures
-                ? `${result.pagesSucceeded}/${pagesToRender.length} pages uploaded (${pipelinePath}, ${triage.nonActionablePages.length} skipped)`
-                : `${result.pagesSucceeded} of ${triage.totalPages} pages uploaded (${triage.totalPages - pagesToRender.length} non-actionable skipped)`;
-
-              setUploadedFiles(prev => prev.map(f =>
-                f.id === fileId
-                  ? {
-                      ...f,
-                      storagePaths,
-                      pageCount: triage.totalPages,
-                      pagesSucceeded: result.pagesSucceeded,
-                      failedPages: result.failedPages,
-                      detectedBureau,
-                      selectedBureau: detectedBureau,
-                      isProcessing: false,
-                      processingStatus: statusMsg,
-                      clientPdfErrors: result.errors.length > 0 ? result.errors : undefined,
-                      triageResult: triage,
-                      pipelinePath,
-                    }
-                  : f
-              ));
-
-              if (hasFailures) {
-                toast({
-                  title: "Partial PDF processing",
-                  description: `${file.name}: ${result.pagesSucceeded}/${pagesToRender.length} selected pages processed. Pages ${result.failedPages.join(', ')} failed.`,
-                  variant: "default",
-                });
-              }
-            } catch (timeoutErr) {
-              await deleteJobObjects(userId, uploadId).catch(() => {});
-              setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
-              toast({
-                title: "PDF processing failed",
-                description: `${file.name} timed out. Upload screenshots instead to ensure complete analysis.`,
-                variant: "destructive",
-              });
-            }
+            setUploadedFiles(prev => prev.map(f =>
+              f.id === fileId
+                ? {
+                    ...f,
+                    storagePaths,
+                    pageCount: triage.totalPages,
+                    pagesSucceeded,
+                    failedPages,
+                    detectedBureau,
+                    selectedBureau: detectedBureau,
+                    isProcessing: false,
+                    processingStatus: `${pagesSucceeded} pages uploaded${failedPages.length > 0 ? ` (${failedPages.length} failed)` : ''} [${pipelinePath}]`,
+                    triageResult: triage,
+                    pipelinePath,
+                  }
+                : f
+            ));
           }
         } else if (isSupportedImage(file)) {
-          // Upload single image directly (no base64 in memory)
-          const path = await uploadImageFile(userId, uploadId, file, 1, appendUploadEvent);
+          // Direct image upload
+          const objectName = await uploadImageFile(
+            userId,
+            uploadId,
+            file,
+            appendUploadEvent,
+          );
+          
+          const detectedBureau = 'unknown' as const;
           setUploadedFiles(prev => prev.map(f =>
             f.id === fileId
-              ? { ...f, storagePaths: [path], pageCount: 1, isProcessing: false, processingStatus: '1 page uploaded' }
+              ? {
+                  ...f,
+                  storagePaths: [objectName],
+                  pageCount: 1,
+                  pagesSucceeded: 1,
+                  failedPages: [],
+                  detectedBureau,
+                  selectedBureau: detectedBureau,
+                  isProcessing: false,
+                  processingStatus: 'Uploaded',
+                  pipelinePath: 'image-direct',
+                }
               : f
           ));
         } else {
-          setUploadedFiles(prev => prev.map(f =>
-            f.id === fileId
-              ? { ...f, isProcessing: false, error: 'Unsupported file format' }
-              : f
-          ));
-          toast({
-            title: "Unsupported format",
-            description: `${file.name}: Please upload PNG, JPG, GIF, WebP, or PDF.`,
-            variant: "destructive",
-          });
+          throw {
+            stage: 'CLIENT_PDF',
+            code: 'UNSUPPORTED_FORMAT',
+            message: `Unsupported file format: ${file.type || file.name}`,
+            meta: { fileName: file.name, fileSize: file.size, mimeType: file.type },
+          };
         }
-      } catch (err: any) {
-        console.error('File processing error:', err);
-        const isStructured = err?.stage === 'CLIENT_PDF';
-        const errorMsg = isStructured ? err.message : 'Failed to process file';
-        const failingPage = isStructured ? err?.meta?.failingPage : undefined;
+      } catch (err) {
+        const clientPdfError = err && typeof err === 'object' && 'stage' in err && 'code' in err
+          ? err as ClientPdfError
+          : {
+              stage: 'CLIENT_PDF' as const,
+              code: 'UNKNOWN_ERROR',
+              message: err instanceof Error ? err.message : 'File processing failed',
+              meta: { fileName: file.name, fileSize: file.size, mimeType: file.type },
+            };
 
-        if (isStructured) {
-          setLastUploadFailure(err as UploadFailureDetails);
-        }
+        console.error('[AIAnalyzer] File processing error:', clientPdfError);
+        setLastUploadFailure({
+          code: clientPdfError.code,
+          message: clientPdfError.message,
+          fileName: file.name,
+          uploadId,
+          timestamp: new Date().toISOString(),
+        });
 
         setUploadedFiles(prev => prev.map(f =>
           f.id === fileId
             ? {
                 ...f,
                 isProcessing: false,
-                error: errorMsg,
-                failedPages: failingPage ? [failingPage] : f.failedPages,
-                clientPdfErrors: isStructured && err?.operation !== 'upload' ? [err] : f.clientPdfErrors,
+                error: clientPdfError.message,
+                processingStatus: `Error: ${clientPdfError.code}`,
+                clientPdfErrors: [...(f.clientPdfErrors || []), clientPdfError],
               }
             : f
         ));
-
-        toast({
-          title: isStructured ? `Upload error: ${err.code}` : "Processing failed",
-          description: isStructured
-            ? `${err.message}${failingPage ? ` (failing page: ${failingPage})` : ''}`
-            : `Failed to process ${file.name}. Try uploading screenshots instead.`,
-          variant: "destructive",
-        });
       }
     }
-
-    setResponseText("");
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
-  };
-
-  const updateFileBureau = (fileId: string, bureau: 'experian' | 'equifax' | 'transunion' | 'multi-bureau' | 'unknown') => {
-    setUploadedFiles(prev => prev.map(f => 
-      f.id === fileId ? { ...f, selectedBureau: bureau } : f
-    ));
-  };
-
-  const updateFileLabel = (fileId: string, label: string) => {
-    setUploadedFiles(prev => prev.map(f => 
-      f.id === fileId ? { ...f, label } : f
-    ));
   };
 
   const removeFile = (fileId: string) => {
@@ -563,141 +519,82 @@ const AIAnalyzer = () => {
 
   const clearAllFiles = () => {
     setUploadedFiles([]);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
+    setResults({});
   };
 
-  // Validate bureau assignments
-  const validateBureauAssignments = (): { valid: boolean; message?: string } => {
-    const unknownFiles = uploadedFiles.filter(f => f.selectedBureau === 'unknown');
-    if (unknownFiles.length > 0) {
-      return { 
-        valid: false, 
-        message: `Please select a bureau for: ${unknownFiles.map(f => f.name).join(', ')}` 
-      };
-    }
-
-    // Check for duplicate bureaus without labels
-    const bureauGroups = uploadedFiles.reduce((acc, f) => {
-      if (!acc[f.selectedBureau]) acc[f.selectedBureau] = [];
-      acc[f.selectedBureau].push(f);
-      return acc;
-    }, {} as Record<string, UploadedFile[]>);
-
-    for (const [bureau, files] of Object.entries(bureauGroups)) {
-      if (files.length > 1) {
-        const unlabeledFiles = files.filter(f => !f.label.trim());
-        if (unlabeledFiles.length > 0) {
-          return {
-            valid: false,
-            message: `Multiple ${bureau.charAt(0).toUpperCase() + bureau.slice(1)} files detected. Please add labels to distinguish them (e.g., "Jan 2026", "v1").`
-          };
-        }
-      }
-    }
-
-    return { valid: true };
+  const updateFileBureau = (fileId: string, bureau: UploadedFile['selectedBureau']) => {
+    setUploadedFiles(prev => prev.map(f =>
+      f.id === fileId ? { ...f, selectedBureau: bureau } : f
+    ));
   };
 
-  const handleAnalyze = async (selectedFileIds?: string[]) => {
-    const filesToAnalyze = selectedFileIds 
-      ? uploadedFiles.filter(f => selectedFileIds.includes(f.id))
-      : uploadedFiles;
+  const updateFileLabel = (fileId: string, label: string) => {
+    setUploadedFiles(prev => prev.map(f =>
+      f.id === fileId ? { ...f, label } : f
+    ));
+  };
 
+  const handleAnalyze = async () => {
+    // Pre-flight: require at least one file or text
+    const filesToAnalyze = uploadedFiles.filter(f => !f.isProcessing && !f.error);
+    if (filesToAnalyze.length === 0 && !responseText.trim()) {
+      toast({
+        title: "Nothing to analyze",
+        description: "Please upload a credit report file or paste text",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Pre-flight: require questionnaire
+    if (!fullLegalName.trim() || !currentAddress.trim() || !currentEmployer.trim()) {
+      toast({
+        title: "Missing information",
+        description: "Full Legal Name, Current Address, and Current Employer are required",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Pre-flight: require bureau selection
+    if (uploadedFiles.some(f => f.selectedBureau === 'unknown' && !f.error)) {
+      toast({
+        title: "Bureau required",
+        description: "Please select a bureau for all uploaded files",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Pre-flight: block on upload failures
+    if (hasAnalyzeBlockingUploadFailures(uploadedFiles)) {
+      toast({
+        title: "Upload issues",
+        description: "Remove or fix failed uploads before analyzing",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Pre-flight runtime snapshot for diagnostics
     const runtimeSnapshot = {
-      isAnalyzing,
-      isJobProcessing,
-      anyFileProcessing: uploadedFiles.some(f => f.isProcessing),
-      hasUploadFailures: hasAnalyzeBlockingUploadFailures(uploadedFiles),
-      responseText,
-      uploadedFilesLength: uploadedFiles.length,
-      filesToAnalyzeLength: filesToAnalyze.length,
-      fullLegalName: fullLegalName.trim(),
-      currentAddress: currentAddress.trim(),
-      currentEmployer: currentEmployer.trim(),
-      hasUnknownBureau: uploadedFiles.some(f => f.selectedBureau === 'unknown'),
-      fileDiagnostics: filesToAnalyze.map(f => ({
-        name: f.name,
-        selectedBureau: f.selectedBureau,
-        label: f.label,
-        isProcessing: f.isProcessing,
-        pipelinePath: f.pipelinePath ?? null,
-        hasStoragePaths: f.storagePaths.length > 0,
-        hasExtractedText: Boolean(f.extractedText),
-        hasError: Boolean(f.error),
-      })),
+      sessionExists: !!session,
+      accessTokenLength: session?.access_token?.length ?? 0,
+      uploadedFilesCount: uploadedFiles.length,
+      filesToAnalyzeCount: filesToAnalyze.length,
+      responseTextLength: responseText.length,
     };
 
-    console.log('[AIAnalyzer][runtime] handleAnalyze invoked', runtimeSnapshot);
+    // Route files
+    const textFirstFiles = filesToAnalyze.filter(f => f.pipelinePath === 'text-first' && f.extractedText);
+    const imageFiles = filesToAnalyze.filter(f => f.storagePaths.length > 0);
 
-    // Soft warnings for identity fields — never block analysis
-    const softWarnings: string[] = [];
-    if (!fullLegalName.trim()) softWarnings.push("Full legal name is missing");
-    if (!currentAddress.trim()) softWarnings.push("Current address is missing");
-    if (!currentEmployer.trim()) softWarnings.push("Current employer is missing");
-    const unknownBureauFiles = uploadedFiles.filter(f => f.selectedBureau === 'unknown');
-    if (unknownBureauFiles.length > 0) softWarnings.push(`Bureau not detected for: ${unknownBureauFiles.map(f => f.name).join(', ')}`);
-
-    if (softWarnings.length > 0) {
-      console.warn('[AIAnalyzer][runtime] soft warnings (non-blocking)', {
-        ...runtimeSnapshot,
-        softWarnings,
-      });
-      toast({
-        title: "Analysis proceeding with warnings",
-        description: softWarnings.join('. ') + '. These fields improve accuracy but are not required.',
-      });
-    }
-
-    if (!responseText && filesToAnalyze.length === 0) {
-      console.warn('[AIAnalyzer][runtime] blocked: no input', runtimeSnapshot);
-      toast({
-        title: "No input provided",
-        description: "Please upload files or paste the credit report text",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    // Bureau assignment is soft-gated: warn but continue
-    const validation = validateBureauAssignments();
-    if (!validation.valid && validation.message) {
-      console.warn('[AIAnalyzer][runtime] soft warning: bureau assignment', {
-        ...runtimeSnapshot,
-        validationMessage: validation.message,
-      });
-      toast({
-        title: "Analysis proceeding with bureau warning",
-        description: validation.message,
-      });
-    }
-
-    // For text-first files, storagePaths will be empty — that's expected
-    const textFirstFiles = filesToAnalyze.filter(f => f.pipelinePath === 'text-first');
-    const imageFiles = filesToAnalyze.filter(f => f.pipelinePath !== 'text-first');
-
-    const invalidUploads = getInvalidUploads(imageFiles);
-    if (invalidUploads.length > 0) {
-      console.warn('[AIAnalyzer][runtime] blocked: invalid uploads', {
-        ...runtimeSnapshot,
-        invalidUploads: invalidUploads.map(f => f.name),
-      });
-      toast({
-        title: "Upload issue detected",
-        description: `Resolve failed uploads before analysis: ${invalidUploads.map(f => f.name).join(', ')}`,
-        variant: "destructive",
-      });
-      return;
-    }
-
-    // Text-first files must have extracted text
-    const brokenTextFirst = textFirstFiles.filter(f => !f.extractedText);
+    // Check for text-first files with no actual text extracted (broken)
+    const brokenTextFirst = filesToAnalyze.filter(f => f.pipelinePath === 'text-first' && !f.extractedText);
     if (brokenTextFirst.length > 0) {
-      console.warn('[AIAnalyzer][runtime] blocked: broken text-first extraction', {
-        ...runtimeSnapshot,
-        brokenTextFirst: brokenTextFirst.map(f => f.name),
-      });
+      setUploadedFiles(prev => prev.map(f =>
+        brokenTextFirst.some(b => b.id === f.id) ? { ...f, error: 'Text extraction result is empty. Please remove and re-upload.' } : f
+      ));
       toast({
         title: "Triage error",
         description: `Text extraction failed for: ${brokenTextFirst.map(f => f.name).join(', ')}. Remove and re-upload.`,
@@ -734,7 +631,7 @@ const AIAnalyzer = () => {
         ssnLast4: ssnLast4 || undefined,
       };
 
-      const newResults: Record<string, DisputeAnalysisResult> = {};
+      const newResults: Record<string, CanonicalAnalyzerResult> = {};
 
       // Combine all extracted text from text-first files
       const combinedExtractedText = textFirstFiles
@@ -802,7 +699,10 @@ const AIAnalyzer = () => {
           const data = await response.json();
           if (!response.ok) throw new Error(data.error || "Analysis failed");
           
-          newResults['text'] = { ...data, bureau: textFirstFiles.length > 0 ? 'Text-First Extraction' : 'Text Input' };
+          // Hydrate sync result through canonical contract — no lossy remapping
+          const canonical = hydrateCanonicalResult(data);
+          canonical.bureau = textFirstFiles.length > 0 ? 'Text-First Extraction' : 'Text Input';
+          newResults['text'] = canonical;
         } finally {
           clearTimeout(timeoutId);
         }
@@ -850,23 +750,9 @@ const AIAnalyzer = () => {
     }
   };
 
-  // Combine results from all bureaus with source tags
-  const getCombinedResults = (): DisputeAnalysisResult => {
-    const combined: DisputeAnalysisResult = {
-      inaccurate_names: [],
-      inaccurate_addresses: [],
-      inaccurate_employers: [],
-      extra_identifier_mismatches: [],
-      derogatory_accounts: [],
-      late_payment_summary: [],
-      collections: [],
-      charge_offs: [],
-      public_records: [],
-      inquiries: [],
-      summary: "",
-      next_steps: [],
-      warnings: [],
-    };
+  // Combine results from all bureaus into a single canonical result
+  const getCombinedResults = (): CanonicalAnalyzerResult => {
+    const combined = createEmptyCanonicalResult();
 
     const seenNames = new Set<string>();
     const seenAddresses = new Set<string>();
@@ -877,7 +763,7 @@ const AIAnalyzer = () => {
 
       // Dedupe names
       for (const item of result.inaccurate_names) {
-        const key = item.reported_name.toLowerCase();
+        const key = (item.reported_name || '').toLowerCase();
         if (!seenNames.has(key)) {
           seenNames.add(key);
           combined.inaccurate_names.push({ ...item, source });
@@ -886,7 +772,7 @@ const AIAnalyzer = () => {
 
       // Dedupe addresses
       for (const item of result.inaccurate_addresses) {
-        const key = item.reported_address.toLowerCase();
+        const key = (item.reported_address || '').toLowerCase();
         if (!seenAddresses.has(key)) {
           seenAddresses.add(key);
           combined.inaccurate_addresses.push({ ...item, source });
@@ -895,7 +781,7 @@ const AIAnalyzer = () => {
 
       // Dedupe employers
       for (const item of result.inaccurate_employers) {
-        const key = item.reported_employer.toLowerCase();
+        const key = (item.reported_employer || '').toLowerCase();
         if (!seenEmployers.has(key)) {
           seenEmployers.add(key);
           combined.inaccurate_employers.push({ ...item, source });
@@ -907,47 +793,69 @@ const AIAnalyzer = () => {
         ...result.extra_identifier_mismatches.map(i => ({ ...i, source }))
       );
 
-      // Add all derogatory accounts with source
+      // Add all derogatory accounts with source — NO reinterpretation
       combined.derogatory_accounts.push(
         ...result.derogatory_accounts.map(a => ({ ...a, source }))
       );
 
+      // Add manual_review_accounts
+      combined.manual_review_accounts.push(
+        ...result.manual_review_accounts.map(a => ({ ...a, source }))
+      );
+
+      // Add clean_accounts
+      combined.clean_accounts.push(
+        ...result.clean_accounts.map(a => ({ ...a, source }))
+      );
+
       // Merge late payment summaries
-      for (const severity of result.late_payment_summary) {
-        let existing = combined.late_payment_summary.find(s => s.severity === severity.severity);
-        if (!existing) {
-          existing = { severity: severity.severity, accounts: [] };
-          combined.late_payment_summary.push(existing);
+      if (result.late_payment_summary) {
+        if (!combined.late_payment_summary) combined.late_payment_summary = [];
+        for (const severity of result.late_payment_summary) {
+          let existing = combined.late_payment_summary.find((s: any) => s.severity === severity.severity);
+          if (!existing) {
+            existing = { severity: severity.severity, accounts: [] };
+            combined.late_payment_summary.push(existing);
+          }
+          existing.accounts.push(...severity.accounts.map((a: any) => ({ ...a, source })));
         }
-        existing.accounts.push(...severity.accounts.map(a => ({ ...a, source })));
       }
 
-      // Add all collections
+      // Add all collections — NOT zeroed out
       combined.collections.push(...result.collections.map(c => ({ ...c, source })));
 
-      // Add all charge-offs
+      // Add all charge-offs — NOT zeroed out
       combined.charge_offs.push(...result.charge_offs.map(c => ({ ...c, source })));
 
-      // Add all public records
+      // Add all public records — NOT zeroed out
       combined.public_records.push(...result.public_records.map(p => ({ ...p, source })));
 
-      // Add all inquiries
+      // Add all inquiries — NOT zeroed out
       combined.inquiries.push(...result.inquiries.map(i => ({ ...i, source })));
 
       // Combine summaries
       if (result.summary) {
-        combined.summary += (combined.summary ? '\n\n' : '') + `[${source}] ${result.summary}`;
+        combined.summary = (combined.summary ? combined.summary + '\n\n' : '') + `[${source}] ${result.summary}`;
       }
 
       // Combine next steps (dedupe)
-      for (const step of result.next_steps) {
-        if (!combined.next_steps.includes(step)) {
-          combined.next_steps.push(step);
+      if (result.next_steps) {
+        if (!combined.next_steps) combined.next_steps = [];
+        for (const step of result.next_steps) {
+          if (!combined.next_steps.includes(step)) {
+            combined.next_steps.push(step);
+          }
         }
       }
 
       // Combine warnings
       combined.warnings.push(...result.warnings.map(w => `[${source}] ${w}`));
+
+      // Combine duplicate_flags
+      combined.duplicate_flags.push(...result.duplicate_flags);
+
+      // Combine validation_messages
+      combined.validation_messages.push(...result.validation_messages.map(m => `[${source}] ${m}`));
     }
 
     return combined;
@@ -963,7 +871,7 @@ const AIAnalyzer = () => {
     setTimeout(() => setCopiedSection(null), 2000);
   };
 
-  const copyAllResults = async (result: DisputeAnalysisResult, bureauName?: string) => {
+  const copyAllResults = async (result: CanonicalAnalyzerResult, bureauName?: string) => {
     let fullText = `CREDIT REPORT DISPUTE ANALYSIS${bureauName ? ` - ${bureauName}` : ''}\n`;
     fullText += "=".repeat(50) + "\n\n";
     
@@ -995,8 +903,16 @@ const AIAnalyzer = () => {
       fullText += "DEROGATORY ACCOUNTS:\n";
       result.derogatory_accounts.forEach(item => {
         fullText += `• ${item.creditor_name} (${item.account_number})${item.source ? ` [${item.source}]` : ''}\n`;
-        fullText += `  Triggers: ${item.derogatory_triggers.join(", ")}\n`;
+        fullText += `  Triggers: ${(item.derogatory_triggers || []).join(", ")}\n`;
         fullText += `  Status: ${item.status_as_reported} | Confidence: ${item.confidence}\n`;
+      });
+      fullText += "\n";
+    }
+
+    if (result.manual_review_accounts.length > 0) {
+      fullText += "MANUAL REVIEW ACCOUNTS:\n";
+      result.manual_review_accounts.forEach(item => {
+        fullText += `• ${item.creditor_name} (${item.account_number})${item.source ? ` [${item.source}]` : ''}\n`;
       });
       fullText += "\n";
     }
@@ -1013,6 +929,14 @@ const AIAnalyzer = () => {
       fullText += "INQUIRIES:\n";
       result.inquiries.forEach(item => {
         fullText += `• ${item.creditor_name} - ${item.date} (${item.type})${item.source ? ` [${item.source}]` : ''}\n`;
+      });
+      fullText += "\n";
+    }
+
+    if (result.public_records.length > 0) {
+      fullText += "PUBLIC RECORDS:\n";
+      result.public_records.forEach(item => {
+        fullText += `• ${item.type} - ${item.filing_date}${item.source ? ` [${item.source}]` : ''}\n`;
       });
       fullText += "\n";
     }
@@ -1133,13 +1057,78 @@ const AIAnalyzer = () => {
     }
   }, [triageMode]);
 
-  const renderResultContent = (result: DisputeAnalysisResult, showSource = false) => (
+  // Move an account from derogatory to manual_review within canonical results
+  const moveToManualReview = (item: any) => {
+    setResults(prev => {
+      const updated = { ...prev };
+      for (const key of Object.keys(updated)) {
+        const r = updated[key];
+        updated[key] = {
+          ...r,
+          derogatory_accounts: r.derogatory_accounts.filter(a =>
+            a.creditor_name !== item.creditor_name || a.account_number !== item.account_number
+          ),
+          manual_review_accounts: [...r.manual_review_accounts, { ...item, _movedFrom: 'derogatory' }],
+        };
+      }
+      return updated;
+    });
+    toast({ title: "Moved to manual review", description: `${item.creditor_name} moved to manual review.` });
+  };
+
+  // Restore from manual_review back to derogatory
+  const restoreToDerogatory = (item: any) => {
+    setResults(prev => {
+      const updated = { ...prev };
+      for (const key of Object.keys(updated)) {
+        const r = updated[key];
+        updated[key] = {
+          ...r,
+          manual_review_accounts: r.manual_review_accounts.filter(a =>
+            a.creditor_name !== item.creditor_name || a.account_number !== item.account_number
+          ),
+          derogatory_accounts: [...r.derogatory_accounts, item],
+        };
+      }
+      return updated;
+    });
+    toast({ title: "Restored to derogatory", description: `${item.creditor_name} moved back.` });
+  };
+
+  // Remove from derogatory
+  const removeFromDerogatory = (item: any) => {
+    setResults(prev => {
+      const updated = { ...prev };
+      for (const key of Object.keys(updated)) {
+        updated[key] = {
+          ...updated[key],
+          derogatory_accounts: updated[key].derogatory_accounts.filter(a => a !== item),
+        };
+      }
+      return updated;
+    });
+    toast({ title: "Removed from derogatory", description: `${item.creditor_name} removed.` });
+  };
+
+  const renderResultContent = (result: CanonicalAnalyzerResult, showSource = false) => (
     <div className="space-y-6">
       {/* Summary */}
       {result.summary && (
         <div className="card-elevated rounded-xl border border-border/50 p-6">
           <h4 className="text-lg font-serif font-semibold text-foreground mb-3">Summary</h4>
           <p className="text-muted-foreground leading-relaxed whitespace-pre-line">{result.summary}</p>
+        </div>
+      )}
+
+      {/* Validation Messages */}
+      {result.validation_messages && result.validation_messages.length > 0 && (
+        <div className="bg-muted/30 border border-border/50 rounded-xl p-4">
+          <h4 className="text-sm font-medium text-muted-foreground mb-2">Validation</h4>
+          <ul className="space-y-1 text-xs text-muted-foreground">
+            {result.validation_messages.map((msg, i) => (
+              <li key={i}>• {msg}</li>
+            ))}
+          </ul>
         </div>
       )}
 
@@ -1268,7 +1257,7 @@ const AIAnalyzer = () => {
                   <p className="text-sm text-muted-foreground font-mono">{item.account_number}</p>
                 </div>
                 <div className="flex flex-col items-end gap-1">
-                  {getConfidenceBadge(item.confidence)}
+                  {item.confidence && getConfidenceBadge(item.confidence)}
                   {showSource && item.source && (
                     <span className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded">{item.source}</span>
                   )}
@@ -1316,7 +1305,7 @@ const AIAnalyzer = () => {
               {/* Bureau tags */}
               {item.bureaus && item.bureaus.length > 0 && !item.bureau_status && (
                 <div className="flex flex-wrap gap-1 mt-1">
-                  {item.bureaus.map((bureau, bi) => (
+                  {item.bureaus.map((bureau: string, bi: number) => (
                     <span key={bi} className="px-1.5 py-0.5 text-xs bg-primary/10 text-primary rounded capitalize">
                       {bureau}
                     </span>
@@ -1325,13 +1314,15 @@ const AIAnalyzer = () => {
               )}
               
               {/* Deterministic Triggers */}
-              <div className="flex flex-wrap gap-1.5 mt-2">
-                {item.derogatory_triggers.map((trigger, ti) => (
-                  <span key={ti} className="px-2 py-0.5 text-xs bg-destructive/20 text-destructive rounded">
-                    {trigger}
-                  </span>
-                ))}
-              </div>
+              {item.derogatory_triggers && item.derogatory_triggers.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {item.derogatory_triggers.map((trigger: string, ti: number) => (
+                    <span key={ti} className="px-2 py-0.5 text-xs bg-destructive/20 text-destructive rounded">
+                      {trigger}
+                    </span>
+                  ))}
+                </div>
+              )}
 
               {/* Manual Correction Controls */}
               <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-border/30">
@@ -1349,23 +1340,7 @@ const AIAnalyzer = () => {
                   variant="outline"
                   size="sm"
                   className="text-xs h-7 bg-warning/10 text-warning border-warning/30 hover:bg-warning/20"
-                  onClick={() => {
-                    // Track in manual_review list before removing from derogatory
-                    setManualReviewAccounts(prev => [...prev, { ...item, _movedFrom: 'derogatory' }]);
-                    setResults(prev => {
-                      const updated = { ...prev };
-                      for (const key of Object.keys(updated)) {
-                        updated[key] = {
-                          ...updated[key],
-                          derogatory_accounts: updated[key].derogatory_accounts.filter(a => 
-                            a.creditor_name !== item.creditor_name || a.account_number !== item.account_number
-                          ),
-                        };
-                      }
-                      return updated;
-                    });
-                    toast({ title: "Moved to manual review", description: `${item.creditor_name} moved to manual review.` });
-                  }}
+                  onClick={() => moveToManualReview(item)}
                 >
                   Move to Review
                 </Button>
@@ -1373,19 +1348,7 @@ const AIAnalyzer = () => {
                   variant="outline"
                   size="sm"
                   className="text-xs h-7"
-                  onClick={() => {
-                    setResults(prev => {
-                      const updated = { ...prev };
-                      for (const key of Object.keys(updated)) {
-                        updated[key] = {
-                          ...updated[key],
-                          derogatory_accounts: updated[key].derogatory_accounts.filter(a => a !== item),
-                        };
-                      }
-                      return updated;
-                    });
-                    toast({ title: "Removed from derogatory", description: `${item.creditor_name} removed.` });
-                  }}
+                  onClick={() => removeFromDerogatory(item)}
                 >
                   <X className="w-3 h-3 mr-1" />
                   Remove
@@ -1400,15 +1363,15 @@ const AIAnalyzer = () => {
       {result.late_payment_summary && result.late_payment_summary.length > 0 && (
         <ResultCard
           title="Late Payment Summary"
-          count={result.late_payment_summary.reduce((acc, s) => acc + s.accounts.length, 0)}
+          count={result.late_payment_summary.reduce((acc: number, s: any) => acc + (s.accounts?.length || 0), 0)}
           variant="warning"
-          onCopy={() => copySection("Late Payments", result.late_payment_summary.flatMap(s => s.accounts.map(a => `${s.severity}: ${a.creditor_name}`)).join("\n"))}
+          onCopy={() => copySection("Late Payments", result.late_payment_summary!.flatMap((s: any) => (s.accounts || []).map((a: any) => `${s.severity}: ${a.creditor_name}`)).join("\n"))}
           isCopied={copiedSection === "Late Payments"}
         >
-          {result.late_payment_summary.map((severity, si) => (
+          {result.late_payment_summary.map((severity: any, si: number) => (
             <div key={si} className="space-y-2">
               <h5 className="font-semibold text-warning uppercase text-sm">{severity.severity} Lates</h5>
-              {severity.accounts.map((acc, ai) => (
+              {(severity.accounts || []).map((acc: any, ai: number) => (
                 <div key={ai} className="p-3 bg-muted/30 rounded-lg">
                   <div className="flex justify-between items-start">
                     <div>
@@ -1542,16 +1505,16 @@ const AIAnalyzer = () => {
         </ResultCard>
       )}
 
-      {/* Manual Review Accounts */}
-      {manualReviewAccounts.length > 0 && (
+      {/* Manual Review Accounts — from canonical result, NOT separate state */}
+      {result.manual_review_accounts && result.manual_review_accounts.length > 0 && (
         <ResultCard
           title="Manual Review"
-          count={manualReviewAccounts.length}
-          variant="default"
-          onCopy={() => copySection("Manual Review", manualReviewAccounts.map(a => `${a.creditor_name} ${a.account_number}`).join("\n"))}
+          count={result.manual_review_accounts.length}
+          variant="warning"
+          onCopy={() => copySection("Manual Review", result.manual_review_accounts.map(a => `${a.creditor_name} ${a.account_number}`).join("\n"))}
           isCopied={copiedSection === "Manual Review"}
         >
-          {manualReviewAccounts.map((item, i) => (
+          {result.manual_review_accounts.map((item, i) => (
             <div key={i} className="p-3 bg-warning/10 rounded-lg border border-warning/20">
               <div className="flex items-center justify-between">
                 <div>
@@ -1562,22 +1525,7 @@ const AIAnalyzer = () => {
                   variant="outline"
                   size="sm"
                   className="text-xs h-7"
-                  onClick={() => {
-                    // Move back to derogatory
-                    setManualReviewAccounts(prev => prev.filter((_, idx) => idx !== i));
-                    setResults(prev => {
-                      const updated = { ...prev };
-                      const firstKey = Object.keys(updated)[0];
-                      if (firstKey) {
-                        updated[firstKey] = {
-                          ...updated[firstKey],
-                          derogatory_accounts: [...updated[firstKey].derogatory_accounts, item],
-                        };
-                      }
-                      return updated;
-                    });
-                    toast({ title: "Restored to derogatory", description: `${item.creditor_name} moved back.` });
-                  }}
+                  onClick={() => restoreToDerogatory(item)}
                 >
                   Restore to Derogatory
                 </Button>
@@ -1589,6 +1537,31 @@ const AIAnalyzer = () => {
                   ))}
                 </div>
               )}
+            </div>
+          ))}
+        </ResultCard>
+      )}
+
+      {/* Clean Accounts */}
+      {result.clean_accounts && result.clean_accounts.length > 0 && (
+        <ResultCard
+          title="Clean Accounts"
+          count={result.clean_accounts.length}
+          variant="default"
+          onCopy={() => copySection("Clean Accounts", result.clean_accounts.map(a => `${a.creditor_name} ${a.account_number}`).join("\n"))}
+          isCopied={copiedSection === "Clean Accounts"}
+        >
+          {result.clean_accounts.map((item, i) => (
+            <div key={i} className="p-3 bg-muted/20 rounded-lg border border-border/30">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-foreground">{item.creditor_name}</p>
+                  <p className="text-sm text-muted-foreground font-mono">{item.account_number}</p>
+                </div>
+                <span className="px-2 py-0.5 text-xs bg-success/20 text-success rounded border border-success/30">
+                  clean
+                </span>
+              </div>
             </div>
           ))}
         </ResultCard>
@@ -2000,10 +1973,9 @@ const AIAnalyzer = () => {
                   state={jobState}
                   onRetry={retryJob}
                   onUsePartial={() => {
-                    const accounts = usePartialResults();
-                    if (accounts.length > 0) {
-                      // Hydrate partial results
-                      handleJobComplete({ accounts }, accounts);
+                    const canonical = usePartialResults();
+                    if (canonical) {
+                      handleJobComplete(canonical);
                     }
                   }}
                   isStale={false}
@@ -2056,10 +2028,10 @@ const AIAnalyzer = () => {
                       variant="outline"
                       size="sm"
                       onClick={async () => {
-                        // Reload results from job
+                        // Reload results from job using canonical hydration
                         if (lastJobInfo.jobId && jobState.result) {
-                          const accounts = parseJobResultAccounts(jobState.result);
-                          const success = handleJobComplete(jobState.result, accounts);
+                          const canonical = parseJobResult(jobState.result);
+                          const success = handleJobComplete(canonical);
                           if (success) {
                             setJobCompletedButEmpty(false);
                           }
