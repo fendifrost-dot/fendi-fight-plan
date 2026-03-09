@@ -485,8 +485,11 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
         'Complete the legal strategy survey',
         'Generate your dispute letters',
       ],
-      rawSummary: `Analyzed ${images.length} pages. Found ${accounts.length} accounts.`,
+      rawSummary: `Analyzed ${images.length} pages. Found ${accounts.length} accounts, ${allInquiries.length} inquiries, ${allPublicRecords.length} public records.`,
       accounts,
+      _inquiries: allInquiries,
+      _publicRecords: allPublicRecords,
+      _collections: allCollections,
     };
 
     setProgress({
