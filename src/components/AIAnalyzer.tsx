@@ -480,22 +480,34 @@ const AIAnalyzer = () => {
           };
         }
       } catch (err) {
-        const clientPdfError = err && typeof err === 'object' && 'stage' in err && 'code' in err
+        const clientPdfError: ClientPdfError = err && typeof err === 'object' && 'stage' in err && 'code' in err
           ? err as ClientPdfError
           : {
               stage: 'CLIENT_PDF' as const,
-              code: 'UNKNOWN_ERROR',
+              code: 'PDF_LOAD_FAILED' as const,
               message: err instanceof Error ? err.message : 'File processing failed',
               meta: { fileName: file.name, fileSize: file.size, mimeType: file.type },
             };
 
         console.error('[AIAnalyzer] File processing error:', clientPdfError);
         setLastUploadFailure({
+          stage: 'CLIENT_PDF',
           code: clientPdfError.code,
           message: clientPdfError.message,
-          fileName: file.name,
-          uploadId,
-          timestamp: new Date().toISOString(),
+          meta: {
+            fileName: file.name,
+            fileSize: file.size,
+            mimeType: file.type,
+            operation: 'load',
+            uid: userId || null,
+            bucket: 'analysis-images',
+            upsert: false,
+            sessionPresent: true,
+            expires_at: null,
+            authTokenPresent: true,
+            projectUrlHash: '',
+            clientInstanceId: '',
+          },
         });
 
         setUploadedFiles(prev => prev.map(f =>
