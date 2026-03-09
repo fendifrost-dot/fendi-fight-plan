@@ -309,15 +309,16 @@ export function isNegativeSectionHeader(header: string | null | undefined): bool
 export function classifyTradeline(tradeline: any): { isNegative: boolean; triggers: string[] } {
   const triggers: string[] = [];
 
-  // 1. Status keyword matching on block text, status, remarks
-  const searchTexts = [
-    tradeline.block_text,
+  // 1. Status keyword matching — structured fields only (status, remarks)
+  //    block_text is excluded because it contains field LABELS like "Past Due Amount:"
+  //    that cause false positive keyword matches.
+  const structuredSearchTexts = [
     tradeline.status_as_reported,
     tradeline.status,
     tradeline.remarks,
   ].filter(Boolean).join(' ');
 
-  const keywordMatches = findNegativeKeywords(searchTexts);
+  const keywordMatches = findNegativeKeywords(structuredSearchTexts);
   triggers.push(...keywordMatches);
 
   // 2. C/O in status/remark (not address)
