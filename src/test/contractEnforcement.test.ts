@@ -1360,3 +1360,91 @@ describe('Clean account exclusion regression — Tara TransUnion scenario', () =
     expect(result.report.inquiries[1].creditor_name).toBe('TBOM/MILESTO');
   });
 });
+
+// ─── Hardened Parser Rules ─────────────────────────────────────────────────
+describe('Hardened parser rules', () => {
+  it('"past due" keyword alone does NOT trigger negative classification', () => {
+    const { findNegativeKeywords } = require('@/lib/parser-contract');
+    // "Past Due Amount: $0" should NOT match
+    expect(findNegativeKeywords('Past Due Amount: $0')).not.toContain('past due');
+    expect(findNegativeKeywords('Past due')).not.toContain('past due');
+    expect(findNegativeKeywords('past-due')).not.toContain('past-due');
+  });
+
+  it('isPastDueNegative is the only past-due trigger source', () => {
+    const { isPastDueNegative, classifyTradeline } = require('@/lib/parser-contract');
+    expect(isPastDueNegative('$0')).toBe(false);
+    expect(isPastDueNegative('$0.00')).toBe(false);
+    expect(isPastDueNegative(null)).toBe(false);
+    expect(isPastDueNegative('')).toBe(false);
+    expect(isPastDueNegative('$150')).toBe(true);
+
+    // Tradeline with "Past Due Amount" label in block_text but $0 value
+    const cleanWithLabel = {
+      creditor_name: 'TEST',
+      status_as_reported: 'Paid or paying as agreed',
+      past_due_amount: '$0',
+      block_text: 'Past Due Amount: $0\nStatus: Current',
+    };
+    const result = classifyTradeline(cleanWithLabel);
+    expect(result.triggers).not.toContain('past due');
+    expect(result.triggers.filter((t: string) => t.includes('past due'))).toEqual([]);
+  });
+
+  it('DOFD requires real date pattern, not just any digit-containing string', () => {
+    const { hasActualDateOfFirstDelinquency } = require('@/lib/parser-contract');
+    // Real dates
+    expect(hasActualDateOfFirstDelinquency('01/2020')).toBe(true);
+    expect(hasActualDateOfFirstDelinquency('03/15/2021')).toBe(true);
+    expect(hasActualDateOfFirstDelinquency('2021-03-15')).toBe(true);
+    expect(hasActualDateOfFirstDelinquency('Sep 2024')).toBe(true);
+    expect(hasActualDateOfFirstDelinquency('2020')).toBe(true);
+
+    // NOT real dates — must return false
+    expect(hasActualDateOfFirstDelinquency(null)).toBe(false);
+    expect(hasActualDateOfFirstDelinquency('N/A')).toBe(false);
+    expect(hasActualDateOfFirstDelinquency('UNEXTRACTABLE')).toBe(false);
+    expect(hasActualDateOfFirstDelinquency('')).toBe(false);
+    expect(hasActualDateOfFirstDelinquency('-')).toBe(false);
+    expect(hasActualDateOfFirstDelinquency('not reported')).toBe(false);
+    // Arbitrary digit-containing strings that are NOT dates
+    expect(hasActualDateOfFirstDelinquency('Account 12345')).toBe(false);
+    expect(hasActualDateOfFirstDelinquency('Balance is $500')).toBe(false);
+  });
+
+  it('clean tradeline with weak text trigger is vetoed by isCleanTradeline', () => {
+    const { isCleanTradeline, classifyTradeline } = require('@/lib/parser-contract');
+    const cleanAccount = {
+      creditor_name: 'DEPTEDNELNET',
+      status_as_reported: 'Paid or paying as agreed',
+      status: 'Current',
+      past_due_amount: '$0',
+      payment_grid_codes: 'OK OK OK OK OK OK',
+      date_first_delinquency: null,
+      section_header: 'Account Information',
+      remarks: '',
+    };
+    expect(isCleanTradeline(cleanAccount)).toBe(true);
+    // Even if classifyTradeline finds nothing, isCleanTradeline is the hard veto
+    const classification = classifyTradeline(cleanAccount);
+    expect(classification.isNegative).toBe(false);
+  });
+
+  it('UPSTA/FINWSE with historical grid codes stays derogatory despite positive status', () => {
+    const { isCleanTradeline, classifyTradeline } = require('@/lib/parser-contract');
+    const upsta = {
+      creditor_name: 'UPSTA/FINWSE',
+      status_as_reported: 'Paid or paying as agreed',
+      status: 'Current',
+      past_due_amount: '$0',
+      payment_grid_codes: 'OK OK 2 3 OK OK',
+      date_first_delinquency: null,
+      section_header: 'Account Information',
+    };
+    // Grid codes 2,3 mean NOT clean
+    expect(isCleanTradeline(upsta)).toBe(false);
+    const result = classifyTradeline(upsta);
+    expect(result.isNegative).toBe(true);
+    expect(result.triggers.some((t: string) => t.includes('grid codes'))).toBe(true);
+  });
+});
