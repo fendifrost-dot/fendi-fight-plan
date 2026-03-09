@@ -22,6 +22,7 @@ import {
   PARSER_ERROR_CODES,
   classifyTradeline,
   detectDuplicates,
+  isCleanTradeline,
 } from './parser-contract.ts';
 
 import {
