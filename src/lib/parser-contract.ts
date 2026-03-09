@@ -57,7 +57,53 @@ export const PARSER_ERROR_CODES = {
   VALIDATION_FAILED: 'VALIDATION_FAILED',
   DUPLICATE_DETECTED: 'DUPLICATE_DETECTED',
   COUNT_MISMATCH: 'COUNT_MISMATCH',
+  INVALID_DEROGATORY_LEAK: 'INVALID_DEROGATORY_LEAK',
 } as const;
+
+// ─── Positive Status Keywords (clean tradeline detection) ──────────────────
+export const POSITIVE_STATUS_KEYWORDS: readonly string[] = [
+  'paid or paying as agreed', 'pays as agreed', 'paid as agreed',
+  'current', 'open', 'never late', 'account in good standing',
+  'closed', 'account closed', 'paid', 'paid in full',
+  'transferred', 'account transferred',
+] as const;
+
+/**
+ * Determine if a tradeline is "clean" — i.e., should NOT be in derogatory_accounts.
+ * A tradeline is clean if ALL of:
+ * 1. Status is a recognized positive status
+ * 2. Past due is $0 or null
+ * 3. No negative payment grid codes
+ * 4. No derogatory keywords anywhere
+ * 5. No negative section header
+ * 6. No date_first_delinquency
+ */
+export function isCleanTradeline(tradeline: any): boolean {
+  // Must have a positive status
+  const statusText = (tradeline.status_as_reported || tradeline.status || '').toLowerCase().trim();
+  const hasPositiveStatus = POSITIVE_STATUS_KEYWORDS.some(kw => statusText.includes(kw));
+  if (!hasPositiveStatus) return false;
+
+  // Past due must be $0 or absent
+  if (isPastDueNegative(tradeline.past_due_amount)) return false;
+
+  // No negative grid codes
+  const gc = findNegativeGridCodes(tradeline.payment_grid_codes);
+  if (gc.length > 0) return false;
+
+  // No derogatory keywords in any text field
+  const searchTexts = [tradeline.block_text, tradeline.status_as_reported, tradeline.status, tradeline.remarks].filter(Boolean).join(' ');
+  const negKw = findNegativeKeywords(searchTexts);
+  if (negKw.length > 0) return false;
+
+  // No negative section header
+  if (isNegativeSectionHeader(tradeline.section_header)) return false;
+
+  // No date of first delinquency
+  if (tradeline.date_first_delinquency) return false;
+
+  return true;
+}
 
 // ─── Matching Functions ────────────────────────────────────────────────────
 
