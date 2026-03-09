@@ -91,7 +91,18 @@ export const POSITIVE_STATUS_KEYWORDS: readonly string[] = [
 export function hasActualDateOfFirstDelinquency(dofd: any): boolean {
   if (isPlaceholderValue(dofd)) return false;
   if (typeof dofd !== 'string') return false;
-  return /\d/.test(dofd);
+  const trimmed = dofd.trim();
+  // Must match a real date pattern, not just "any string with a digit"
+  const datePatterns = [
+    /^\d{1,2}\/\d{2,4}$/,           // MM/YYYY or MM/YY
+    /^\d{1,2}\/\d{1,2}\/\d{2,4}$/,  // MM/DD/YYYY or MM/DD/YY
+    /^\d{4}-\d{1,2}-\d{1,2}$/,      // YYYY-MM-DD
+    /^\d{1,2}-\d{1,2}-\d{2,4}$/,    // MM-DD-YYYY
+    /^[A-Za-z]{3,9}\s+\d{2,4}$/,    // Mon YYYY or Month YYYY
+    /^\d{1,2}-\d{4}$/,              // MM-YYYY
+    /^\d{4}$/,                       // YYYY alone
+  ];
+  return datePatterns.some(p => p.test(trimmed));
 }
 
 /**

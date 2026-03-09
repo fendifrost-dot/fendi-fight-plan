@@ -231,7 +231,12 @@ const AIAnalyzer = () => {
         collections: [],
         charge_offs: [],
         public_records: [],
-        inquiries: [],
+        inquiries: (resultData?.inquiries || resultData?._inquiries || []).map((inq: any) => ({
+          creditor_name: inq.creditor_name || inq.creditorName || 'Unknown',
+          date: inq.inquiry_date || inq.date || '',
+          type: inq.type || inq.inquiry_type || 'hard',
+          bureaus: inq.bureaus || [],
+        })),
         summary: `Extracted ${accounts.length} account(s) from ${resultData?.totalPages || 'multiple'} pages.`,
         next_steps: [
           "Review each account for accuracy",
