@@ -7,6 +7,7 @@ import type {
   ProcessingProgress,
   UploadedDocument,
   BureauKey,
+  AccountBucket,
 } from '@/types/disputes';
 import { defaultProcessingProgress } from '@/types/disputes';
 
