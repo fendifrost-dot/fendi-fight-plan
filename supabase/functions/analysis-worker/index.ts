@@ -41,6 +41,10 @@ interface Job {
   checkpoints: {
     documentMap?: any;
     accounts?: any[];
+    collections?: any[];
+    inquiries?: any[];
+    publicRecords?: any[];
+    chargeOffs?: any[];
     processedChunks?: number;
     totalChunks?: number;
     failedChunks?: number[];
