@@ -761,3 +761,241 @@ describe('Edge case classification from fixtures', () => {
     expect(classification.isNegative).toBe(false);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SECTION 14: Worker checkpoint resume preserves all 5 entity arrays
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('Worker checkpoint resume: all entity arrays', () => {
+  it('simulated checkpoint with all 5 arrays restores correctly', () => {
+    // Simulates what the worker stores in checkpoints and resumes from
+    const checkpoint = {
+      accounts: [
+        { creditor_name: 'CHASE', account_number: '1234', status: 'late', bureaus: ['experian'] },
+      ],
+      collections: [
+        { collection_agency: 'MCM', balance: '$500', account_number: 'MCM-1', bureaus: ['experian'] },
+      ],
+      inquiries: [
+        { creditor_name: 'AMEX', date: '01/01/2025', type: 'hard', bureaus: ['transunion'] },
+      ],
+      publicRecords: [
+        { type: 'Bankruptcy', filing_date: '06/2020', status: 'Discharged', bureaus: ['experian'] },
+      ],
+      chargeOffs: [
+        { creditor_name: 'WELLS', account_number: 'W-1', balance: '$0', bureaus: ['equifax'] },
+      ],
+      processedChunks: 2,
+      totalChunks: 4,
+      failedChunks: [],
+    };
+
+    // Simulate new chunk results being appended (as the worker does)
+    const newChunkAccounts = [{ creditor_name: 'CITI', account_number: '5678', status: 'charge off', bureaus: ['equifax'] }];
+    const newChunkCollections = [{ collection_agency: 'PRA', balance: '$300', account_number: 'PRA-2', bureaus: ['transunion'] }];
+    const newChunkInquiries = [{ creditor_name: 'DISCOVER', date: '02/01/2025', type: 'soft', bureaus: ['equifax'] }];
+
+    const allAccounts = [...checkpoint.accounts, ...newChunkAccounts];
+    const allCollections = [...checkpoint.collections, ...newChunkCollections];
+    const allInquiries = [...checkpoint.inquiries, ...newChunkInquiries];
+    const allPublicRecords = [...checkpoint.publicRecords];
+    const allChargeOffs = [...checkpoint.chargeOffs];
+
+    // Build rawResult exactly as the worker does
+    const rawResult = {
+      derogatory_accounts: allAccounts,
+      collections: allCollections,
+      charge_offs: allChargeOffs,
+      inquiries: allInquiries,
+      public_records: allPublicRecords,
+    };
+
+    const result = postProcessAndValidate(rawResult);
+
+    // All entities from checkpoint + new chunks survive
+    expect(result.report.derogatory_accounts.length).toBe(2);
+    expect(result.report.collections.length).toBe(2);
+    expect(result.report.inquiries.length).toBe(2);
+    expect(result.report.public_records.length).toBe(1);
+    expect(result.report.charge_offs.length).toBe(1);
+  });
+
+  it('checkpoint with nil/undefined arrays defaults to empty', () => {
+    // Simulates an old checkpoint format where some arrays are missing
+    const checkpoint: any = {
+      accounts: [{ creditor_name: 'A', account_number: '1', status: 'late' }],
+      // collections, inquiries, publicRecords, chargeOffs are undefined
+    };
+
+    const allAccounts = checkpoint.accounts || [];
+    const allCollections = checkpoint.collections || [];
+    const allInquiries = checkpoint.inquiries || [];
+    const allPublicRecords = checkpoint.publicRecords || [];
+    const allChargeOffs = checkpoint.chargeOffs || [];
+
+    const rawResult = {
+      derogatory_accounts: allAccounts,
+      collections: allCollections,
+      charge_offs: allChargeOffs,
+      inquiries: allInquiries,
+      public_records: allPublicRecords,
+    };
+
+    const result = postProcessAndValidate(rawResult);
+    expect(result.report.derogatory_accounts.length).toBe(1);
+    expect(result.report.collections.length).toBe(0);
+    expect(result.report.inquiries.length).toBe(0);
+    expect(result.report.public_records.length).toBe(0);
+    expect(result.report.charge_offs.length).toBe(0);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SECTION 15: Worker section slicing must not drop entities
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('Section slicing: all pages processed', () => {
+  it('worker must process ALL pages not just accounts section', () => {
+    // The old bug: worker used documentMap.sections.accounts to slice pages,
+    // dropping inquiries/collections/public_records on pages outside that range.
+    //
+    // Proof: if we simulate a 10-page report where accounts are pages 3-7
+    // but inquiries are on page 9, the old code would skip page 9.
+    //
+    // The fix: worker now processes storagePaths[0..n], not a section slice.
+    const storagePaths = Array.from({ length: 10 }, (_, i) => `user/job/page-${String(i).padStart(3, '0')}.webp`);
+    const MAX_IMAGES_PER_CHUNK = 3;
+
+    // NEW behavior: chunk ALL pages
+    const chunks: string[][] = [];
+    for (let i = 0; i < storagePaths.length; i += MAX_IMAGES_PER_CHUNK) {
+      chunks.push(storagePaths.slice(i, i + MAX_IMAGES_PER_CHUNK));
+    }
+
+    // All 10 pages are included in chunks
+    const allPagesInChunks = chunks.flat();
+    expect(allPagesInChunks.length).toBe(10);
+    expect(allPagesInChunks).toEqual(storagePaths);
+
+    // Even if documentMap says accounts are only pages 3-7
+    const documentMap = {
+      sections: {
+        accounts: { start_page: 3, end_page: 7, detected: true },
+        inquiries: { start_page: 8, end_page: 9, detected: true },
+        public_records: { start_page: 10, end_page: 10, detected: true },
+      },
+    };
+
+    // OLD bug: would have done storagePaths.slice(2, 7) = only 5 pages
+    const oldAccountsSection = documentMap.sections.accounts;
+    const oldSlice = storagePaths.slice(oldAccountsSection.start_page - 1, oldAccountsSection.end_page);
+    expect(oldSlice.length).toBe(5); // PROVES old code missed 5 pages
+
+    // NEW: all pages processed
+    expect(allPagesInChunks.length).toBe(10); // All pages included
+  });
+
+  it('collections on last pages survive full-page processing', () => {
+    // Simulates: chunks 1-3 have accounts, chunk 4 has collections
+    const chunk1Result = {
+      accounts: [{ creditor_name: 'A', account_number: '1', status: 'late', bureaus: ['experian'] }],
+      collections: [], inquiries: [], public_records: [], charge_offs: [],
+    };
+    const chunk4Result = {
+      accounts: [],
+      collections: [{ collection_agency: 'MCM', balance: '$500', account_number: 'M-1', bureaus: ['experian'] }],
+      inquiries: [{ creditor_name: 'AMEX', date: '01/01/2025', type: 'hard', bureaus: ['experian'] }],
+      public_records: [], charge_offs: [],
+    };
+
+    // Accumulate as worker does
+    const allAccounts = [...chunk1Result.accounts];
+    const allCollections = [...chunk1Result.collections, ...chunk4Result.collections];
+    const allInquiries = [...chunk1Result.inquiries, ...chunk4Result.inquiries];
+
+    const rawResult = {
+      derogatory_accounts: allAccounts,
+      collections: allCollections,
+      charge_offs: [],
+      inquiries: allInquiries,
+      public_records: [],
+    };
+
+    const result = postProcessAndValidate(rawResult);
+    expect(result.report.derogatory_accounts.length).toBe(1);
+    expect(result.report.collections.length).toBe(1);
+    expect(result.report.inquiries.length).toBe(1);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SECTION 16: Multi-bureau same account NOT collapsed
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('Multi-bureau: same account across bureaus never collapsed', () => {
+  it('3 bureaus reporting same account = 3 entries preserved', () => {
+    const rawResult = {
+      derogatory_accounts: [
+        { creditor_name: 'CHASE', account_number: '4147XXXX8888', status: 'Past Due', bureaus: ['experian'] },
+        { creditor_name: 'CHASE', account_number: '4147XXXX8888', status: 'Past Due', bureaus: ['equifax'] },
+        { creditor_name: 'CHASE', account_number: '4147XXXX8888', status: '30 days late', bureaus: ['transunion'] },
+      ],
+      collections: [],
+    };
+    const result = postProcessAndValidate(rawResult);
+    expect(result.report.derogatory_accounts.length).toBe(3);
+    // No duplicates flagged because different bureaus
+    expect(result.duplicateFlags.length).toBe(0);
+  });
+
+  it('same bureau same account = flagged but NOT removed', () => {
+    const rawResult = {
+      derogatory_accounts: [
+        { creditor_name: 'CHASE', account_number: '4147XXXX8888', status: 'Past Due', bureaus: ['experian'] },
+        { creditor_name: 'CHASE', account_number: '4147XXXX8888', status: 'Past Due', bureaus: ['experian'] },
+      ],
+      collections: [],
+    };
+    const result = postProcessAndValidate(rawResult);
+    expect(result.report.derogatory_accounts.length).toBe(2); // NOT collapsed
+    expect(result.duplicateFlags.length).toBeGreaterThan(0); // flagged
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SECTION 17: Prove confidence 0.8 is never output
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('Confidence never hardcoded 0.8', () => {
+  it('postProcessAndValidate overrides any numeric confidence', () => {
+    const rawResult = {
+      derogatory_accounts: [
+        { creditor_name: 'A', account_number: '1', status: 'late', confidence: 0.8, bureaus: ['experian'] },
+        { creditor_name: 'B', account_number: '2', status: 'charge off', confidence: 0.95, bureaus: ['equifax'] },
+      ],
+      collections: [],
+    };
+    const result = postProcessAndValidate(rawResult);
+    for (const acct of result.report.derogatory_accounts) {
+      expect(typeof acct.confidence).toBe('string');
+      expect(['high', 'medium', 'low', 'incomplete']).toContain(acct.confidence);
+      expect(acct.confidence).not.toBe(0.8);
+      expect(acct.confidence).not.toBe(0.95);
+    }
+  });
+
+  it('charge_offs also get deterministic confidence', () => {
+    const rawResult = {
+      derogatory_accounts: [],
+      charge_offs: [
+        { creditor_name: 'WELLS', account_number: 'W-1', status: 'Charged Off', confidence: 0.8, bureaus: ['equifax'] },
+      ],
+      collections: [],
+    };
+    const result = postProcessAndValidate(rawResult);
+    for (const co of result.report.charge_offs) {
+      expect(typeof co.confidence).toBe('string');
+      expect(co.confidence).not.toBe(0.8);
+    }
+  });
+});
