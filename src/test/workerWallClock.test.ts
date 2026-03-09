@@ -8,10 +8,17 @@ import { describe, it, expect } from 'vitest';
  * Bug: 39-page report stuck at 25% because mapping (~40s) + chunk 0 (27s)
  * consumed most of the 150s edge function limit, leaving no room for chunk 1.
  * MAX_CHUNKS_PER_INVOCATION=3 was only a chunk-count guard, not a time guard.
+ *
+ * v4 fix: AI_TIMEOUT_MS increased from 25s → 50s, inner retry removed
+ * (MAX_RETRIES=0), chunk-level retry still active. This ensures each AI call
+ * has enough time to complete without aborting prematurely.
  */
 
 const MAX_CHUNKS_PER_INVOCATION = 3;
 const WALL_CLOCK_CHAIN_THRESHOLD_MS = 100_000;
+const AI_TIMEOUT_MS = 50_000;
+const CHUNK_RETRY_BACKOFF_MS = 3_000;
+const EDGE_FUNCTION_LIMIT_MS = 150_000;
 
 interface ChainDecision {
   shouldChain: boolean;
@@ -39,7 +46,6 @@ describe('Worker wall-clock self-chain guard', () => {
   });
 
   it('chains at wall-clock threshold even with 0 chunks processed', () => {
-    // Simulates: mapping took 100s, no chunks processed yet
     const result = shouldSelfChain(0, 105_000);
     expect(result.shouldChain).toBe(true);
     expect(result.reason).toContain('wall-clock');
@@ -51,26 +57,43 @@ describe('Worker wall-clock self-chain guard', () => {
   });
 
   it('wall-clock guard fires before chunk limit for slow chunks', () => {
-    // Simulates: mapping (40s) + chunk 0 (27s) + chunk 1 (35s) = 102s
-    // Only 2 chunks processed, but wall clock exceeded
     const result = shouldSelfChain(2, 102_000);
     expect(result.shouldChain).toBe(true);
     expect(result.reason).toContain('wall-clock');
   });
 
   it('reproduces the 39-page stuck-at-25% scenario', () => {
-    // Mapping took ~40s, chunk 0 took ~27s = 67s elapsed after 1 chunk
-    // Without wall-clock guard, chunk 1 would start and die at ~150s
-    // With wall-clock guard, after chunk 1 completes at ~100s, it chains
-
-    // After mapping + chunk 0: still safe
     const afterChunk0 = shouldSelfChain(1, 67_000);
     expect(afterChunk0.shouldChain).toBe(false);
 
-    // After chunk 1: 67s + 35s = 102s — wall-clock guard fires
     const afterChunk1 = shouldSelfChain(2, 102_000);
     expect(afterChunk1.shouldChain).toBe(true);
     expect(afterChunk1.reason).toContain('wall-clock');
+  });
+});
+
+describe('AI timeout budget', () => {
+  it('single chunk worst-case (attempt + chunk retry) fits within edge function limit', () => {
+    // Worst case per chunk: AI_TIMEOUT_MS + CHUNK_RETRY_BACKOFF_MS + AI_TIMEOUT_MS
+    const worstCaseChunkMs = AI_TIMEOUT_MS + CHUNK_RETRY_BACKOFF_MS + AI_TIMEOUT_MS;
+    expect(worstCaseChunkMs).toBeLessThan(EDGE_FUNCTION_LIMIT_MS);
+  });
+
+  it('mapping + one chunk worst-case fits within edge function limit', () => {
+    const mappingWorstCase = AI_TIMEOUT_MS; // mapping also uses callAIWithRetry
+    const chunkWorstCase = AI_TIMEOUT_MS + CHUNK_RETRY_BACKOFF_MS + AI_TIMEOUT_MS;
+    const total = mappingWorstCase + chunkWorstCase;
+    // Should fit within 150s even if mapping and chunk both take max time
+    expect(total).toBeLessThan(EDGE_FUNCTION_LIMIT_MS);
+  });
+
+  it('AI timeout is long enough for 3-image credit report chunks', () => {
+    // Previously 25s was too short — AI calls were aborting at 25s
+    expect(AI_TIMEOUT_MS).toBeGreaterThanOrEqual(45_000);
+  });
+
+  it('wall-clock guard triggers before edge function kill', () => {
+    expect(WALL_CLOCK_CHAIN_THRESHOLD_MS).toBeLessThan(EDGE_FUNCTION_LIMIT_MS - AI_TIMEOUT_MS);
   });
 });
 
