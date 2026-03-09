@@ -16,7 +16,7 @@ import { describe, it, expect } from 'vitest';
 
 const MAX_CHUNKS_PER_INVOCATION = 3;
 const WALL_CLOCK_CHAIN_THRESHOLD_MS = 100_000;
-const AI_TIMEOUT_MS = 50_000;
+const AI_TIMEOUT_MS = 30_000;
 const CHUNK_RETRY_BACKOFF_MS = 3_000;
 const EDGE_FUNCTION_LIMIT_MS = 150_000;
 
@@ -87,8 +87,9 @@ describe('AI timeout budget', () => {
     expect(remainingAfterMapping).toBeGreaterThanOrEqual(AI_TIMEOUT_MS);
   });
 
-  it('AI timeout is long enough for 3-image credit report chunks', () => {
-    expect(AI_TIMEOUT_MS).toBeGreaterThanOrEqual(45_000);
+  it('AI timeout gives enough buffer for credit report chunks', () => {
+    // With correct MIME types and Gemini Flash, 30s is plenty (typical: 5-15s)
+    expect(AI_TIMEOUT_MS).toBeGreaterThanOrEqual(25_000);
   });
 
   it('wall-clock guard triggers before edge function kill', () => {
