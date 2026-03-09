@@ -188,6 +188,9 @@ const AIAnalyzer = () => {
   // Track if job completed but results failed to load (for debug panel)
   const [jobCompletedButEmpty, setJobCompletedButEmpty] = useState(false);
   const [lastJobInfo, setLastJobInfo] = useState<{ jobId: string | null; resultCount: number } | null>(null);
+  
+  // Manual review accounts — tracked separately so they persist into dispute import
+  const [manualReviewAccounts, setManualReviewAccounts] = useState<any[]>([]);
 
   // Store the job ID for callbacks (avoids circular dependency)
   const currentJobIdRef = useRef<string | null>(null);
