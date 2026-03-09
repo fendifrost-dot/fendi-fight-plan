@@ -5,21 +5,18 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { FULL_SYSTEM_PROMPT } from "../_shared/credit-parser-prompt.ts";
 import { postProcessAndValidate } from "../_shared/parser-validator.ts";
 import { PARSER_ERROR_CODES } from "../_shared/parser-contract.ts";
-import { ensureRequiredArrays } from "../_shared/parser-schema.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// Input validation constants
 const MAX_IMAGE_SIZE = 15000000;
 const MAX_IMAGES = 50;
 const MAX_TEXT_LENGTH = 500000;
 const VALID_BUREAUS = ["experian", "equifax", "transunion"] as const;
 const MULTI_BUREAU_SENTINEL = "multi-bureau";
 
-// Rate limiting
 const rateLimitStore = new Map<string, { count: number; resetTime: number }>();
 const RATE_LIMIT_WINDOW_MS = 60000;
 const RATE_LIMIT_MAX_REQUESTS = 10;
@@ -42,7 +39,6 @@ serve(async (req) => {
   }
 
   try {
-    // Authentication
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
       return new Response(JSON.stringify({ error: "Authentication required. Please log in to use this feature." }), {
@@ -83,14 +79,12 @@ serve(async (req) => {
 
     const { questionnaire, responseText, responseImages, bureau, hasIdentityDocs } = await req.json();
 
-    // Validate questionnaire
     if (!questionnaire || !questionnaire.fullLegalName || !questionnaire.currentAddress || !questionnaire.currentEmployer) {
       return new Response(JSON.stringify({ error: "Required questionnaire fields missing: full legal name, current address, and current employer are required." }), {
         status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // Validate images
     if (responseImages) {
       if (!Array.isArray(responseImages)) {
         return new Response(JSON.stringify({ error: "Invalid images format" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -108,7 +102,6 @@ serve(async (req) => {
       }
     }
 
-    // Validate text
     if (responseText) {
       if (typeof responseText !== 'string') {
         return new Response(JSON.stringify({ error: "Invalid text format" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -135,7 +128,6 @@ serve(async (req) => {
       });
     }
 
-    // Build user content with questionnaire context
     const userContent: any[] = [];
     
     let contextMessage = `## QUESTIONNAIRE DATA (GROUND TRUTH - Use these as the ONLY accurate values)
@@ -240,29 +232,28 @@ Include all derogatory items with maximum inclusion (dispute-safe approach).`;
         charge_offs: [],
         public_records: [],
         inquiries: [],
-        summary: "Analysis could not be fully structured.",
         warnings: ["The analysis encountered formatting issues. Results may be incomplete."]
       };
     }
 
     // ── Deterministic post-processing via shared validator ──
-    const postProcessed = postProcessAndValidate(parsedResult);
+    // Pass responseText for Pass 1 block detection if available
+    const postProcessed = postProcessAndValidate(parsedResult, responseText || undefined);
 
     // ── Enforcement: check for EXTRACTION_INCOMPLETE ──
     if (postProcessed.isError) {
       console.error(`[analyze-response] ${PARSER_ERROR_CODES.EXTRACTION_INCOMPLETE}: ${postProcessed.errorMessage}`);
-      // Still return all data — never discard — but flag the error prominently
       postProcessed.report._extraction_error = PARSER_ERROR_CODES.EXTRACTION_INCOMPLETE;
       postProcessed.report._extraction_error_message = postProcessed.errorMessage;
     }
 
-    // Log schema violations
     if (postProcessed.schema.violations.length > 0) {
       console.warn(`[analyze-response] Schema violations: ${postProcessed.schema.violations.length}`, 
         postProcessed.schema.violations.slice(0, 5).map(v => `${v.entity}[${v.index}].${v.field}: ${v.reason}`));
     }
 
-    // Ensure all expected fields exist on output
+    // Build output — summary/next_steps are NOT part of the contract.
+    // They are passed through as downstream convenience fields only.
     const result: any = {
       validation_status: postProcessed.report.validation_status || "SKIPPED",
       validation_messages: postProcessed.validation.messages || [],
@@ -281,12 +272,15 @@ Include all derogatory items with maximum inclusion (dispute-safe approach).`;
       inquiries: postProcessed.report.inquiries,
       tradeline_inventory: postProcessed.report.tradeline_inventory,
       duplicate_flags: postProcessed.duplicateFlags,
-      summary: parsedResult.summary || "",
-      next_steps: parsedResult.next_steps || [],
+      // Non-contract downstream fields (stripped from contract by validator)
+      _downstream_summary: parsedResult.summary || null,
+      _downstream_next_steps: parsedResult.next_steps || null,
       warnings: parsedResult.warnings || [],
       _schema_violations: postProcessed.schema.violations.length,
       _schema_rejected: postProcessed.schema.rejectedAccounts.length,
       _extraction_error: postProcessed.report._extraction_error || null,
+      _extraction_error_message: postProcessed.report._extraction_error_message || null,
+      _validation_fatal: postProcessed.validation.fatal,
     };
 
     return new Response(JSON.stringify(result), {

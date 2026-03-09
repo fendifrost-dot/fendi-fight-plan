@@ -1,13 +1,24 @@
 /**
  * Parser Schema — Client-side mirror of supabase/functions/_shared/parser-schema.ts
  * Validates AI extraction output structure and required fields.
+ * 
+ * CRITICAL: Missing account_number is a critical violation unless
+ * the value is "N/A" or "UNEXTRACTABLE" (contract placeholders).
  */
+
+const CONTRACT_PLACEHOLDERS = ['N/A', 'UNEXTRACTABLE'] as const;
+
+function isContractPlaceholder(val: any): boolean {
+  if (typeof val !== 'string') return false;
+  return (CONTRACT_PLACEHOLDERS as readonly string[]).includes(val.trim().toUpperCase());
+}
 
 export interface SchemaViolation {
   entity: string;
   index: number;
   field: string;
   reason: string;
+  critical: boolean;
 }
 
 export interface SchemaValidationResult {
@@ -35,7 +46,7 @@ export function validateSchema(result: any): SchemaValidationResult {
   const rejectedAccounts: any[] = [];
 
   if (!result || typeof result !== 'object') {
-    return { valid: false, violations: [{ entity: 'root', index: -1, field: 'result', reason: 'Result is not an object' }], validAccounts: [], rejectedAccounts: [] };
+    return { valid: false, violations: [{ entity: 'root', index: -1, field: 'result', reason: 'Result is not an object', critical: true }], validAccounts: [], rejectedAccounts: [] };
   }
 
   if (result.derogatory_accounts && Array.isArray(result.derogatory_accounts)) {
@@ -44,20 +55,21 @@ export function validateSchema(result: any): SchemaValidationResult {
       const acctViolations: SchemaViolation[] = [];
 
       if (!isNonEmptyString(acct.creditor_name)) {
-        acctViolations.push({ entity: 'derogatory_accounts', index: i, field: 'creditor_name', reason: 'Missing or empty creditor_name' });
+        acctViolations.push({ entity: 'derogatory_accounts', index: i, field: 'creditor_name', reason: 'Missing or empty creditor_name', critical: true });
       }
+      // account_number: critical unless contract placeholder
       if (!isNonEmptyString(acct.account_number)) {
-        acctViolations.push({ entity: 'derogatory_accounts', index: i, field: 'account_number', reason: 'Missing or empty account_number' });
+        acctViolations.push({ entity: 'derogatory_accounts', index: i, field: 'account_number', reason: 'Missing or empty account_number. Must be actual value, "N/A", or "UNEXTRACTABLE".', critical: true });
       }
       if (!isArrayOrUndefined(acct.bureaus)) {
-        acctViolations.push({ entity: 'derogatory_accounts', index: i, field: 'bureaus', reason: 'Must be array' });
+        acctViolations.push({ entity: 'derogatory_accounts', index: i, field: 'bureaus', reason: 'Must be array', critical: false });
       }
       if (acct.confidence && !['high', 'medium', 'low', 'incomplete'].includes(acct.confidence)) {
-        acctViolations.push({ entity: 'derogatory_accounts', index: i, field: 'confidence', reason: `Invalid confidence: ${acct.confidence}` });
+        acctViolations.push({ entity: 'derogatory_accounts', index: i, field: 'confidence', reason: `Invalid confidence: ${acct.confidence}`, critical: false });
       }
 
       violations.push(...acctViolations);
-      const hasCritical = acctViolations.some(v => v.field === 'creditor_name');
+      const hasCritical = acctViolations.some(v => v.critical);
       if (hasCritical) {
         rejectedAccounts.push({ ...acct, _rejection_reasons: acctViolations.map(v => v.reason) });
       } else {

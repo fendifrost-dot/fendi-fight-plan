@@ -3,12 +3,12 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // ── Imports from shared contract (single source of truth) ──
 import { WORKER_SYSTEM_PROMPT, WORKER_ACCOUNTS_PROMPT } from "../_shared/credit-parser-prompt.ts";
-import { postProcessChunkResult } from "../_shared/parser-validator.ts";
-import { detectDuplicates, PARSER_ERROR_CODES } from "../_shared/parser-contract.ts";
+import { postProcessAndValidate } from "../_shared/parser-validator.ts";
+import { PARSER_ERROR_CODES } from "../_shared/parser-contract.ts";
 import { validateSchema, ensureRequiredArrays } from "../_shared/parser-schema.ts";
 
-// Build fingerprint — proves THIS code is deployed
-console.log("ANALYSIS_WORKER_BUILD", { version: "contract_enforced_v1", model: "google/gemini-3-flash-preview", wallClockThresholdMs: 100000, aiTimeoutMs: 30000, maxRetries: 0, flatDocMapSupport: true, sharedContract: true });
+// Build fingerprint
+console.log("ANALYSIS_WORKER_BUILD", { version: "contract_enforced_v2_no_merge", model: "google/gemini-3-flash-preview", wallClockThresholdMs: 100000, aiTimeoutMs: 30000, maxRetries: 0, sharedContract: true, merging: false });
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -216,7 +216,7 @@ async function processChunk(
       { role: "user", content: userContent },
     ]);
 
-    // ── Deterministic validation on chunk result ──
+    // Schema validation on chunk result (informational — never discard)
     if (result.accounts && Array.isArray(result.accounts)) {
       const schemaCheck = validateSchema({ derogatory_accounts: result.accounts });
       if (schemaCheck.rejectedAccounts.length > 0) {
@@ -416,6 +416,7 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
 
       try {
         const result = await processChunk(client, jobId, lovableApiKey, chunks[i], i, totalChunks);
+        // CRITICAL: Push every account individually — NEVER merge or deduplicate
         allAccounts.push(...result.accounts);
         chunkTimings.push(result.timing);
         processedChunks = i + 1;
@@ -455,45 +456,41 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
       if (i < chunks.length - 1) await new Promise(r => setTimeout(r, 500));
     }
 
-    // All chunks done — finalize
-    await updateJob(client, jobId, { step: "normalizing", progress: 92 });
+    // ── All chunks done — finalize with SAME pipeline as analyze-response ──
+    await updateJob(client, jobId, { step: "validating", progress: 92 });
 
-    const seenAccounts = new Map<string, any>();
-    for (const acc of allAccounts) {
-      const key = `${acc.creditor_name || ""}_${acc.account_number || ""}`.toLowerCase();
-      if (!seenAccounts.has(key)) {
-        seenAccounts.set(key, {
-          id: crypto.randomUUID(),
-          creditorName: acc.creditor_name || "Unknown",
-          maskedAccountNumber: acc.account_number || "Unknown",
-          dateOpened: acc.date_opened,
-          status: acc.status,
-          balance: acc.balance,
-          derogatoryTriggers: acc.derogatory_triggers || [],
-          bureaus: acc.bureaus || [],
-          confidence: 0.8,
-        });
-      }
+    // CRITICAL: NO merging, NO deduplication, NO normalization.
+    // Every extracted tradeline is preserved individually.
+    // Wrap raw accounts into the contract structure for postProcessAndValidate.
+    const rawResult = {
+      derogatory_accounts: allAccounts,
+      collections: [] as any[],
+      charge_offs: [] as any[],
+      inquiries: [] as any[],
+      public_records: [] as any[],
+    };
+
+    // Run the EXACT SAME deterministic pipeline as analyze-response
+    const postProcessed = postProcessAndValidate(rawResult);
+
+    // Determine terminal status
+    let finalStatus: string;
+    if (failedChunks.length > 0 && allAccounts.length === 0) {
+      finalStatus = "FAILED";
+    } else if (postProcessed.isError) {
+      // Count mismatch = EXTRACTION_INCOMPLETE — still output data but flag error
+      finalStatus = failedChunks.length > 0 ? "PARTIAL" : "DONE";
+    } else if (failedChunks.length > 0) {
+      finalStatus = "PARTIAL";
+    } else {
+      finalStatus = "DONE";
     }
-
-    const normalizedAccounts = Array.from(seenAccounts.values());
-
-    // ── Deterministic post-processing on merged result ──
-    const duplicateFlags = detectDuplicates(normalizedAccounts);
-
-    // ── Validate final extraction ──
-    const finalSchemaCheck = validateSchema({ derogatory_accounts: normalizedAccounts });
-    if (finalSchemaCheck.rejectedAccounts.length > 0) {
-      console.warn(`[worker] job=${jobId} FINAL schema rejected ${finalSchemaCheck.rejectedAccounts.length} accounts`);
-    }
-
-    const finalStatus = failedChunks.length > 0 && normalizedAccounts.length === 0 ? "FAILED" :
-                         failedChunks.length > 0 ? "PARTIAL" : "DONE";
 
     const totalElapsedMs = Date.now() - invocationStartedAt;
 
     const resultData = {
-      accounts: normalizedAccounts,
+      // Preserve every account individually — no merging
+      accounts: postProcessed.report.derogatory_accounts,
       documentMap,
       totalPages: storagePaths.length,
       processedChunks,
@@ -501,15 +498,14 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
       failedChunks,
       chunkTimings,
       workerElapsedMs: totalElapsedMs,
-      duplicate_flags: duplicateFlags,
-      tradeline_inventory: {
-        total_accounts: normalizedAccounts.length,
-        total_pages: storagePaths.length,
-        processed_chunks: processedChunks,
-        failed_chunks: failedChunks.length,
-        schema_rejected: finalSchemaCheck.rejectedAccounts.length,
-      },
-      validation_status: failedChunks.length === 0 ? 'PASS' : `WARNING: ${failedChunks.length} chunk(s) failed`,
+      // From shared validator — same as analyze-response
+      duplicate_flags: postProcessed.duplicateFlags,
+      tradeline_inventory: postProcessed.report.tradeline_inventory,
+      validation_status: postProcessed.report.validation_status,
+      _schema_violations: postProcessed.schema.violations.length,
+      _schema_rejected: postProcessed.schema.rejectedAccounts.length,
+      _extraction_error: postProcessed.isError ? PARSER_ERROR_CODES.EXTRACTION_INCOMPLETE : null,
+      _extraction_error_message: postProcessed.errorMessage,
     };
 
     const errorFields: Record<string, any> = {};
@@ -525,16 +521,23 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
       errorFields.error_meta = { failedChunks, totalChunks, chunkTimings, workerElapsedMs: totalElapsedMs, where: "model_call" };
     }
 
+    if (postProcessed.isError && !errorFields.error_code) {
+      errorFields.error_code = PARSER_ERROR_CODES.EXTRACTION_INCOMPLETE;
+      errorFields.error_message = postProcessed.errorMessage;
+      errorFields.error_stage = "VALIDATOR";
+      errorFields.error_meta = { validation: postProcessed.validation, schema_violations: postProcessed.schema.violations.length };
+    }
+
     await updateJob(client, jobId, {
       status: finalStatus, step: "complete", progress: 100, result_data: resultData,
-      checkpoints: { documentMap, accounts: normalizedAccounts, processedChunks, totalChunks, failedChunks, chunkTimings },
+      checkpoints: { documentMap, accounts: allAccounts, processedChunks, totalChunks, failedChunks, chunkTimings },
       completed_at: new Date().toISOString(), ...errorFields,
     });
 
     await cleanupJobStorage(client, job.user_id, jobId);
-    console.log(`[worker] job=${jobId} FINALIZED status=${finalStatus} accounts=${normalizedAccounts.length} elapsed=${totalElapsedMs}ms`);
+    console.log(`[worker] job=${jobId} FINALIZED status=${finalStatus} accounts=${allAccounts.length} elapsed=${totalElapsedMs}ms validation=${postProcessed.validation.status}`);
 
-    return new Response(JSON.stringify({ status: finalStatus, accountCount: normalizedAccounts.length, workerElapsedMs: totalElapsedMs }), {
+    return new Response(JSON.stringify({ status: finalStatus, accountCount: allAccounts.length, workerElapsedMs: totalElapsedMs }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
