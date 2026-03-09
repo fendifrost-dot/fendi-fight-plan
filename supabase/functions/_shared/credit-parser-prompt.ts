@@ -287,8 +287,17 @@ export const WORKER_SYSTEM_PROMPT = `You are a deterministic credit report parsi
 ${CANONICAL_EXTRACTION_RULES}`;
 
 
-export const WORKER_ACCOUNTS_PROMPT = `Extract ALL accounts from these credit report pages using deterministic two-pass extraction.
+export const WORKER_ACCOUNTS_PROMPT = `Extract ALL entities from these credit report pages using deterministic two-pass extraction.
 
 Apply the SYSTEM RULES exactly. Extract every tradeline individually — never merge, group, or deduplicate.
 
-Output JSON: { "accounts": [{ "creditor_name": "...", "account_number": "XXXX... or N/A or UNEXTRACTABLE", "account_type": "Individual|Joint|Authorized User|N/A", "date_opened": "MM/YYYY or N/A", "date_closed": "or null", "status": "...", "status_as_reported": "...", "balance": "$X,XXX or N/A", "past_due_amount": "or null", "derogatory_triggers": ["30-day late"], "payment_grid_codes": "or null", "remarks": "or null", "date_first_delinquency": "or null", "section_header": "or null", "confidence": "high|medium|low|incomplete", "bureaus": [], "bureau_status": {}, "block_text": "full text of the account block" }] }`;
+Output JSON with ALL entity types:
+{
+  "accounts": [{ "creditor_name": "...", "account_number": "XXXX... or N/A or UNEXTRACTABLE", "account_type": "Individual|Joint|Authorized User|N/A", "date_opened": "MM/YYYY or N/A", "date_closed": "or null", "status": "...", "status_as_reported": "...", "balance": "$X,XXX or N/A", "past_due_amount": "or null", "derogatory_triggers": ["30-day late"], "payment_grid_codes": "or null", "remarks": "or null", "date_first_delinquency": "or null", "section_header": "or null", "confidence": "high|medium|low|incomplete", "bureaus": [], "bureau_status": {}, "block_text": "full text of the account block" }],
+  "collections": [{ "collection_agency": "Name", "creditor_name": "Name", "original_creditor": "or N/A", "account_number": "or N/A", "date_opened": "MM/YYYY or N/A", "date_reported": "or null", "balance": "$X,XXX", "status": "Status text", "bureaus": [] }],
+  "inquiries": [{ "creditor_name": "Name", "date": "MM/DD/YYYY", "type": "hard|soft|promotional|account_review|unknown", "bureaus": [] }],
+  "public_records": [{ "type": "Bankruptcy|Lien|Judgment|etc.", "court_jurisdiction": "Court name or null", "filing_date": "MM/DD/YYYY", "status": "Status", "amount": "$X,XXX or null", "date_resolved": "or null", "bureaus": [] }],
+  "charge_offs": [{ "creditor_name": "Name", "account_number": "XXX", "date_charged_off": "MM/YYYY", "balance": "$X,XXX", "bureaus": [] }]
+}
+
+IMPORTANT: Extract ALL entity types visible on these pages. Do NOT skip collections, inquiries, or public records.`;

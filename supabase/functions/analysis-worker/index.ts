@@ -385,6 +385,10 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
     const resumeFromDb = checkpoints.processedChunks ?? 0;
     let processedChunks = Number.isFinite(startChunk) ? startChunk : resumeFromDb;
     const allAccounts: any[] = checkpoints.accounts || [];
+    const allCollections: any[] = checkpoints.collections || [];
+    const allInquiries: any[] = checkpoints.inquiries || [];
+    const allPublicRecords: any[] = checkpoints.publicRecords || [];
+    const allChargeOffs: any[] = checkpoints.chargeOffs || [];
     const failedChunks: number[] = checkpoints.failedChunks || [];
     const chunkTimings: ChunkTiming[] = checkpoints.chunkTimings || [];
 
