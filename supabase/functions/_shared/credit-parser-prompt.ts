@@ -265,11 +265,15 @@ Extract: Collection Agency, Original Creditor, Account Number (exactly as printe
 ## PUBLIC RECORDS EXTRACTION
 Extract: Type (Bankruptcy, Judgment, Tax Lien, Civil Judgment), Filed Date, Court/Source, Status, Amount, Date Resolved, Bureau.
 
-## INQUIRY EXTRACTION
+## INQUIRY EXTRACTION (INDEPENDENT — DO NOT SKIP)
+Inquiries MUST be extracted independently of tradeline/derogatory classification.
+Even if zero derogatory accounts are found, inquiries must still be extracted.
+Look for sections titled "Inquiries", "Credit Inquiries", "Hard Inquiries", "Requests for Your Credit History", "Regular Inquiries".
 Hard Inquiries: Extract fully (primary output).
 Soft/Promotional/Account Review: Extract separately.
 If report doesn't distinguish, extract all and note "Inquiry type not classified in report."
 Fields: Creditor/Source, Date, Type (Hard/Soft/Promotional/Account Review), Bureau.
+CRITICAL: Do NOT merge inquiry names with tradeline names. Extract inquiry creditor names exactly as printed.
 
 ## VALIDATION GATE (MANDATORY)
 After extraction, reconcile counts with bureau summary metrics from Pass 0.
