@@ -183,23 +183,9 @@ describe('Defect 3: Bureau-aware duplicate detection', () => {
 
 describe('Defect 4: Real Pass 1 tradeline inventory', () => {
   it('Pass 1 block count differs from extracted negatives when text has more blocks', () => {
-    const reportText = `
-Account Name: CHASE BANK
-Balance: $5,000
-Status: Current
-
-Account Name: WELLS FARGO
-Balance: $12,000
-Status: Current
-
-Account Name: CAPITAL ONE
-Balance: $3,000
-Status: 30 days late
-
-Account Name: CITI BANK
-Balance: $8,000
-Status: Current
-`;
+    // Blocks spaced 200+ chars apart so clustering doesn't merge them
+    const block = (name: string) => `\nAccount Name: ${name}\nAccount Type: Individual\nDate Opened: 01/2020\nBalance: $5,000\nPayment Status: Current\nStatus: Current\nRemarks: None\nEnd of block for ${name}\n${'x'.repeat(100)}\n`;
+    const reportText = block('CHASE BANK') + block('WELLS FARGO') + block('CAPITAL ONE') + block('CITI BANK');
     // Only 1 negative extracted by AI
     const report = {
       derogatory_accounts: [
