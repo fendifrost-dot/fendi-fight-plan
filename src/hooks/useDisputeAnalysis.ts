@@ -400,92 +400,61 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
       message: 'Extracting account information...',
     });
 
-    // Focus on accounts section for disputes
-    const accountsSection = documentMap.sections.accounts;
+    // Process ALL pages (not just accounts section) to capture inquiries, public records, etc.
     const allAccounts: any[] = [];
+    const allInquiries: any[] = [];
+    const allPublicRecords: any[] = [];
+    const allCollections: any[] = [];
     const failedChunks: number[] = [];
 
-    if (accountsSection.detected && accountsSection.start_page && accountsSection.end_page) {
-      const startIdx = accountsSection.start_page - 1;
-      const endIdx = accountsSection.end_page;
-      const sectionImages = images.slice(startIdx, endIdx);
+    // Always chunk ALL pages to avoid dropping entities on later pages
+    const chunks: string[][] = [];
+    for (let i = 0; i < images.length; i += MAX_IMAGES_PER_CHUNK) {
+      chunks.push(images.slice(i, i + MAX_IMAGES_PER_CHUNK));
+    }
 
-      // Split into chunks
-      const chunks: string[][] = [];
-      for (let i = 0; i < sectionImages.length; i += MAX_IMAGES_PER_CHUNK) {
-        chunks.push(sectionImages.slice(i, i + MAX_IMAGES_PER_CHUNK));
-      }
+    setProgress(prev => ({
+      ...prev,
+      totalSteps: chunks.length,
+      message: `Processing ${images.length} pages in ${chunks.length} chunks...`,
+    }));
 
-      setProgress(prev => ({
-        ...prev,
-        totalSteps: chunks.length,
-      }));
+    for (let i = 0; i < chunks.length; i += CONCURRENT_REQUESTS) {
+      if (abortRef.current) break;
 
-      // Process chunks with limited concurrency
-      for (let i = 0; i < chunks.length; i += CONCURRENT_REQUESTS) {
-        if (abortRef.current) break;
+      const batch = chunks.slice(i, i + CONCURRENT_REQUESTS);
+      const batchPromises = batch.map((chunk, batchIdx) => 
+        processChunk('full', chunk, i + batchIdx, chunks.length, accessToken)
+      );
 
-        const batch = chunks.slice(i, i + CONCURRENT_REQUESTS);
-        const batchPromises = batch.map((chunk, batchIdx) => 
-          processChunk('accounts', chunk, i + batchIdx, chunks.length, accessToken)
-        );
+      const results = await Promise.allSettled(batchPromises);
 
-        const results = await Promise.allSettled(batchPromises);
-
-        results.forEach((result, batchIdx) => {
-          const chunkIdx = i + batchIdx;
-          if (result.status === 'fulfilled' && result.value) {
-            const data = result.value;
-            if (data.derogatory_accounts) allAccounts.push(...data.derogatory_accounts);
-            if (data.collections) allAccounts.push(...data.collections.map((c: any) => ({ ...c, isCollection: true })));
-            if (data.charge_offs) allAccounts.push(...data.charge_offs.map((c: any) => ({ ...c, isChargeOff: true })));
-          } else {
-            failedChunks.push(chunkIdx);
+      results.forEach((result, batchIdx) => {
+        const chunkIdx = i + batchIdx;
+        if (result.status === 'fulfilled' && result.value) {
+          const data = result.value;
+          if (data.derogatory_accounts) allAccounts.push(...data.derogatory_accounts);
+          if (data.collections) {
+            allCollections.push(...data.collections);
+            allAccounts.push(...data.collections.map((c: any) => ({ ...c, isCollection: true })));
           }
-          
-          setProgress(prev => ({
-            ...prev,
-            completedSteps: prev.completedSteps + 1,
-            failedChunks: failedChunks.map(String),
-            message: `Processed ${prev.completedSteps + 1} of ${chunks.length} chunks...`,
-          }));
-        });
-
-        // Small delay between batches to avoid rate limits
-        if (i + CONCURRENT_REQUESTS < chunks.length) {
-          await new Promise(r => setTimeout(r, 500));
-        }
-      }
-    } else {
-      // No accounts section detected - process all pages
-      const chunks: string[][] = [];
-      for (let i = 0; i < images.length; i += MAX_IMAGES_PER_CHUNK) {
-        chunks.push(images.slice(i, i + MAX_IMAGES_PER_CHUNK));
-      }
-
-      setProgress(prev => ({
-        ...prev,
-        totalSteps: chunks.length,
-        message: 'Processing all pages...',
-      }));
-
-      for (let i = 0; i < chunks.length && !abortRef.current; i++) {
-        try {
-          const result = await processChunk('accounts', chunks[i], i, chunks.length, accessToken);
-          if (result) {
-            if (result.derogatory_accounts) allAccounts.push(...result.derogatory_accounts);
-            if (result.collections) allAccounts.push(...result.collections);
-            if (result.charge_offs) allAccounts.push(...result.charge_offs);
-          }
-        } catch (e) {
-          failedChunks.push(i);
+          if (data.charge_offs) allAccounts.push(...data.charge_offs.map((c: any) => ({ ...c, isChargeOff: true })));
+          if (data.inquiries) allInquiries.push(...data.inquiries);
+          if (data.public_records) allPublicRecords.push(...data.public_records);
+        } else {
+          failedChunks.push(chunkIdx);
         }
         
         setProgress(prev => ({
           ...prev,
-          completedSteps: i + 1,
+          completedSteps: prev.completedSteps + 1,
           failedChunks: failedChunks.map(String),
+          message: `Processed ${prev.completedSteps + 1} of ${chunks.length} chunks...`,
         }));
+      });
+
+      if (i + CONCURRENT_REQUESTS < chunks.length) {
+        await new Promise(r => setTimeout(r, 500));
       }
     }
 
