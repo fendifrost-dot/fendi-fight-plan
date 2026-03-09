@@ -16,7 +16,7 @@ import { describe, it, expect } from 'vitest';
 
 const MAX_CHUNKS_PER_INVOCATION = 3;
 const WALL_CLOCK_CHAIN_THRESHOLD_MS = 100_000;
-const AI_TIMEOUT_MS = 50_000;
+const AI_TIMEOUT_MS = 30_000;
 const CHUNK_RETRY_BACKOFF_MS = 3_000;
 const EDGE_FUNCTION_LIMIT_MS = 150_000;
 
