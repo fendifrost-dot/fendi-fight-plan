@@ -162,6 +162,28 @@ export const PARSER_ERROR_CODES = {
   INVALID_DEROGATORY_LEAK: 'INVALID_DEROGATORY_LEAK',
 } as const;
 
+// ─── Placeholder / Non-Trigger Values ──────────────────────────────────────
+// These values must NEVER count as negative triggers when found as field values.
+// They represent missing/unextracted data, not actual negative indicators.
+export const PLACEHOLDER_VALUES: readonly string[] = [
+  'n/a', 'N/A', 'na', 'NA',
+  'unextractable', 'UNEXTRACTABLE',
+  'not reported', 'Not Reported', 'NOT REPORTED',
+  '', '-', '—', 'null', 'none', 'None', 'NONE',
+] as const;
+
+/**
+ * Check if a value is a placeholder/non-trigger value.
+ * These must never be treated as actual data for trigger purposes.
+ */
+export function isPlaceholderValue(val: any): boolean {
+  if (val === null || val === undefined) return true;
+  if (typeof val !== 'string') return false;
+  const trimmed = val.trim();
+  if (trimmed === '') return true;
+  return PLACEHOLDER_VALUES.some(p => trimmed.toLowerCase() === p.toLowerCase());
+}
+
 // ─── Positive Status Keywords (clean tradeline detection) ──────────────────
 export const POSITIVE_STATUS_KEYWORDS: readonly string[] = [
   'paid or paying as agreed', 'pays as agreed', 'paid as agreed',
