@@ -184,7 +184,7 @@ serve(async (req) => {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "openai/gpt-5-nano", // Fast model for structure detection
+        model: "google/gemini-3-flash-preview", // Fast model for structure detection
         messages: [
           { role: "system", content: MAP_PROMPT },
           { role: "user", content: userContent }

@@ -320,7 +320,7 @@ Current Employer: ${questionnaire.currentEmployer}`;
       }
     }
 
-    const model = hasText ? "google/gemini-2.5-flash" : "google/gemini-2.5-flash";
+    const model = "google/gemini-3-flash-preview";
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
