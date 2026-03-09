@@ -43,8 +43,10 @@ late, late payment, late payments, 30 days late, 60 days late, 90 days late, 120
 ### Context-Sensitive Keywords
 C/O — match ONLY in status/remark/account status fields. Do NOT match in address lines (where it means "care of").
 
-### Past Due Amount Rule
+### Past Due Amount Rule (VALUE-AWARE)
 Flag as negative ONLY if dollar value is > $0. "Past Due Amount: $0" is NOT negative.
+Do NOT trigger from the field label "Past Due" alone — only from the parsed dollar value.
+"$0", "$0.00", null, blank, N/A, UNEXTRACTABLE = NOT negative.
 
 ### Payment History Grid Codes
 Flag as negative if any cell value is NOT one of: OK, C, 0, 1 (current), blank, dash, N/A.
@@ -53,8 +55,19 @@ Negative codes: 2=30 days late, 3=60 days late, 4=90 days late, 5=120+ days late
 ### Section Header Signal
 If a tradeline appears under "Potentially Negative Items", "Negative Accounts", "Adverse Accounts", "Collection Accounts", or "Derogatory" → include it as negative regardless.
 
-### Date of First Delinquency Rule
-If a tradeline contains "Date of First Delinquency" or "Date of 1st Delinquency" with any value → negative indicator.
+### Date of First Delinquency Rule (VALUE-AWARE)
+Flag as negative ONLY if the value contains an actual date (has digits).
+null, N/A, UNEXTRACTABLE, blank, "-", "not reported" = NOT a negative trigger.
+Do NOT trigger from the field label "Date of First Delinquency" alone.
+
+### Placeholder / Non-Trigger Values
+The following values must NEVER be treated as negative triggers when they appear as field VALUES:
+null, N/A, UNEXTRACTABLE, blank, "-", "—", "not reported", "none"
+These represent missing data, not negative indicators.
+
+### Field Label Safeguard
+Do NOT classify based on field LABELS alone. Words like "past due", "delinquency", "status" 
+must be interpreted from parsed field VALUES, not from the presence of the label text.
 
 ### Closed Account Rule
 Closed accounts must still be included if they match any negative indicator.
