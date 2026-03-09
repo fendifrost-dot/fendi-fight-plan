@@ -38,7 +38,8 @@ All matching must use whole-word boundary matching — never substring matching.
 For example, "late" must NOT match "later", "collateral", "related", or "translated".
 
 ### Status Keywords (whole words/phrases)
-late, late payment, late payments, 30 days late, 60 days late, 90 days late, 120 days late, 150 days late, 30-day late, 60-day late, 90-day late, 120-day late, 150-day late, potentially negative, past due, past-due, derogatory, charge off, charged off, charged-off, chargeoff, written off, write off, write-off, collection, collections, repossession, foreclosure, settled, settled for less, bankruptcy, included in bankruptcy, profit and loss write-off
+late, late payment, late payments, 30 days late, 60 days late, 90 days late, 120 days late, 150 days late, 30-day late, 60-day late, 90-day late, 120-day late, 150-day late, 30 days past due, 60 days past due, 90 days past due, 120 days past due, potentially negative, derogatory, charge off, charged off, charged-off, chargeoff, charged off as bad debt, written off, write off, write-off, collection, collections, repossession, foreclosure, settled, settled for less, bankruptcy, included in bankruptcy, profit and loss write-off
+NOTE: Plain "past due" is NOT in this list. Past due detection uses the VALUE-AWARE rule below (amount > $0 only).
 
 ### Context-Sensitive Keywords
 C/O — match ONLY in status/remark/account status fields. Do NOT match in address lines (where it means "care of").
@@ -56,7 +57,8 @@ Negative codes: 2=30 days late, 3=60 days late, 4=90 days late, 5=120+ days late
 If a tradeline appears under "Potentially Negative Items", "Negative Accounts", "Adverse Accounts", "Collection Accounts", or "Derogatory" → include it as negative regardless.
 
 ### Date of First Delinquency Rule (VALUE-AWARE)
-Flag as negative ONLY if the value contains an actual date (has digits).
+Flag as negative ONLY if the value matches a real date pattern: MM/YYYY, MM/DD/YYYY, YYYY-MM-DD, MM-DD-YYYY, "Month YYYY", MM-YYYY.
+Bare years like "2020" do NOT qualify. Strings without date separators do NOT qualify.
 null, N/A, UNEXTRACTABLE, blank, "-", "not reported" = NOT a negative trigger.
 Do NOT trigger from the field label "Date of First Delinquency" alone.
 
@@ -68,6 +70,10 @@ These represent missing data, not negative indicators.
 ### Field Label Safeguard
 Do NOT classify based on field LABELS alone. Words like "past due", "delinquency", "status" 
 must be interpreted from parsed field VALUES, not from the presence of the label text.
+
+### Historical Grid Code Rule
+A tradeline with positive CURRENT status (e.g., "Paid as agreed", "Current") but HISTORICAL late payment grid codes (2, 3, 4, 5, X, CO, D) IS negative.
+Grid codes are an INDEPENDENT trigger — they override positive current status. Do NOT exclude a tradeline just because its current status is positive if historical grid evidence exists.
 
 ### Closed Account Rule
 Closed accounts must still be included if they match any negative indicator.
@@ -259,11 +265,15 @@ Extract: Collection Agency, Original Creditor, Account Number (exactly as printe
 ## PUBLIC RECORDS EXTRACTION
 Extract: Type (Bankruptcy, Judgment, Tax Lien, Civil Judgment), Filed Date, Court/Source, Status, Amount, Date Resolved, Bureau.
 
-## INQUIRY EXTRACTION
+## INQUIRY EXTRACTION (INDEPENDENT — DO NOT SKIP)
+Inquiries MUST be extracted independently of tradeline/derogatory classification.
+Even if zero derogatory accounts are found, inquiries must still be extracted.
+Look for sections titled "Inquiries", "Credit Inquiries", "Hard Inquiries", "Requests for Your Credit History", "Regular Inquiries".
 Hard Inquiries: Extract fully (primary output).
 Soft/Promotional/Account Review: Extract separately.
 If report doesn't distinguish, extract all and note "Inquiry type not classified in report."
 Fields: Creditor/Source, Date, Type (Hard/Soft/Promotional/Account Review), Bureau.
+CRITICAL: Do NOT merge inquiry names with tradeline names. Extract inquiry creditor names exactly as printed.
 
 ## VALIDATION GATE (MANDATORY)
 After extraction, reconcile counts with bureau summary metrics from Pass 0.
