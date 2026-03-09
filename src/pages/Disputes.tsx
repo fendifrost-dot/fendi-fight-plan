@@ -184,6 +184,7 @@ const Disputes = () => {
     setManualClaimsText,
     resetSession,
     importAnalyzerData,
+    loadFromDatabase,
   } = useDisputeSession();
 
   // Use the new analysis hook
