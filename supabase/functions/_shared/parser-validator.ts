@@ -1,18 +1,14 @@
 /**
  * Parser Validator — Deterministic post-AI validation and enforcement.
- * 
- * This module runs AFTER AI extraction and BEFORE results are returned.
- * It enforces the parser contract rules. If validation fails critically,
- * it returns EXTRACTION_INCOMPLETE error with fatal=true.
- * 
- * Pipeline: AI → extraction → schema validation → rule enforcement → output
+ * Canonical version for edge functions. Mirrored to src/lib/parser-validator.ts.
  * 
  * CRITICAL INVARIANTS:
- * - Count mismatch ALONE triggers EXTRACTION_INCOMPLETE (no schema condition required)
+ * - Count mismatch ALONE triggers EXTRACTION_INCOMPLETE
  * - Under-extraction sets fatal=true
- * - Never merge/deduplicate tradelines — flag only
- * - summary/next_steps are stripped from contract output
- * - Confidence is derived deterministically from triggers, never hardcoded
+ * - Never merge/deduplicate — flag only
+ * - summary/next_steps stripped from contract output
+ * - Confidence derived deterministically from triggers
+ * - Three-bucket output: derogatory_accounts, manual_review_accounts, clean_accounts
  */
 
 import {
@@ -31,13 +27,10 @@ import {
   type SchemaValidationResult,
 } from './parser-schema.ts';
 
-// ─── Validation Result ─────────────────────────────────────────────────────
-
 export interface ValidationResult {
   status: 'PASS' | 'ERROR' | 'WARNING' | 'SKIPPED';
   code: string | null;
   messages: string[];
-  /** If true, the extraction should be treated as a deterministic failure */
   fatal: boolean;
 }
 
@@ -46,7 +39,6 @@ export interface PostProcessResult {
   schema: SchemaValidationResult;
   validation: ValidationResult;
   duplicateFlags: any[];
-  /** True whenever validation.status === 'ERROR' — count mismatch alone is sufficient */
   isError: boolean;
   errorCode: string | null;
   errorMessage: string | null;
@@ -54,36 +46,10 @@ export interface PostProcessResult {
 
 // ─── Pass 1: Deterministic Block Detection ─────────────────────────────────
 
-/**
- * Detect tradeline blocks from raw report text using structural anchors.
- * Returns count of detected blocks INDEPENDENTLY of AI extraction.
- * This is the real Pass 1 inventory — not derived from extracted negatives.
- */
 export function detectTradelineBlocks(reportText: string | null | undefined): number {
   if (!reportText || typeof reportText !== 'string') return 0;
   const lower = reportText.toLowerCase();
-  let blockCount = 0;
 
-  // Primary anchors: each occurrence of a primary anchor likely starts a new block
-  for (const anchor of PRIMARY_BLOCK_ANCHORS) {
-    const anchorLower = anchor.toLowerCase();
-    let searchFrom = 0;
-    while (true) {
-      const idx = lower.indexOf(anchorLower, searchFrom);
-      if (idx === -1) break;
-      // Verify it's at a line/field boundary (preceded by newline, start, or colon)
-      const before = idx > 0 ? lower[idx - 1] : '\n';
-      if (before === '\n' || before === ':' || before === '|' || before === '\t' || idx === 0) {
-        blockCount++;
-      }
-      searchFrom = idx + anchorLower.length;
-    }
-  }
-
-  // Deduplicate: multiple anchors in the same block inflate the count.
-  // A block typically has 1 primary + N secondary anchors within ~500 chars.
-  // Heuristic: count unique block starts by looking for primary anchors
-  // that are at least 200 chars apart (a reasonable minimum block size).
   const blockPositions: number[] = [];
   for (const anchor of PRIMARY_BLOCK_ANCHORS) {
     const anchorLower = anchor.toLowerCase();
@@ -99,7 +65,6 @@ export function detectTradelineBlocks(reportText: string | null | undefined): nu
     }
   }
 
-  // Cluster positions within 200 chars as same block
   blockPositions.sort((a, b) => a - b);
   const MIN_BLOCK_GAP = 200;
   let clusteredCount = 0;
@@ -116,20 +81,7 @@ export function detectTradelineBlocks(reportText: string | null | undefined): nu
 
 // ─── Deterministic Confidence Derivation ───────────────────────────────────
 
-/**
- * Derive confidence level deterministically from triggers.
- * NEVER hardcode confidence values.
- * 
- * Rules:
- * - 3+ triggers → 'high'
- * - 2 triggers → 'high'  
- * - 1 trigger with grid codes or section header → 'high'
- * - 1 trigger → 'medium'
- * - 0 triggers but AI included it → 'low'
- * - Any field is UNEXTRACTABLE → 'incomplete'
- */
 export function deriveConfidence(tradeline: any, triggers: string[]): string {
-  // Check for UNEXTRACTABLE fields
   const fields = [
     tradeline.creditor_name, tradeline.account_number,
     tradeline.status, tradeline.status_as_reported, tradeline.balance,
@@ -137,25 +89,15 @@ export function deriveConfidence(tradeline: any, triggers: string[]): string {
   if (fields.some(f => typeof f === 'string' && f.toUpperCase() === 'UNEXTRACTABLE')) {
     return 'incomplete';
   }
-
   if (triggers.length === 0) return 'low';
   if (triggers.length >= 2) return 'high';
-
-  // 1 trigger — check if it's a strong signal
   const strongSignals = ['grid codes:', 'section:', 'C/O'];
   if (triggers.some(t => strongSignals.some(s => t.includes(s)))) return 'high';
-
   return 'medium';
 }
 
 // ─── Count Validation ──────────────────────────────────────────────────────
 
-/**
- * Reconcile extracted counts against bureau summary metrics.
- * 
- * CRITICAL: Under-extraction sets fatal=true.
- * Count mismatch ALONE raises EXTRACTION_INCOMPLETE.
- */
 export function validateCounts(report: any): ValidationResult {
   const meta = report.metadata || report.report_metadata;
   const messages: string[] = [];
@@ -169,7 +111,6 @@ export function validateCounts(report: any): ValidationResult {
   const negCount = (report.derogatory_accounts?.length ?? 0) + (report.charge_offs?.length ?? 0);
   const colCount = report.collections?.length ?? 0;
 
-  // Under-extraction checks — ERROR and FATAL
   if (meta.collections_count != null && colCount < meta.collections_count - VALIDATION_THRESHOLDS.UNDER_EXTRACTION_TOLERANCE) {
     messages.push(`EXTRACTION INCOMPLETE — COLLECTIONS MISMATCH (extracted ${colCount}, expected ${meta.collections_count})`);
     worstStatus = 'ERROR';
@@ -182,7 +123,6 @@ export function validateCounts(report: any): ValidationResult {
     fatal = true;
   }
 
-  // Over-extraction checks — WARNING, non-fatal
   if (meta.collections_count != null && colCount > meta.collections_count + VALIDATION_THRESHOLDS.OVER_EXTRACTION_TOLERANCE) {
     messages.push(`POSSIBLE OVER-EXTRACTION — COLLECTIONS (extracted ${colCount}, expected ${meta.collections_count})`);
     if (worstStatus !== 'ERROR') worstStatus = 'WARNING';
@@ -193,40 +133,13 @@ export function validateCounts(report: any): ValidationResult {
     if (worstStatus !== 'ERROR') worstStatus = 'WARNING';
   }
 
-  if (messages.length === 0) {
-    messages.push('All counts reconciled within tolerance.');
-  }
+  if (messages.length === 0) messages.push('All counts reconciled within tolerance.');
 
-  return {
-    status: worstStatus,
-    code: worstStatus === 'ERROR' ? PARSER_ERROR_CODES.EXTRACTION_INCOMPLETE : null,
-    messages,
-    fatal,
-  };
+  return { status: worstStatus, code: worstStatus === 'ERROR' ? PARSER_ERROR_CODES.EXTRACTION_INCOMPLETE : null, messages, fatal };
 }
 
 // ─── Full Post-Processing Pipeline ─────────────────────────────────────────
 
-/**
- * Run the complete deterministic post-processing pipeline on an AI extraction result.
- * 
- * Pipeline steps:
- * 1. Ensure all required arrays exist
- * 2. Validate schema (required fields, types)
- * 3. Re-classify every tradeline using deterministic rules
- * 4. Derive confidence deterministically (never hardcoded)
- * 5. Validate counts against bureau summary
- * 6. Detect duplicates (flag only, never merge)
- * 7. Build tradeline inventory (Pass 1 block count separate from extracted)
- * 8. Strip non-deterministic fields (summary, next_steps)
- * 9. Return processed result with validation status
- * 
- * CRITICAL INVARIANTS:
- * - isError = true whenever validation.status === 'ERROR' (no schema condition)
- * - Count mismatch alone triggers EXTRACTION_INCOMPLETE
- * - Never merge or collapse tradelines
- * - Preserve every extracted tradeline individually
- */
 export function postProcessAndValidate(rawResult: any, reportText?: string): PostProcessResult {
   const report = ensureRequiredArrays(rawResult);
   const schema = validateSchema(report);
@@ -234,6 +147,7 @@ export function postProcessAndValidate(rawResult: any, reportText?: string): Pos
   // ─── Three-bucket separation ─────────────────────────────────────────
   const confirmedDerogatory: any[] = [];
   const manualReview: any[] = [];
+  const cleanAccounts: any[] = [];
 
   if (report.derogatory_accounts && Array.isArray(report.derogatory_accounts)) {
     report.all_tradelines = [...report.derogatory_accounts];
@@ -246,7 +160,7 @@ export function postProcessAndValidate(rawResult: any, reportText?: string): Pos
       if (isCleanTradeline(acct)) {
         acct._classification_note = 'Clean tradeline excluded from derogatory_accounts';
         acct._bucket = 'clean';
-        manualReview.push(acct);
+        cleanAccounts.push(acct);
       } else if (!classification.isNegative) {
         acct._no_triggers_detected = true;
         acct._classification_note = 'AI classified as negative but no deterministic triggers found';
@@ -260,6 +174,7 @@ export function postProcessAndValidate(rawResult: any, reportText?: string): Pos
 
     report.derogatory_accounts = confirmedDerogatory;
     report.manual_review_accounts = manualReview;
+    report.clean_accounts = cleanAccounts;
   }
 
   if (report.charge_offs && Array.isArray(report.charge_offs)) {
@@ -291,10 +206,7 @@ export function postProcessAndValidate(rawResult: any, reportText?: string): Pos
     );
   }
 
-  const allTradelines = [
-    ...(report.derogatory_accounts || []),
-    ...(report.charge_offs || []),
-  ];
+  const allTradelines = [...(report.derogatory_accounts || []), ...(report.charge_offs || [])];
   const duplicateFlags = detectDuplicates(allTradelines);
 
   const pass1BlockCount = detectTradelineBlocks(reportText || report._raw_text || null);
@@ -303,6 +215,7 @@ export function postProcessAndValidate(rawResult: any, reportText?: string): Pos
     pass1_anchor_detected: pass1BlockCount,
     negative_extracted: allTradelines.length,
     manual_review_count: (report.manual_review_accounts || []).length,
+    clean_count: (report.clean_accounts || []).length,
     collections_extracted: report.collections?.length ?? 0,
     public_records_extracted: report.public_records?.length ?? 0,
     inquiries_extracted: report.inquiries?.length ?? 0,
@@ -312,6 +225,7 @@ export function postProcessAndValidate(rawResult: any, reportText?: string): Pos
   delete report.next_steps;
 
   report.validation_status = `${validation.status}: ${validation.messages.join('; ')}`;
+  report.validation_messages = validation.messages;
   report.duplicate_flags = duplicateFlags;
 
   const isError = validation.status === 'ERROR';
@@ -320,15 +234,7 @@ export function postProcessAndValidate(rawResult: any, reportText?: string): Pos
     ? `${PARSER_ERROR_CODES.EXTRACTION_INCOMPLETE}: ${validation.messages.join('; ')}`
     : null;
 
-  return {
-    report,
-    schema,
-    validation,
-    duplicateFlags,
-    isError,
-    errorCode,
-    errorMessage,
-  };
+  return { report, schema, validation, duplicateFlags, isError, errorCode, errorMessage };
 }
 
 export function postProcessChunkResult(rawResult: any): any {
