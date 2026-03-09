@@ -381,17 +381,16 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
       }
     }
 
-    // Step 2: Chunk and analyze
+    // Step 2: Chunk and analyze ALL pages
+    // CRITICAL: Process ALL pages, not just the accounts section.
+    // Collections, inquiries, and public records may appear on pages
+    // outside the accounts section. The AI prompt extracts all entity
+    // types from whatever pages it receives.
     await updateJob(client, jobId, { step: "analyzing", progress: 20 });
 
-    const accountsSection = documentMap.accounts || documentMap.sections?.accounts || { start_page: 1, end_page: storagePaths.length };
-    const startIdx = (accountsSection.start_page || 1) - 1;
-    const endIdx = accountsSection.end_page || storagePaths.length;
-    const sectionPaths = storagePaths.slice(startIdx, endIdx);
-
     const chunks: string[][] = [];
-    for (let i = 0; i < sectionPaths.length; i += MAX_IMAGES_PER_CHUNK) {
-      chunks.push(sectionPaths.slice(i, i + MAX_IMAGES_PER_CHUNK));
+    for (let i = 0; i < storagePaths.length; i += MAX_IMAGES_PER_CHUNK) {
+      chunks.push(storagePaths.slice(i, i + MAX_IMAGES_PER_CHUNK));
     }
 
     const totalChunks = chunks.length;
