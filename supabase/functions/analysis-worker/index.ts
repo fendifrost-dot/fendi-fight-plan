@@ -555,7 +555,7 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
 
     await updateJob(client, jobId, {
       status: finalStatus, step: "complete", progress: 100, result_data: resultData,
-      checkpoints: { documentMap, accounts: allAccounts, processedChunks, totalChunks, failedChunks, chunkTimings },
+      checkpoints: { documentMap, accounts: allAccounts, collections: allCollections, inquiries: allInquiries, publicRecords: allPublicRecords, chargeOffs: allChargeOffs, processedChunks, totalChunks, failedChunks, chunkTimings },
       completed_at: new Date().toISOString(), ...errorFields,
     });
 
