@@ -187,8 +187,9 @@ describe('Fixture: Credit Karma multi-bureau end-to-end', () => {
     expect(result.report.collections.length).toBe(1);
   });
 
-  it('over-extraction warning since 5 neg vs 3 expected', () => {
-    expect(result.validation.status).toBe('WARNING');
+  it('validation PASS since 5 neg is within tolerance of 3+2', () => {
+    // 5 extracted, 3 expected, tolerance=2 → 5 <= 3+2 = 5, so NOT over-extraction
+    expect(result.validation.status).toBe('PASS');
     expect(result.validation.fatal).toBe(false);
   });
 });
