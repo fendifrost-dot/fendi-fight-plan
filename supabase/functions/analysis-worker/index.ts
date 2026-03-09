@@ -424,7 +424,7 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
       const progressPct = 20 + Math.round((i / totalChunks) * 70);
       await updateJob(client, jobId, {
         step: `chunk_${i + 1}_of_${totalChunks}`, progress: progressPct,
-        checkpoints: { documentMap, accounts: allAccounts, processedChunks: i, totalChunks, failedChunks, chunkTimings },
+        checkpoints: { documentMap, accounts: allAccounts, collections: allCollections, inquiries: allInquiries, publicRecords: allPublicRecords, chargeOffs: allChargeOffs, processedChunks: i, totalChunks, failedChunks, chunkTimings },
       });
 
       try {
