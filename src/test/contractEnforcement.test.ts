@@ -1191,3 +1191,172 @@ describe('isCleanTradeline hard veto — blocks false positives', () => {
     expect(result.report.derogatory_accounts[0].derogatory_triggers.length).toBeGreaterThanOrEqual(2);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SECTION 18: Value-aware triggers (DOFD, past due, placeholders)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('Value-aware DOFD trigger', () => {
+  it('null DOFD does NOT trigger', () => {
+    const classification = classifyTradeline({
+      creditor_name: 'TEST',
+      account_number: '1234',
+      status_as_reported: 'Paid or paying as agreed',
+      date_first_delinquency: null,
+    });
+    expect(classification.triggers.some(t => t.includes('date of first delinquency'))).toBe(false);
+  });
+
+  it('N/A DOFD does NOT trigger', () => {
+    const classification = classifyTradeline({
+      creditor_name: 'TEST',
+      account_number: '1234',
+      status_as_reported: 'Current',
+      date_first_delinquency: 'N/A',
+    });
+    expect(classification.triggers.some(t => t.includes('date of first delinquency'))).toBe(false);
+  });
+
+  it('UNEXTRACTABLE DOFD does NOT trigger', () => {
+    const classification = classifyTradeline({
+      creditor_name: 'TEST',
+      account_number: '1234',
+      status_as_reported: 'Open',
+      date_first_delinquency: 'UNEXTRACTABLE',
+    });
+    expect(classification.triggers.some(t => t.includes('date of first delinquency'))).toBe(false);
+  });
+
+  it('"not reported" DOFD does NOT trigger', () => {
+    const classification = classifyTradeline({
+      creditor_name: 'TEST',
+      account_number: '1234',
+      status_as_reported: 'Current',
+      date_first_delinquency: 'not reported',
+    });
+    expect(classification.triggers.some(t => t.includes('date of first delinquency'))).toBe(false);
+  });
+
+  it('blank DOFD does NOT trigger', () => {
+    const classification = classifyTradeline({
+      creditor_name: 'TEST',
+      account_number: '1234',
+      status_as_reported: 'Current',
+      date_first_delinquency: '',
+    });
+    expect(classification.triggers.some(t => t.includes('date of first delinquency'))).toBe(false);
+  });
+
+  it('actual date DOFD DOES trigger', () => {
+    const classification = classifyTradeline({
+      creditor_name: 'TEST',
+      account_number: '1234',
+      status_as_reported: 'Current',
+      date_first_delinquency: '03/2021',
+    });
+    expect(classification.triggers.some(t => t.includes('date of first delinquency'))).toBe(true);
+  });
+});
+
+describe('Field label safeguard — block_text excluded from keyword matching', () => {
+  it('block_text with "past due" field label does NOT trigger keyword match', () => {
+    const classification = classifyTradeline({
+      creditor_name: 'DEPTEDNELNET',
+      account_number: '1234',
+      status_as_reported: 'Paid or paying as agreed',
+      status: 'Current',
+      past_due_amount: '$0',
+      block_text: 'Account Name: DEPTEDNELNET\nPast Due Amount: $0\nDate of First Delinquency: N/A\nStatus: Paid or paying as agreed',
+      date_first_delinquency: 'N/A',
+    });
+    // "past due" and "delinquency" are in block_text labels but NOT in structured fields
+    // Should not trigger from labels
+    expect(classification.triggers.some(t => t === 'past due')).toBe(false);
+  });
+
+  it('clean deferred student loan with label noise is excluded by isCleanTradeline', () => {
+    const { isCleanTradeline: isClean } = require('@/lib/parser-contract');
+    const tradeline = {
+      creditor_name: 'DEPTEDNELNET',
+      account_number: '5678',
+      status_as_reported: 'Paid or paying as agreed',
+      status: 'Current',
+      past_due_amount: '$0',
+      payment_grid_codes: null,
+      date_first_delinquency: null,
+      section_header: null,
+      remarks: null,
+      block_text: 'Past Due Amount: $0\nDate of First Delinquency:\nPayment Status: Current',
+    };
+    expect(isClean(tradeline)).toBe(true);
+  });
+});
+
+describe('Placeholder values never trigger', () => {
+  it('isPastDueNegative returns false for placeholder values', () => {
+    const { isPastDueNegative } = require('@/lib/parser-contract');
+    expect(isPastDueNegative(null)).toBe(false);
+    expect(isPastDueNegative('')).toBe(false);
+    expect(isPastDueNegative('N/A')).toBe(false);
+    expect(isPastDueNegative('$0')).toBe(false);
+    expect(isPastDueNegative('$0.00')).toBe(false);
+    expect(isPastDueNegative('UNEXTRACTABLE')).toBe(false);
+    expect(isPastDueNegative('not reported')).toBe(false);
+  });
+
+  it('isPastDueNegative returns true only for actual amounts > 0', () => {
+    const { isPastDueNegative } = require('@/lib/parser-contract');
+    expect(isPastDueNegative('$500')).toBe(true);
+    expect(isPastDueNegative('$1,234.56')).toBe(true);
+  });
+});
+
+describe('Clean account exclusion regression — Tara TransUnion scenario', () => {
+  it('DEPTEDNELNET paid-as-agreed $0 past due with label noise is excluded', () => {
+    const rawResult = {
+      derogatory_accounts: [
+        {
+          creditor_name: 'DEPTEDNELNET',
+          account_number: 'E1234',
+          status_as_reported: 'Paid or paying as agreed',
+          status: 'Current',
+          past_due_amount: '$0',
+          payment_grid_codes: 'OK OK OK OK',
+          date_first_delinquency: null,
+          section_header: null,
+          remarks: null,
+          block_text: 'Past Due Amount: $0\nDate of First Delinquency: N/A',
+          bureaus: ['transunion'],
+        },
+        {
+          creditor_name: 'UPSTA/FINWSE',
+          account_number: 'FW1892',
+          status_as_reported: 'Paid or paying as agreed',
+          status: 'Current',
+          past_due_amount: '$0',
+          payment_grid_codes: 'OK OK 2 3 OK OK',
+          date_first_delinquency: null,
+          section_header: null,
+          bureaus: ['transunion'],
+        },
+      ],
+      collections: [],
+      inquiries: [
+        { creditor_name: 'EVOLVE/SPARR', date: '09/09/2024', type: 'hard', bureaus: ['transunion'] },
+        { creditor_name: 'TBOM/MILESTO', date: '09/13/2023', type: 'hard', bureaus: ['transunion'] },
+      ],
+    };
+    const result = postProcessAndValidate(rawResult);
+
+    // DEPTEDNELNET must be excluded from derogatory (clean tradeline)
+    expect(result.report.derogatory_accounts.some((a: any) => a.creditor_name === 'DEPTEDNELNET')).toBe(false);
+
+    // UPSTA/FINWSE must remain (grid codes 2,3)
+    expect(result.report.derogatory_accounts.some((a: any) => a.creditor_name === 'UPSTA/FINWSE')).toBe(true);
+
+    // Inquiries preserved independently
+    expect(result.report.inquiries.length).toBe(2);
+    expect(result.report.inquiries[0].creditor_name).toBe('EVOLVE/SPARR');
+    expect(result.report.inquiries[1].creditor_name).toBe('TBOM/MILESTO');
+  });
+});

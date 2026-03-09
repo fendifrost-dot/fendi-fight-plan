@@ -60,6 +60,22 @@ export const PARSER_ERROR_CODES = {
   INVALID_DEROGATORY_LEAK: 'INVALID_DEROGATORY_LEAK',
 } as const;
 
+// ─── Placeholder / Non-Trigger Values ──────────────────────────────────────
+export const PLACEHOLDER_VALUES: readonly string[] = [
+  'n/a', 'N/A', 'na', 'NA',
+  'unextractable', 'UNEXTRACTABLE',
+  'not reported', 'Not Reported', 'NOT REPORTED',
+  '', '-', '—', 'null', 'none', 'None', 'NONE',
+] as const;
+
+export function isPlaceholderValue(val: any): boolean {
+  if (val === null || val === undefined) return true;
+  if (typeof val !== 'string') return false;
+  const trimmed = val.trim();
+  if (trimmed === '') return true;
+  return PLACEHOLDER_VALUES.some(p => trimmed.toLowerCase() === p.toLowerCase());
+}
+
 // ─── Positive Status Keywords (clean tradeline detection) ──────────────────
 export const POSITIVE_STATUS_KEYWORDS: readonly string[] = [
   'paid or paying as agreed', 'pays as agreed', 'paid as agreed',
@@ -69,17 +85,18 @@ export const POSITIVE_STATUS_KEYWORDS: readonly string[] = [
 ] as const;
 
 /**
+ * Check if a date_first_delinquency value is an actual date (not a placeholder).
+ */
+export function hasActualDateOfFirstDelinquency(dofd: any): boolean {
+  if (isPlaceholderValue(dofd)) return false;
+  if (typeof dofd !== 'string') return false;
+  return /\d/.test(dofd);
+}
+
+/**
  * HARD VETO: Determine if a tradeline is "clean" and must NEVER be in derogatory_accounts.
- * This is an absolute veto — even if weak triggers exist (e.g., AI block_text noise),
- * a structurally clean tradeline is excluded.
- * 
- * Checks structured fields only (NOT block_text which has AI noise):
- * 1. Positive status keyword in status/status_as_reported
- * 2. Past due $0 or absent
- * 3. No negative grid codes
- * 4. No date_first_delinquency
- * 5. No negative section header
- * 6. No derogatory keywords in status/remarks only
+ * This is an absolute veto — even if weak triggers exist, a structurally clean tradeline is excluded.
+ * Checks structured fields only (NOT block_text which has AI noise).
  */
 export function isCleanTradeline(tradeline: any): boolean {
   const statusText = (tradeline.status_as_reported || tradeline.status || '').toLowerCase().trim();
@@ -87,9 +104,8 @@ export function isCleanTradeline(tradeline: any): boolean {
   if (!hasPositiveStatus) return false;
   if (isPastDueNegative(tradeline.past_due_amount)) return false;
   if (findNegativeGridCodes(tradeline.payment_grid_codes).length > 0) return false;
-  if (tradeline.date_first_delinquency) return false;
+  if (hasActualDateOfFirstDelinquency(tradeline.date_first_delinquency)) return false;
   if (isNegativeSectionHeader(tradeline.section_header)) return false;
-  // Structured fields only — block_text excluded to prevent false keyword matches
   const structuredText = [tradeline.status_as_reported, tradeline.status, tradeline.remarks].filter(Boolean).join(' ');
   if (findNegativeKeywords(structuredText).length > 0) return false;
   return true;
@@ -125,6 +141,7 @@ export function isCOChargeOff(text: string, fieldType?: 'status' | 'remark' | 'a
 
 export function isPastDueNegative(pastDueStr: string | null | undefined): boolean {
   if (!pastDueStr) return false;
+  if (isPlaceholderValue(pastDueStr)) return false;
   const cleaned = pastDueStr.replace(/[$,\s]/g, '');
   const amount = parseFloat(cleaned);
   return !isNaN(amount) && amount > 0;
@@ -141,19 +158,60 @@ export function isNegativeSectionHeader(header: string | null | undefined): bool
   return NEGATIVE_SECTION_HEADERS.some(h => header.toLowerCase().trim().includes(h));
 }
 
+/**
+ * Classify a tradeline as negative or not, returning all triggers.
+ * Uses structured fields only (status, remarks) for keyword matching.
+ * block_text is excluded because it contains field LABELS that cause false positives.
+ */
 export function classifyTradeline(tradeline: any): { isNegative: boolean; triggers: string[] } {
   const triggers: string[] = [];
-  const searchTexts = [tradeline.block_text, tradeline.status_as_reported, tradeline.status, tradeline.remarks].filter(Boolean).join(' ');
-  triggers.push(...findNegativeKeywords(searchTexts));
-  if (tradeline.status_as_reported && isCOChargeOff(tradeline.status_as_reported, 'status')) triggers.push('C/O (status)');
-  if (tradeline.status && isCOChargeOff(tradeline.status, 'status')) triggers.push('C/O (status)');
-  if (tradeline.remarks && isCOChargeOff(tradeline.remarks, 'remark')) triggers.push('C/O (remark)');
-  if (isPastDueNegative(tradeline.past_due_amount)) triggers.push(`past due > $0 (${tradeline.past_due_amount})`);
-  const gc = findNegativeGridCodes(tradeline.payment_grid_codes);
-  if (gc.length) triggers.push(`grid codes: ${gc.join(', ')}`);
-  if (isNegativeSectionHeader(tradeline.section_header)) triggers.push(`section: ${tradeline.section_header}`);
-  if (tradeline.date_first_delinquency) triggers.push(`date of first delinquency: ${tradeline.date_first_delinquency}`);
-  return { isNegative: triggers.length > 0, triggers };
+
+  // 1. Status keyword matching — structured fields only
+  const structuredSearchTexts = [
+    tradeline.status_as_reported,
+    tradeline.status,
+    tradeline.remarks,
+  ].filter(Boolean).join(' ');
+
+  const keywordMatches = findNegativeKeywords(structuredSearchTexts);
+  triggers.push(...keywordMatches);
+
+  // 2. C/O in status/remark (not address)
+  if (tradeline.status_as_reported && isCOChargeOff(tradeline.status_as_reported, 'status')) {
+    triggers.push('C/O (status)');
+  }
+  if (tradeline.status && isCOChargeOff(tradeline.status, 'status')) {
+    triggers.push('C/O (status)');
+  }
+  if (tradeline.remarks && isCOChargeOff(tradeline.remarks, 'remark')) {
+    triggers.push('C/O (remark)');
+  }
+
+  // 3. Past Due Amount > $0 (value-aware, not label-aware)
+  if (isPastDueNegative(tradeline.past_due_amount)) {
+    triggers.push(`past due > $0 (${tradeline.past_due_amount})`);
+  }
+
+  // 4. Payment grid codes
+  const negGridCodes = findNegativeGridCodes(tradeline.payment_grid_codes);
+  if (negGridCodes.length > 0) {
+    triggers.push(`grid codes: ${negGridCodes.join(', ')}`);
+  }
+
+  // 5. Section header
+  if (isNegativeSectionHeader(tradeline.section_header)) {
+    triggers.push(`section: ${tradeline.section_header}`);
+  }
+
+  // 6. Date of First Delinquency — VALUE-AWARE
+  if (hasActualDateOfFirstDelinquency(tradeline.date_first_delinquency)) {
+    triggers.push(`date of first delinquency: ${tradeline.date_first_delinquency}`);
+  }
+
+  return {
+    isNegative: triggers.length > 0,
+    triggers,
+  };
 }
 
 export function detectDuplicates(tradelines: any[]): any[] {

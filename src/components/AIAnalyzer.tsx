@@ -1442,12 +1442,68 @@ const AIAnalyzer = () => {
                 </div>
               )}
               
+              {/* Deterministic Triggers */}
               <div className="flex flex-wrap gap-1.5 mt-2">
                 {item.derogatory_triggers.map((trigger, ti) => (
                   <span key={ti} className="px-2 py-0.5 text-xs bg-destructive/20 text-destructive rounded">
                     {trigger}
                   </span>
                 ))}
+              </div>
+
+              {/* Manual Correction Controls */}
+              <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-border/30">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs h-7 bg-destructive/10 text-destructive border-destructive/30 hover:bg-destructive/20"
+                  onClick={() => {
+                    toast({ title: "Kept as derogatory", description: `${item.creditor_name} remains in derogatory accounts.` });
+                  }}
+                >
+                  Keep as Derogatory
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs h-7 bg-warning/10 text-warning border-warning/30 hover:bg-warning/20"
+                  onClick={() => {
+                    setResults(prev => {
+                      const updated = { ...prev };
+                      for (const key of Object.keys(updated)) {
+                        updated[key] = {
+                          ...updated[key],
+                          derogatory_accounts: updated[key].derogatory_accounts.filter((_, idx) => !(key === Object.keys(prev).find(k => prev[k].derogatory_accounts.includes(item)) && idx === updated[key].derogatory_accounts.indexOf(item))),
+                        };
+                      }
+                      return updated;
+                    });
+                    toast({ title: "Moved to manual review", description: `${item.creditor_name} moved to manual review.` });
+                  }}
+                >
+                  Move to Review
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs h-7"
+                  onClick={() => {
+                    setResults(prev => {
+                      const updated = { ...prev };
+                      for (const key of Object.keys(updated)) {
+                        updated[key] = {
+                          ...updated[key],
+                          derogatory_accounts: updated[key].derogatory_accounts.filter(a => a !== item),
+                        };
+                      }
+                      return updated;
+                    });
+                    toast({ title: "Removed from derogatory", description: `${item.creditor_name} removed.` });
+                  }}
+                >
+                  <X className="w-3 h-3 mr-1" />
+                  Remove
+                </Button>
               </div>
             </div>
           ))}

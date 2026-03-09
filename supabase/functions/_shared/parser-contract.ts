@@ -162,6 +162,28 @@ export const PARSER_ERROR_CODES = {
   INVALID_DEROGATORY_LEAK: 'INVALID_DEROGATORY_LEAK',
 } as const;
 
+// ─── Placeholder / Non-Trigger Values ──────────────────────────────────────
+// These values must NEVER count as negative triggers when found as field values.
+// They represent missing/unextracted data, not actual negative indicators.
+export const PLACEHOLDER_VALUES: readonly string[] = [
+  'n/a', 'N/A', 'na', 'NA',
+  'unextractable', 'UNEXTRACTABLE',
+  'not reported', 'Not Reported', 'NOT REPORTED',
+  '', '-', '—', 'null', 'none', 'None', 'NONE',
+] as const;
+
+/**
+ * Check if a value is a placeholder/non-trigger value.
+ * These must never be treated as actual data for trigger purposes.
+ */
+export function isPlaceholderValue(val: any): boolean {
+  if (val === null || val === undefined) return true;
+  if (typeof val !== 'string') return false;
+  const trimmed = val.trim();
+  if (trimmed === '') return true;
+  return PLACEHOLDER_VALUES.some(p => trimmed.toLowerCase() === p.toLowerCase());
+}
+
 // ─── Positive Status Keywords (clean tradeline detection) ──────────────────
 export const POSITIVE_STATUS_KEYWORDS: readonly string[] = [
   'paid or paying as agreed', 'pays as agreed', 'paid as agreed',
@@ -174,6 +196,14 @@ export const POSITIVE_STATUS_KEYWORDS: readonly string[] = [
  * HARD VETO: Determine if a tradeline is "clean" and must NEVER be in derogatory_accounts.
  * This is an absolute veto — even if weak triggers exist, a structurally clean tradeline is excluded.
  * Checks structured fields only (NOT block_text which has AI noise).
+ * 
+ * A tradeline is clean if ALL of:
+ * 1. Positive status keyword present
+ * 2. Past due is $0 or null/placeholder
+ * 3. No negative payment grid codes
+ * 4. No ACTUAL date of first delinquency (placeholders don't count)
+ * 5. No negative section header
+ * 6. No derogatory keywords in structured fields (status/remarks only, NOT block_text)
  */
 export function isCleanTradeline(tradeline: any): boolean {
   const statusText = (tradeline.status_as_reported || tradeline.status || '').toLowerCase().trim();
@@ -181,11 +211,24 @@ export function isCleanTradeline(tradeline: any): boolean {
   if (!hasPositiveStatus) return false;
   if (isPastDueNegative(tradeline.past_due_amount)) return false;
   if (findNegativeGridCodes(tradeline.payment_grid_codes).length > 0) return false;
-  if (tradeline.date_first_delinquency) return false;
+  // DOFD: only block if it's an actual date, not a placeholder
+  if (hasActualDateOfFirstDelinquency(tradeline.date_first_delinquency)) return false;
   if (isNegativeSectionHeader(tradeline.section_header)) return false;
+  // Check structured fields only — block_text excluded to prevent AI narrative noise
   const structuredText = [tradeline.status_as_reported, tradeline.status, tradeline.remarks].filter(Boolean).join(' ');
   if (findNegativeKeywords(structuredText).length > 0) return false;
   return true;
+}
+
+/**
+ * Check if a date_first_delinquency value is an actual date (not a placeholder).
+ * Returns true only if the value is a non-placeholder, non-empty string.
+ */
+export function hasActualDateOfFirstDelinquency(dofd: any): boolean {
+  if (isPlaceholderValue(dofd)) return false;
+  // Must be a string that looks like a date (contains digits)
+  if (typeof dofd !== 'string') return false;
+  return /\d/.test(dofd);
 }
 
 // ─── Matching Functions ────────────────────────────────────────────────────
@@ -266,15 +309,16 @@ export function isNegativeSectionHeader(header: string | null | undefined): bool
 export function classifyTradeline(tradeline: any): { isNegative: boolean; triggers: string[] } {
   const triggers: string[] = [];
 
-  // 1. Status keyword matching on block text, status, remarks
-  const searchTexts = [
-    tradeline.block_text,
+  // 1. Status keyword matching — structured fields only (status, remarks)
+  //    block_text is excluded because it contains field LABELS like "Past Due Amount:"
+  //    that cause false positive keyword matches.
+  const structuredSearchTexts = [
     tradeline.status_as_reported,
     tradeline.status,
     tradeline.remarks,
   ].filter(Boolean).join(' ');
 
-  const keywordMatches = findNegativeKeywords(searchTexts);
+  const keywordMatches = findNegativeKeywords(structuredSearchTexts);
   triggers.push(...keywordMatches);
 
   // 2. C/O in status/remark (not address)
@@ -304,8 +348,9 @@ export function classifyTradeline(tradeline: any): { isNegative: boolean; trigge
     triggers.push(`section: ${tradeline.section_header}`);
   }
 
-  // 6. Date of First Delinquency present
-  if (tradeline.date_first_delinquency) {
+  // 6. Date of First Delinquency — VALUE-AWARE
+  // Only trigger if the value is an actual date, not null/N/A/UNEXTRACTABLE/blank
+  if (hasActualDateOfFirstDelinquency(tradeline.date_first_delinquency)) {
     triggers.push(`date of first delinquency: ${tradeline.date_first_delinquency}`);
   }
 
