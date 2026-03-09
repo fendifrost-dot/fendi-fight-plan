@@ -249,6 +249,9 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
     }));
 
     const allAccounts: any[] = [];
+    const allInquiries: any[] = [];
+    const allPublicRecords: any[] = [];
+    const allCollections: any[] = [];
     const failedChunks: number[] = [];
 
     for (let i = 0; i < textChunks.length && !abortRef.current; i++) {
@@ -262,7 +265,7 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
               'Authorization': `Bearer ${accessToken}`,
             },
             body: JSON.stringify({
-              section: 'accounts',
+              section: 'full',
               reportText: textChunks[i],
               chunkIndex: i,
               totalChunks: textChunks.length,
@@ -276,8 +279,14 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
           failedChunks.push(i);
         } else {
           if (payload.derogatory_accounts) allAccounts.push(...payload.derogatory_accounts);
-          if (payload.collections) allAccounts.push(...payload.collections.map((c: any) => ({ ...c, isCollection: true })));
+          if (payload.collections) {
+            allCollections.push(...payload.collections);
+            allAccounts.push(...payload.collections.map((c: any) => ({ ...c, isCollection: true })));
+          }
           if (payload.charge_offs) allAccounts.push(...payload.charge_offs.map((c: any) => ({ ...c, isChargeOff: true })));
+          // Independently collect inquiries and public records
+          if (payload.inquiries) allInquiries.push(...payload.inquiries);
+          if (payload.public_records) allPublicRecords.push(...payload.public_records);
         }
       } catch {
         failedChunks.push(i);
