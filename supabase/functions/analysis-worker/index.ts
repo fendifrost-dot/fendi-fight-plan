@@ -510,8 +510,12 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
     const totalElapsedMs = Date.now() - invocationStartedAt;
 
     const resultData = {
-      // Preserve every account individually — no merging
+      // Preserve every entity individually — no merging
       accounts: postProcessed.report.derogatory_accounts,
+      collections: postProcessed.report.collections,
+      charge_offs: postProcessed.report.charge_offs,
+      inquiries: postProcessed.report.inquiries,
+      public_records: postProcessed.report.public_records,
       documentMap,
       totalPages: storagePaths.length,
       processedChunks,
