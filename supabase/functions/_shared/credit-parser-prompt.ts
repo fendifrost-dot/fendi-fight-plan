@@ -71,6 +71,10 @@ These represent missing data, not negative indicators.
 Do NOT classify based on field LABELS alone. Words like "past due", "delinquency", "status" 
 must be interpreted from parsed field VALUES, not from the presence of the label text.
 
+### Historical Grid Code Rule
+A tradeline with positive CURRENT status (e.g., "Paid as agreed", "Current") but HISTORICAL late payment grid codes (2, 3, 4, 5, X, CO, D) IS negative.
+Grid codes are an INDEPENDENT trigger — they override positive current status. Do NOT exclude a tradeline just because its current status is positive if historical grid evidence exists.
+
 ### Closed Account Rule
 Closed accounts must still be included if they match any negative indicator.
 
