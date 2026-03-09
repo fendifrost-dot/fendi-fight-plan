@@ -6,6 +6,7 @@
  */
 
 import { supabase } from '@/integrations/supabase/client';
+import { hydrateCanonicalResult, type CanonicalAnalyzerResult } from '@/types/disputes';
 
 // ============= TYPES =============
 
@@ -26,6 +27,10 @@ export interface ChunkTiming {
 export interface JobCheckpoints {
   documentMap: any | null;
   accounts: any[];
+  collections?: any[];
+  inquiries?: any[];
+  publicRecords?: any[];
+  chargeOffs?: any[];
   processedChunks: number;
   totalChunks: number;
   failedChunks: number[];
@@ -124,37 +129,27 @@ const POLL_INTERVAL_MS = 1500;
 const WATCHDOG_THRESHOLD_MS = 10000;
 const MAX_POLL_DURATION_MS = 10 * 60 * 1000; // 10 minutes max
 
+/** Contract version for traceability */
+export const PARSER_CONTRACT_VERSION = 'v2-canonical';
+
 // ============= TIMEOUT CLASSIFICATION =============
 
-/**
- * Classify the source of a timeout based on available evidence.
- */
 export function classifyTimeout(state: JobState, pollStartTime: number): TimeoutSource {
-  // If the worker reported a specific 'where' in the error
   if (state.error?.where) {
     return state.error.where as TimeoutSource;
   }
-
-  // If the job has a heartbeat that's stale, the edge function likely crashed/timed out
   if (state.isHeartbeatStale && state.lastHeartbeatAt) {
     return 'edge_fn';
   }
-
-  // If the job never started (no startedAt), it may be a DB or queue issue
   if (!state.startedAt && state.status === 'QUEUED') {
-    return 'edge_fn'; // worker never picked it up
+    return 'edge_fn';
   }
-
-  // If the client poll expired but the job is still RUNNING with recent heartbeats
   if (isPollExpired(pollStartTime) && !state.isHeartbeatStale) {
     return 'client_wait';
   }
-
-  // If error code indicates AI timeout
   if (state.errorCode === 'WORKER_AI_TIMEOUT') {
     return 'model_call';
   }
-
   return 'unknown';
 }
 
@@ -237,7 +232,6 @@ export async function fetchJobStatus(jobId: string): Promise<JobState | { fetchE
       checkpoints: data.partialResults || DEFAULT_JOB_STATE.checkpoints,
       result: data.result || null,
       lastUpdated: Date.now(),
-      // Timing fields
       lastHeartbeatAt: data.lastHeartbeatAt || null,
       heartbeatAgeMs: data.heartbeatAgeMs || null,
       isHeartbeatStale: data.isHeartbeatStale || false,
@@ -383,6 +377,10 @@ function mapDbJobToJob(data: any): AnalysisJob {
   };
 }
 
+/**
+ * @deprecated Use parseJobResult() for full canonical result hydration.
+ * Kept only for backward compatibility in tests.
+ */
 export function parseJobResultAccounts(resultData: any): any[] {
   if (!resultData) return [];
   
@@ -404,6 +402,39 @@ export function parseJobResultAccounts(resultData: any): any[] {
   return accounts;
 }
 
+/**
+ * Parse a raw job result_data into the full canonical analyzer result.
+ * This is the ONE canonical hydration path for async job results.
+ * Frontend MUST NOT rebuild or reinterpret beyond this function.
+ */
+export function parseJobResult(resultData: any): CanonicalAnalyzerResult {
+  return hydrateCanonicalResult(resultData);
+}
+
+/**
+ * Extract canonical result from checkpoint data when full result is not yet available.
+ * Used for partial recovery — preserves all entity arrays if present.
+ */
+export function parseCheckpointResult(checkpoints: JobCheckpoints | null): CanonicalAnalyzerResult | null {
+  if (!checkpoints) return null;
+  
+  const hasData = (checkpoints.accounts?.length || 0) > 0 ||
+    (checkpoints.collections?.length || 0) > 0 ||
+    (checkpoints.inquiries?.length || 0) > 0 ||
+    (checkpoints.publicRecords?.length || 0) > 0 ||
+    (checkpoints.chargeOffs?.length || 0) > 0;
+  
+  if (!hasData) return null;
+  
+  return hydrateCanonicalResult({
+    derogatory_accounts: checkpoints.accounts || [],
+    collections: checkpoints.collections || [],
+    charge_offs: checkpoints.chargeOffs || [],
+    inquiries: checkpoints.inquiries || [],
+    public_records: checkpoints.publicRecords || [],
+  });
+}
+
 export function formatJobResult(job: AnalysisJob | JobState): {
   accountCount: number;
   summary: string;
@@ -415,11 +446,15 @@ export function formatJobResult(job: AnalysisJob | JobState): {
   let accountCount = 0;
   let hasPartialData = false;
   
-  if (result?.accounts) {
-    accountCount = result.accounts.length;
-  } else if (checkpoints?.accounts) {
-    accountCount = checkpoints.accounts.length;
-    hasPartialData = true;
+  if (result) {
+    const canonical = parseJobResult(result);
+    accountCount = canonical.derogatory_accounts.length + canonical.collections.length + canonical.charge_offs.length;
+  } else if (checkpoints) {
+    const partial = parseCheckpointResult(checkpoints);
+    if (partial) {
+      accountCount = partial.derogatory_accounts.length + partial.collections.length + partial.charge_offs.length;
+      hasPartialData = true;
+    }
   }
   
   const status = job.status;

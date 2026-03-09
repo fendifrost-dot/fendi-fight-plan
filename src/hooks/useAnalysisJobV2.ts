@@ -6,11 +6,15 @@
  * 
  * CRITICAL INVARIANT: Toast must ONLY fire AFTER the onComplete callback
  * has successfully hydrated results into the component's state.
+ * 
+ * CANONICAL CONTRACT: onComplete now receives the full CanonicalAnalyzerResult,
+ * not just accounts. Partial recovery also uses canonical result when available.
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import type { CanonicalAnalyzerResult } from '@/types/disputes';
 import {
   startJob,
   fetchJobStatus,
@@ -20,7 +24,8 @@ import {
   isPollExpired,
   isJobStale,
   getPollInterval,
-  parseJobResultAccounts,
+  parseJobResult,
+  parseCheckpointResult,
   classifyTimeout,
   JobState,
   JobStatus,
@@ -28,9 +33,11 @@ import {
 } from '@/lib/analysisJobs';
 
 export interface UseAnalysisJobOptions {
-  onComplete?: (result: any, accounts: any[]) => boolean | void;
+  /** Called with full canonical result when job completes. Return true to confirm hydration. */
+  onComplete?: (canonicalResult: CanonicalAnalyzerResult) => boolean | void;
   onError?: (errorCode: string | null, errorMessage: string | null) => void;
-  onPartial?: (accounts: any[]) => void;
+  /** Called with partial canonical result when available */
+  onPartial?: (canonicalResult: CanonicalAnalyzerResult) => void;
   autoResume?: boolean;
 }
 
@@ -42,7 +49,7 @@ export interface UseAnalysisJobReturn {
   startAnalysis: (imageUrls: string[], questionnaire?: any, sessionId?: string | null) => Promise<string | null>;
   resumeJob: (jobId: string) => void;
   retryJob: () => Promise<void>;
-  usePartialResults: () => any[];
+  usePartialResults: () => CanonicalAnalyzerResult | null;
   reset: () => void;
 }
 
@@ -119,10 +126,11 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
       const updated = await fetchJobStatus(jobId);
       if (!('fetchError' in updated)) {
         setState(updated);
-        const accounts = updated.checkpoints?.accounts || [];
-        if (accounts.length > 0) {
-          toast.warning(`Worker stopped at chunk ${updated.checkpoints?.processedChunks}/${updated.checkpoints?.totalChunks}. ${accounts.length} account(s) recovered. You can retry or use partial results.`);
-          onPartial?.(accounts);
+        // Try to recover partial results using canonical hydration
+        const partialCanonical = parseCheckpointResult(updated.checkpoints);
+        if (partialCanonical && (partialCanonical.derogatory_accounts.length > 0 || partialCanonical.collections.length > 0)) {
+          toast.warning(`Worker stopped at chunk ${updated.checkpoints?.processedChunks}/${updated.checkpoints?.totalChunks}. ${partialCanonical.derogatory_accounts.length} account(s) recovered. You can retry or use partial results.`);
+          onPartial?.(partialCanonical);
         } else {
           toast.error('Worker stopped responding. Click "Retry" to resume from the last checkpoint.');
         }
@@ -136,25 +144,35 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
       
       if (result.status === 'DONE' && !completedRef.current) {
         completedRef.current = true;
-        const accounts = parseJobResultAccounts(result.result);
+        // Use full canonical hydration — NOT account-only parsing
+        const canonicalResult = parseJobResult(result.result);
         
         try {
-          const hydrationSuccess = onComplete?.(result.result, accounts);
+          const hydrationSuccess = onComplete?.(canonicalResult);
+          
+          const totalEntities = canonicalResult.derogatory_accounts.length + 
+            canonicalResult.collections.length + canonicalResult.charge_offs.length;
           
           if (hydrationSuccess === true) {
-            toast.success(`Analysis complete. Found ${accounts.length} account(s).`);
+            toast.success(`Analysis complete. Found ${totalEntities} account(s), ${canonicalResult.inquiries.length} inquiry(s).`);
           } else if (hydrationSuccess === undefined) {
             console.warn('[useAnalysisJobV2] onComplete callback should return true after hydrating results');
-            toast.success(`Analysis complete. Found ${accounts.length} account(s).`);
+            toast.success(`Analysis complete. Found ${totalEntities} account(s), ${canonicalResult.inquiries.length} inquiry(s).`);
           }
         } catch (err) {
           console.error('[useAnalysisJobV2] onComplete callback failed:', err);
           toast.error('Analysis complete but failed to load results. Use the reload button.');
         }
       } else if (result.status === 'PARTIAL') {
-        const accounts = result.checkpoints?.accounts || [];
-        toast.warning(`Analysis partially complete. Extracted ${accounts.length} account(s).`);
-        onPartial?.(accounts);
+        const partialCanonical = result.result 
+          ? parseJobResult(result.result) 
+          : parseCheckpointResult(result.checkpoints);
+        if (partialCanonical) {
+          const totalEntities = partialCanonical.derogatory_accounts.length + 
+            partialCanonical.collections.length + partialCanonical.charge_offs.length;
+          toast.warning(`Analysis partially complete. Extracted ${totalEntities} account(s).`);
+          onPartial?.(partialCanonical);
+        }
       } else if (result.status === 'FAILED') {
         const timeoutSrc = classifyTimeout(result, pollStartRef.current);
         const enhancedMsg = result.errorCode?.includes('TIMEOUT') || result.errorCode === 'JOB_STALE'
@@ -291,13 +309,20 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
     startPolling(state.jobId);
   }, [state.jobId, startPolling]);
 
-  const usePartialResults = useCallback(() => {
-    const accounts = state.checkpoints?.accounts || [];
-    if (accounts.length > 0) {
-      toast.success(`Using ${accounts.length} extracted account(s)`);
+  const usePartialResults = useCallback((): CanonicalAnalyzerResult | null => {
+    // Try result first, then checkpoints
+    if (state.result) {
+      const canonical = parseJobResult(state.result);
+      toast.success(`Using ${canonical.derogatory_accounts.length} extracted account(s)`);
+      return canonical;
     }
-    return accounts;
-  }, [state.checkpoints?.accounts]);
+    const partial = parseCheckpointResult(state.checkpoints);
+    if (partial && (partial.derogatory_accounts.length > 0 || partial.collections.length > 0)) {
+      toast.success(`Using ${partial.derogatory_accounts.length} extracted account(s) from checkpoint`);
+      return partial;
+    }
+    return null;
+  }, [state.checkpoints, state.result]);
 
   // Auto-resume active job on mount
   useEffect(() => {
