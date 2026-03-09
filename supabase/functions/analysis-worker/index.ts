@@ -41,6 +41,10 @@ interface Job {
   checkpoints: {
     documentMap?: any;
     accounts?: any[];
+    collections?: any[];
+    inquiries?: any[];
+    publicRecords?: any[];
+    chargeOffs?: any[];
     processedChunks?: number;
     totalChunks?: number;
     failedChunks?: number[];
@@ -191,7 +195,7 @@ async function callAIWithRetry(apiKey: string, messages: any[], retries = MAX_RE
 async function processChunk(
   client: any, jobId: string, lovableApiKey: string,
   chunkPaths: string[], chunkIndex: number, totalChunks: number,
-): Promise<{ accounts: any[]; timing: ChunkTiming }> {
+): Promise<{ accounts: any[]; collections: any[]; inquiries: any[]; publicRecords: any[]; chargeOffs: any[]; timing: ChunkTiming }> {
   const startedAt = new Date();
   console.log(`[chunk] job=${jobId} chunk=${chunkIndex + 1}/${totalChunks} pages=${chunkPaths.length} started`);
 
@@ -227,10 +231,19 @@ async function processChunk(
     await heartbeat(client, jobId, { step: `chunk_${chunkIndex + 1}_complete` });
     const endedAt = new Date();
     const elapsedMs = endedAt.getTime() - startedAt.getTime();
-    console.log(`[chunk] job=${jobId} chunk=${chunkIndex + 1}/${totalChunks} completed in ${elapsedMs}ms accounts=${result.accounts?.length || 0}`);
+    const acctCount = result.accounts?.length || 0;
+    const colCount = result.collections?.length || 0;
+    const inqCount = result.inquiries?.length || 0;
+    const prCount = result.public_records?.length || 0;
+    const coCount = result.charge_offs?.length || 0;
+    console.log(`[chunk] job=${jobId} chunk=${chunkIndex + 1}/${totalChunks} completed in ${elapsedMs}ms accounts=${acctCount} collections=${colCount} inquiries=${inqCount} public_records=${prCount} charge_offs=${coCount}`);
 
     return {
-      accounts: result.accounts && Array.isArray(result.accounts) ? result.accounts : [],
+      accounts: Array.isArray(result.accounts) ? result.accounts : [],
+      collections: Array.isArray(result.collections) ? result.collections : [],
+      inquiries: Array.isArray(result.inquiries) ? result.inquiries : [],
+      publicRecords: Array.isArray(result.public_records) ? result.public_records : [],
+      chargeOffs: Array.isArray(result.charge_offs) ? result.charge_offs : [],
       timing: { chunkIndex, startedAt: startedAt.toISOString(), endedAt: endedAt.toISOString(), elapsedMs, status: "ok" },
     };
   } catch (error) {
@@ -385,6 +398,10 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
     const resumeFromDb = checkpoints.processedChunks ?? 0;
     let processedChunks = Number.isFinite(startChunk) ? startChunk : resumeFromDb;
     const allAccounts: any[] = checkpoints.accounts || [];
+    const allCollections: any[] = checkpoints.collections || [];
+    const allInquiries: any[] = checkpoints.inquiries || [];
+    const allPublicRecords: any[] = checkpoints.publicRecords || [];
+    const allChargeOffs: any[] = checkpoints.chargeOffs || [];
     const failedChunks: number[] = checkpoints.failedChunks || [];
     const chunkTimings: ChunkTiming[] = checkpoints.chunkTimings || [];
 
@@ -402,7 +419,7 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
         console.log(`[worker] job=${jobId} self-chaining: ${reason}, remaining ${totalChunks - i} chunks`);
         await updateJob(client, jobId, {
           step: `chaining_at_${i}_of_${totalChunks}`, progress: 20 + Math.round((i / totalChunks) * 70),
-          checkpoints: { documentMap, accounts: allAccounts, processedChunks: i, totalChunks, failedChunks, chunkTimings },
+          checkpoints: { documentMap, accounts: allAccounts, collections: allCollections, inquiries: allInquiries, publicRecords: allPublicRecords, chargeOffs: allChargeOffs, processedChunks: i, totalChunks, failedChunks, chunkTimings },
         });
         await selfChain(supabaseUrl, supabaseServiceKey, jobId, i, invocationId);
         return new Response(null, { status: 202 });
@@ -411,13 +428,17 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
       const progressPct = 20 + Math.round((i / totalChunks) * 70);
       await updateJob(client, jobId, {
         step: `chunk_${i + 1}_of_${totalChunks}`, progress: progressPct,
-        checkpoints: { documentMap, accounts: allAccounts, processedChunks: i, totalChunks, failedChunks, chunkTimings },
+        checkpoints: { documentMap, accounts: allAccounts, collections: allCollections, inquiries: allInquiries, publicRecords: allPublicRecords, chargeOffs: allChargeOffs, processedChunks: i, totalChunks, failedChunks, chunkTimings },
       });
 
       try {
         const result = await processChunk(client, jobId, lovableApiKey, chunks[i], i, totalChunks);
-        // CRITICAL: Push every account individually — NEVER merge or deduplicate
+        // CRITICAL: Push every entity individually — NEVER merge or deduplicate
         allAccounts.push(...result.accounts);
+        allCollections.push(...result.collections);
+        allInquiries.push(...result.inquiries);
+        allPublicRecords.push(...result.publicRecords);
+        allChargeOffs.push(...result.chargeOffs);
         chunkTimings.push(result.timing);
         processedChunks = i + 1;
         chunksProcessedThisInvocation++;
@@ -434,6 +455,10 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
         try {
           const retryResult = await processChunk(client, jobId, lovableApiKey, chunks[i], i, totalChunks);
           allAccounts.push(...retryResult.accounts);
+          allCollections.push(...retryResult.collections);
+          allInquiries.push(...retryResult.inquiries);
+          allPublicRecords.push(...retryResult.publicRecords);
+          allChargeOffs.push(...retryResult.chargeOffs);
           chunkTimings.push({ ...retryResult.timing, status: "retried_ok", retryElapsedMs: retryResult.timing.elapsedMs });
           processedChunks = i + 1;
           chunksProcessedThisInvocation++;
@@ -450,7 +475,7 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
       }
 
       await updateJob(client, jobId, {
-        checkpoints: { documentMap, accounts: allAccounts, processedChunks, totalChunks, failedChunks, chunkTimings },
+        checkpoints: { documentMap, accounts: allAccounts, collections: allCollections, inquiries: allInquiries, publicRecords: allPublicRecords, chargeOffs: allChargeOffs, processedChunks, totalChunks, failedChunks, chunkTimings },
       });
 
       if (i < chunks.length - 1) await new Promise(r => setTimeout(r, 500));
@@ -464,10 +489,10 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
     // Wrap raw accounts into the contract structure for postProcessAndValidate.
     const rawResult = {
       derogatory_accounts: allAccounts,
-      collections: [] as any[],
-      charge_offs: [] as any[],
-      inquiries: [] as any[],
-      public_records: [] as any[],
+      collections: allCollections,
+      charge_offs: allChargeOffs,
+      inquiries: allInquiries,
+      public_records: allPublicRecords,
     };
 
     // Run the EXACT SAME deterministic pipeline as analyze-response
@@ -489,8 +514,12 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
     const totalElapsedMs = Date.now() - invocationStartedAt;
 
     const resultData = {
-      // Preserve every account individually — no merging
+      // Preserve every entity individually — no merging
       accounts: postProcessed.report.derogatory_accounts,
+      collections: postProcessed.report.collections,
+      charge_offs: postProcessed.report.charge_offs,
+      inquiries: postProcessed.report.inquiries,
+      public_records: postProcessed.report.public_records,
       documentMap,
       totalPages: storagePaths.length,
       processedChunks,
@@ -530,12 +559,12 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
 
     await updateJob(client, jobId, {
       status: finalStatus, step: "complete", progress: 100, result_data: resultData,
-      checkpoints: { documentMap, accounts: allAccounts, processedChunks, totalChunks, failedChunks, chunkTimings },
+      checkpoints: { documentMap, accounts: allAccounts, collections: allCollections, inquiries: allInquiries, publicRecords: allPublicRecords, chargeOffs: allChargeOffs, processedChunks, totalChunks, failedChunks, chunkTimings },
       completed_at: new Date().toISOString(), ...errorFields,
     });
 
     await cleanupJobStorage(client, job.user_id, jobId);
-    console.log(`[worker] job=${jobId} FINALIZED status=${finalStatus} accounts=${allAccounts.length} elapsed=${totalElapsedMs}ms validation=${postProcessed.validation.status}`);
+    console.log(`[worker] job=${jobId} FINALIZED status=${finalStatus} accounts=${allAccounts.length} collections=${allCollections.length} inquiries=${allInquiries.length} public_records=${allPublicRecords.length} elapsed=${totalElapsedMs}ms validation=${postProcessed.validation.status}`);
 
     return new Response(JSON.stringify({ status: finalStatus, accountCount: allAccounts.length, workerElapsedMs: totalElapsedMs }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
