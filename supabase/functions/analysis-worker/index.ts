@@ -213,32 +213,46 @@ async function callAIWithTimeout(apiKey: string, messages: any[], timeoutMs: num
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-   try {
+  // Calculate payload size for diagnostics
+  const payload = JSON.stringify({
+    model: "google/gemini-3-flash-preview",
+    messages,
+    response_format: { type: "json_object" },
+  });
+  const payloadSizeKB = Math.round(payload.length / 1024);
+
+  const aiStart = Date.now();
+  console.log(`[ai_call] sending ${payloadSizeKB}KB payload, timeout=${timeoutMs}ms`);
+
+  try {
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model: "google/gemini-3-flash-preview",
-        messages,
-        response_format: { type: "json_object" },
-      }),
+      body: payload,
       signal: controller.signal,
     });
 
     clearTimeout(timeoutId);
+    const aiMs = Date.now() - aiStart;
 
     if (!response.ok) {
       const errorText = await response.text();
+      console.error(`[ai_call] FAILED status=${response.status} after ${aiMs}ms: ${errorText.slice(0, 200)}`);
       throw new Error(`AI error ${response.status}: ${errorText}`);
     }
 
     const data = await response.json();
-    return JSON.parse(data.choices?.[0]?.message?.content || "{}");
+    const parseStart = Date.now();
+    const result = JSON.parse(data.choices?.[0]?.message?.content || "{}");
+    console.log(`[ai_call] OK in ${aiMs}ms, parse=${Date.now() - parseStart}ms, accounts=${result.accounts?.length || 0}`);
+    return result;
   } catch (error) {
     clearTimeout(timeoutId);
+    const aiMs = Date.now() - aiStart;
+    console.error(`[ai_call] EXCEPTION after ${aiMs}ms: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
   }
 }
