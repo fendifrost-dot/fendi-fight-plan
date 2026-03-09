@@ -38,7 +38,8 @@ All matching must use whole-word boundary matching — never substring matching.
 For example, "late" must NOT match "later", "collateral", "related", or "translated".
 
 ### Status Keywords (whole words/phrases)
-late, late payment, late payments, 30 days late, 60 days late, 90 days late, 120 days late, 150 days late, 30-day late, 60-day late, 90-day late, 120-day late, 150-day late, potentially negative, past due, past-due, derogatory, charge off, charged off, charged-off, chargeoff, written off, write off, write-off, collection, collections, repossession, foreclosure, settled, settled for less, bankruptcy, included in bankruptcy, profit and loss write-off
+late, late payment, late payments, 30 days late, 60 days late, 90 days late, 120 days late, 150 days late, 30-day late, 60-day late, 90-day late, 120-day late, 150-day late, 30 days past due, 60 days past due, 90 days past due, 120 days past due, potentially negative, derogatory, charge off, charged off, charged-off, chargeoff, charged off as bad debt, written off, write off, write-off, collection, collections, repossession, foreclosure, settled, settled for less, bankruptcy, included in bankruptcy, profit and loss write-off
+NOTE: Plain "past due" is NOT in this list. Past due detection uses the VALUE-AWARE rule below (amount > $0 only).
 
 ### Context-Sensitive Keywords
 C/O — match ONLY in status/remark/account status fields. Do NOT match in address lines (where it means "care of").
