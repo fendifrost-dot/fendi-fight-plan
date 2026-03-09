@@ -196,6 +196,14 @@ export const POSITIVE_STATUS_KEYWORDS: readonly string[] = [
  * HARD VETO: Determine if a tradeline is "clean" and must NEVER be in derogatory_accounts.
  * This is an absolute veto — even if weak triggers exist, a structurally clean tradeline is excluded.
  * Checks structured fields only (NOT block_text which has AI noise).
+ * 
+ * A tradeline is clean if ALL of:
+ * 1. Positive status keyword present
+ * 2. Past due is $0 or null/placeholder
+ * 3. No negative payment grid codes
+ * 4. No ACTUAL date of first delinquency (placeholders don't count)
+ * 5. No negative section header
+ * 6. No derogatory keywords in structured fields (status/remarks only, NOT block_text)
  */
 export function isCleanTradeline(tradeline: any): boolean {
   const statusText = (tradeline.status_as_reported || tradeline.status || '').toLowerCase().trim();
@@ -203,11 +211,24 @@ export function isCleanTradeline(tradeline: any): boolean {
   if (!hasPositiveStatus) return false;
   if (isPastDueNegative(tradeline.past_due_amount)) return false;
   if (findNegativeGridCodes(tradeline.payment_grid_codes).length > 0) return false;
-  if (tradeline.date_first_delinquency) return false;
+  // DOFD: only block if it's an actual date, not a placeholder
+  if (hasActualDateOfFirstDelinquency(tradeline.date_first_delinquency)) return false;
   if (isNegativeSectionHeader(tradeline.section_header)) return false;
+  // Check structured fields only — block_text excluded to prevent AI narrative noise
   const structuredText = [tradeline.status_as_reported, tradeline.status, tradeline.remarks].filter(Boolean).join(' ');
   if (findNegativeKeywords(structuredText).length > 0) return false;
   return true;
+}
+
+/**
+ * Check if a date_first_delinquency value is an actual date (not a placeholder).
+ * Returns true only if the value is a non-placeholder, non-empty string.
+ */
+export function hasActualDateOfFirstDelinquency(dofd: any): boolean {
+  if (isPlaceholderValue(dofd)) return false;
+  // Must be a string that looks like a date (contains digits)
+  if (typeof dofd !== 'string') return false;
+  return /\d/.test(dofd);
 }
 
 // ─── Matching Functions ────────────────────────────────────────────────────
