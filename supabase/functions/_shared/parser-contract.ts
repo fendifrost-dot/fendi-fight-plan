@@ -171,21 +171,20 @@ export const POSITIVE_STATUS_KEYWORDS: readonly string[] = [
 ] as const;
 
 /**
- * Determine if a tradeline is "clean" — should NOT be in derogatory_accounts.
- * Clean = positive status + no past due + no negative grid codes + no derogatory keywords + no negative section + no DOFD.
+ * HARD VETO: Determine if a tradeline is "clean" and must NEVER be in derogatory_accounts.
+ * This is an absolute veto — even if weak triggers exist, a structurally clean tradeline is excluded.
+ * Checks structured fields only (NOT block_text which has AI noise).
  */
 export function isCleanTradeline(tradeline: any): boolean {
   const statusText = (tradeline.status_as_reported || tradeline.status || '').toLowerCase().trim();
   const hasPositiveStatus = POSITIVE_STATUS_KEYWORDS.some(kw => statusText.includes(kw));
   if (!hasPositiveStatus) return false;
   if (isPastDueNegative(tradeline.past_due_amount)) return false;
-  const gc = findNegativeGridCodes(tradeline.payment_grid_codes);
-  if (gc.length > 0) return false;
-  const searchTexts = [tradeline.block_text, tradeline.status_as_reported, tradeline.status, tradeline.remarks].filter(Boolean).join(' ');
-  const negKw = findNegativeKeywords(searchTexts);
-  if (negKw.length > 0) return false;
-  if (isNegativeSectionHeader(tradeline.section_header)) return false;
+  if (findNegativeGridCodes(tradeline.payment_grid_codes).length > 0) return false;
   if (tradeline.date_first_delinquency) return false;
+  if (isNegativeSectionHeader(tradeline.section_header)) return false;
+  const structuredText = [tradeline.status_as_reported, tradeline.status, tradeline.remarks].filter(Boolean).join(' ');
+  if (findNegativeKeywords(structuredText).length > 0) return false;
   return true;
 }
 

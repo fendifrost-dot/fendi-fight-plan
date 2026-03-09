@@ -675,85 +675,61 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
   };
 }
 
-// Normalize and deduplicate accounts from chunks
+// NO-MERGE RULE: Preserve one UI row per raw tradeline.
+// Never collapse cross-bureau entries. Each extracted tradeline = one row.
 function normalizeAccounts(rawAccounts: any[], documentMap: DocumentMap): DisputeAccount[] {
-  const accountMap = new Map<string, DisputeAccount>();
+  const results: DisputeAccount[] = [];
   
   for (const acc of rawAccounts) {
-    const key = `${acc.creditor_name || acc.creditorName}-${acc.account_number || acc.maskedAccountNumber}`.toLowerCase();
+    const bureauStatuses: Record<string, { status: string; reported: boolean }> = {};
     
-    const existing = accountMap.get(key);
-    if (existing) {
-      // Merge bureau statuses
-      const newBureaus = acc.bureaus || acc.bureau_status ? Object.keys(acc.bureau_status || {}) : [];
-      for (const bureau of newBureaus) {
-        if (!existing.bureauStatuses[bureau as BureauKey]) {
-          existing.bureauStatuses[bureau as BureauKey] = {
-            status: acc.bureau_status?.[bureau] || acc.status_as_reported || 'Unknown',
-            reported: true,
-          };
-        }
+    if (acc.bureaus && Array.isArray(acc.bureaus) && acc.bureaus.length > 0) {
+      for (const bureau of acc.bureaus) {
+        bureauStatuses[bureau] = { 
+          status: acc.status_as_reported || 'Reported', 
+          reported: true 
+        };
       }
-      // Update confidence if higher
-      if ((acc.confidence || 0.8) > (existing.confidence || 0)) {
-        existing.confidence = acc.confidence;
+    } else if (acc.bureau_status && typeof acc.bureau_status === 'object') {
+      for (const [bureau, status] of Object.entries(acc.bureau_status)) {
+        bureauStatuses[bureau] = { status: status as string, reported: true };
       }
-    } else {
-      // Create new account entry
-      const bureauStatuses: Record<string, { status: string; reported: boolean }> = {};
-      
-      // Handle various bureau status formats
-      if (acc.bureau_status) {
-        for (const [bureau, status] of Object.entries(acc.bureau_status)) {
-          bureauStatuses[bureau] = { status: status as string, reported: true };
-        }
-      } else if (acc.bureaus && Array.isArray(acc.bureaus)) {
-        for (const bureau of acc.bureaus) {
-          bureauStatuses[bureau] = { 
-            status: acc.status_as_reported || 'Reported', 
-            reported: true 
-          };
-        }
-      } else if (documentMap.is_multi_bureau) {
-        // Multi-bureau report - assume all bureaus unless specified
-        for (const bureau of documentMap.detected_bureaus) {
-          bureauStatuses[bureau] = { status: 'Reported', reported: true };
-        }
+    } else if (documentMap.is_multi_bureau) {
+      for (const bureau of documentMap.detected_bureaus) {
+        bureauStatuses[bureau] = { status: 'Reported', reported: true };
       }
-
-      const confidence = acc.confidence === 'high' ? 0.95 : 
-                    acc.confidence === 'medium' ? 0.75 :
-                    acc.confidence === 'low' ? 0.5 :
-                    typeof acc.confidence === 'number' ? acc.confidence : 0.8;
-
-      // Determine bucket from _bucket field set by postProcessAndValidate
-      const bucket: AccountBucket = acc._bucket === 'clean' ? 'clean' 
-        : acc._bucket === 'manual_review' ? 'manual_review'
-        : acc._bucket === 'derogatory' ? 'derogatory'
-        : (acc.derogatory_triggers && acc.derogatory_triggers.length > 0) ? 'derogatory' 
-        : 'manual_review';
-
-      // Derive triage from bucket: derogatory → included, manual_review → pending, clean → excluded
-      const triageState = bucket === 'derogatory' ? 'included' as const
-        : bucket === 'manual_review' ? 'pending' as const
-        : 'excluded' as const;
-
-      accountMap.set(key, {
-        id: crypto.randomUUID(),
-        maskedAccountNumber: acc.account_number || acc.maskedAccountNumber || 'Unknown',
-        creditorName: acc.creditor_name || acc.creditorName || 'Unknown Creditor',
-        dateOpened: acc.date_opened || acc.dateOpened,
-        bureauStatuses,
-        isSelected: triageState === 'included',
-        disputeReason: acc.isCollection ? 'Collection account' : 
-                       acc.isChargeOff ? 'Charge-off' : undefined,
-        confidence,
-        triageState,
-        bucket,
-        derogatoryTriggers: acc.derogatory_triggers || [],
-      });
     }
+
+    const confidence = acc.confidence === 'high' ? 0.95 : 
+                  acc.confidence === 'medium' ? 0.75 :
+                  acc.confidence === 'low' ? 0.5 :
+                  typeof acc.confidence === 'number' ? acc.confidence : 0.8;
+
+    const bucket: AccountBucket = acc._bucket === 'clean' ? 'clean' 
+      : acc._bucket === 'manual_review' ? 'manual_review'
+      : acc._bucket === 'derogatory' ? 'derogatory'
+      : (acc.derogatory_triggers && acc.derogatory_triggers.length > 0) ? 'derogatory' 
+      : 'manual_review';
+
+    const triageState = bucket === 'derogatory' ? 'included' as const
+      : bucket === 'manual_review' ? 'pending' as const
+      : 'excluded' as const;
+
+    results.push({
+      id: crypto.randomUUID(),
+      maskedAccountNumber: acc.account_number || acc.maskedAccountNumber || 'Unknown',
+      creditorName: acc.creditor_name || acc.creditorName || 'Unknown Creditor',
+      dateOpened: acc.date_opened || acc.dateOpened,
+      bureauStatuses,
+      isSelected: triageState === 'included',
+      disputeReason: acc.isCollection ? 'Collection account' : 
+                     acc.isChargeOff ? 'Charge-off' : undefined,
+      confidence,
+      triageState,
+      bucket,
+      derogatoryTriggers: acc.derogatory_triggers || [],
+    });
   }
 
-  return Array.from(accountMap.values());
+  return results;
 }

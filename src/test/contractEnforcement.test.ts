@@ -999,3 +999,195 @@ describe('Confidence never hardcoded 0.8', () => {
     }
   });
 });
+
+// ─── No-Merge Rule: Cross-Bureau Preservation ──────────────────────────────
+
+describe('No-Merge Rule — normalizeAccounts preserves separate bureau rows', () => {
+  it('same creditor+account across different bureaus stays as separate rows', () => {
+    const rawResult = {
+      derogatory_accounts: [
+        {
+          creditor_name: 'CAPITAL ONE',
+          account_number: '1234XXXX5678',
+          status_as_reported: 'Charge Off',
+          bureaus: ['experian'],
+          past_due_amount: '$500',
+        },
+        {
+          creditor_name: 'CAPITAL ONE',
+          account_number: '1234XXXX5678',
+          status_as_reported: 'Charge Off',
+          bureaus: ['equifax'],
+          past_due_amount: '$500',
+        },
+        {
+          creditor_name: 'CAPITAL ONE',
+          account_number: '1234XXXX5678',
+          status_as_reported: 'Charge Off',
+          bureaus: ['transunion'],
+          past_due_amount: '$450',
+        },
+      ],
+      collections: [],
+    };
+    const result = postProcessAndValidate(rawResult);
+    // All 3 bureau entries must remain separate in derogatory_accounts
+    expect(result.report.derogatory_accounts.length).toBe(3);
+    const bureaus = result.report.derogatory_accounts.map(
+      (a: any) => a.bureaus?.[0]
+    );
+    expect(bureaus).toContain('experian');
+    expect(bureaus).toContain('equifax');
+    expect(bureaus).toContain('transunion');
+  });
+
+  it('same creditor across bureaus are flagged as duplicates but not merged', () => {
+    const rawResult = {
+      derogatory_accounts: [
+        {
+          creditor_name: 'DISCOVER',
+          account_number: '9999',
+          status: 'Late',
+          bureaus: ['experian'],
+        },
+        {
+          creditor_name: 'DISCOVER',
+          account_number: '9999',
+          status: 'Late',
+          bureaus: ['transunion'],
+        },
+      ],
+      collections: [],
+    };
+    const result = postProcessAndValidate(rawResult);
+    // Both preserved (different bureau keys)
+    expect(result.report.derogatory_accounts.length).toBe(2);
+    // detectDuplicates uses bureau-aware keys so these are NOT duplicates
+    expect(result.duplicateFlags.length).toBe(0);
+  });
+});
+
+// ─── isCleanTradeline Hard Veto ────────────────────────────────────────────
+
+describe('isCleanTradeline hard veto — blocks false positives', () => {
+  it('paid-as-agreed, $0 past due, no grid, no DOFD is excluded even with weak block_text trigger', () => {
+    const rawResult = {
+      derogatory_accounts: [
+        {
+          creditor_name: 'ALLY FINANCIAL',
+          account_number: '8888XXXX1111',
+          status_as_reported: 'Paid or paying as agreed',
+          status: 'Current',
+          past_due_amount: '$0',
+          payment_grid_codes: 'OK OK OK OK OK OK',
+          date_first_delinquency: null,
+          section_header: null,
+          remarks: null,
+          // AI block_text has a weak trigger "late" in narrative context
+          block_text: 'This account was opened late in 2019 and has been current throughout.',
+          bureaus: ['transunion'],
+        },
+      ],
+      collections: [],
+    };
+    const result = postProcessAndValidate(rawResult);
+    // Must NOT be in derogatory_accounts
+    expect(result.report.derogatory_accounts.length).toBe(0);
+    // Must be in manual_review_accounts
+    expect(result.report.manual_review_accounts.length).toBe(1);
+    expect(result.report.manual_review_accounts[0]._bucket).toBe('clean');
+  });
+
+  it('paid-as-agreed with negative grid codes is NOT clean (UPSTA/FINWISE case)', () => {
+    const rawResult = {
+      derogatory_accounts: [
+        {
+          creditor_name: 'UPSTA/FINWISE',
+          account_number: '5555XXXX9999',
+          status_as_reported: 'Paid or paying as agreed',
+          status: 'Current',
+          past_due_amount: '$0',
+          payment_grid_codes: 'OK OK 2 3 OK OK OK',
+          date_first_delinquency: null,
+          section_header: null,
+          remarks: null,
+          bureaus: ['transunion'],
+        },
+      ],
+      collections: [],
+    };
+    const result = postProcessAndValidate(rawResult);
+    // MUST remain in derogatory_accounts because grid codes 2,3 are negative
+    expect(result.report.derogatory_accounts.length).toBe(1);
+    expect(result.report.derogatory_accounts[0].creditor_name).toBe('UPSTA/FINWISE');
+    expect(result.report.derogatory_accounts[0].derogatory_triggers).toEqual(
+      expect.arrayContaining([expect.stringContaining('grid codes')])
+    );
+  });
+
+  it('clean tradeline with stray "collection" in block_text is still excluded', () => {
+    const rawResult = {
+      derogatory_accounts: [
+        {
+          creditor_name: 'USAA',
+          account_number: '2222XXXX3333',
+          status_as_reported: 'Paid as agreed',
+          status: 'Closed',
+          past_due_amount: null,
+          payment_grid_codes: null,
+          date_first_delinquency: null,
+          section_header: null,
+          remarks: null,
+          block_text: 'This collection of payments shows a solid repayment history.',
+          bureaus: ['experian'],
+        },
+      ],
+      collections: [],
+    };
+    const result = postProcessAndValidate(rawResult);
+    expect(result.report.derogatory_accounts.length).toBe(0);
+    expect(result.report.manual_review_accounts.length).toBe(1);
+  });
+
+  it('clean tradeline with date_first_delinquency is NOT clean', () => {
+    const rawResult = {
+      derogatory_accounts: [
+        {
+          creditor_name: 'CHASE',
+          account_number: '4444',
+          status_as_reported: 'Paid or paying as agreed',
+          past_due_amount: '$0',
+          payment_grid_codes: null,
+          date_first_delinquency: '2021-03-15',
+          bureaus: ['equifax'],
+        },
+      ],
+      collections: [],
+    };
+    const result = postProcessAndValidate(rawResult);
+    // Has DOFD trigger so it stays derogatory
+    expect(result.report.derogatory_accounts.length).toBe(1);
+  });
+
+  it('truly derogatory tradeline is not affected by clean veto', () => {
+    const rawResult = {
+      derogatory_accounts: [
+        {
+          creditor_name: 'MIDLAND CREDIT',
+          account_number: '7777',
+          status_as_reported: 'Collection',
+          status: 'Collection',
+          past_due_amount: '$2,500',
+          payment_grid_codes: null,
+          date_first_delinquency: '2020-01-01',
+          section_header: 'Collection Accounts',
+          bureaus: ['transunion'],
+        },
+      ],
+      collections: [],
+    };
+    const result = postProcessAndValidate(rawResult);
+    expect(result.report.derogatory_accounts.length).toBe(1);
+    expect(result.report.derogatory_accounts[0].derogatory_triggers.length).toBeGreaterThanOrEqual(2);
+  });
+});
