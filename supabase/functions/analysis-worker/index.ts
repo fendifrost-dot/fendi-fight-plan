@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // Build fingerprint — proves THIS code is deployed
-console.log("ANALYSIS_WORKER_BUILD", { version: "wall_clock_guard_v4", wallClockThresholdMs: 100000, aiTimeoutMs: 50000, maxRetries: 0, flatDocMapSupport: true });
+console.log("ANALYSIS_WORKER_BUILD", { version: "wall_clock_guard_v5", model: "google/gemini-3-flash-preview", wallClockThresholdMs: 100000, aiTimeoutMs: 30000, maxRetries: 0, flatDocMapSupport: true });
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -32,7 +32,7 @@ function _workerDetectDuplicates(accounts: any[]): any[] {
 }
 
 const MAX_IMAGES_PER_CHUNK = 3;
-const AI_TIMEOUT_MS = 50000; // 50s — credit report images need more time than 25s
+const AI_TIMEOUT_MS = 30000; // 30s — Gemini Flash processes credit report images in 5-15s
 const MAX_RETRIES = 0; // No inner retry — chunk-level retry handles failures
 const RETRY_DELAY_MS = 1000;
 const STORAGE_BUCKET = "analysis-images";
@@ -207,7 +207,7 @@ async function callAIWithTimeout(apiKey: string, messages: any[], timeoutMs: num
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-  try {
+   try {
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -215,7 +215,7 @@ async function callAIWithTimeout(apiKey: string, messages: any[], timeoutMs: num
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "openai/gpt-5-mini",
+        model: "google/gemini-3-flash-preview",
         messages,
         response_format: { type: "json_object" },
       }),

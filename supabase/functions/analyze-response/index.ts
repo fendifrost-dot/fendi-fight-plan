@@ -566,7 +566,7 @@ Include all derogatory items with maximum inclusion (dispute-safe approach).`;
       });
     }
 
-    const model = "google/gemini-2.5-flash";
+    const model = "google/gemini-3-flash-preview";
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
