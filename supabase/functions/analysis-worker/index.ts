@@ -156,6 +156,7 @@ async function failJob(client: any, jobId: string, se: StructuredError) {
 }
 
 async function downloadImageAsDataUrl(client: any, objectName: string): Promise<string> {
+  const dlStart = Date.now();
   const { data, error } = await client.storage
     .from(STORAGE_BUCKET)
     .download(objectName);
@@ -165,15 +166,20 @@ async function downloadImageAsDataUrl(client: any, objectName: string): Promise<
   }
 
   const buffer = new Uint8Array(await data.arrayBuffer());
-  const CHUNK_SIZE = 32768;
-  let base64 = '';
-  for (let i = 0; i < buffer.length; i += CHUNK_SIZE) {
-    const chunk = buffer.subarray(i, i + CHUNK_SIZE);
-    base64 += String.fromCharCode(...chunk);
-  }
-  base64 = btoa(base64);
+  const dlMs = Date.now() - dlStart;
 
-  return `data:image/jpeg;base64,${base64}`;
+  // Detect MIME type from file extension
+  const ext = objectName.split('.').pop()?.toLowerCase() || 'jpeg';
+  const mimeType = ext === 'webp' ? 'image/webp' : ext === 'png' ? 'image/png' : 'image/jpeg';
+
+  // Efficient base64 encoding for Deno
+  const base64 = btoa(
+    buffer.reduce((acc, byte) => acc + String.fromCharCode(byte), '')
+  );
+
+  console.log(`[download] ${objectName} size=${buffer.length} mime=${mimeType} dlMs=${dlMs}`);
+
+  return `data:${mimeType};base64,${base64}`;
 }
 
 async function cleanupJobStorage(client: any, userId: string, jobId: string) {
