@@ -687,7 +687,7 @@ function mapAccountToDb(acc: DisputeAccount, sessionId: string, userId: string) 
     custom_reason: acc.customReason,
     source_file: acc.sourceFile,
     source_page: acc.sourcePage,
-    confidence: acc.confidence,
+    confidence: typeof acc.confidence === 'number' ? acc.confidence : (acc.confidence === 'high' ? 0.95 : acc.confidence === 'medium' ? 0.75 : acc.confidence === 'low' ? 0.5 : 0.3),
     triage_state: acc.triageState || "included",
     exclude_reason: acc.excludeReason || null,
     reviewed_at: acc.reviewedAt || null,

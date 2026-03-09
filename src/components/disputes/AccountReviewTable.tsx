@@ -214,7 +214,7 @@ function AccountRow({
             {/* Confidence + bucket info */}
             <div className="flex items-center gap-3 flex-wrap text-xs">
               <Badge variant="secondary">
-                {Math.round(account.confidence * 100)}% confidence
+                {typeof account.confidence === 'number' ? `${Math.round(account.confidence * 100)}%` : account.confidence} confidence
               </Badge>
               <span className="text-muted-foreground">
                 Bucket: <strong>{account.bucket || "unknown"}</strong>
