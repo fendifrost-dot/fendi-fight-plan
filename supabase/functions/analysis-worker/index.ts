@@ -485,10 +485,10 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
     // Wrap raw accounts into the contract structure for postProcessAndValidate.
     const rawResult = {
       derogatory_accounts: allAccounts,
-      collections: [] as any[],
-      charge_offs: [] as any[],
-      inquiries: [] as any[],
-      public_records: [] as any[],
+      collections: allCollections,
+      charge_offs: allChargeOffs,
+      inquiries: allInquiries,
+      public_records: allPublicRecords,
     };
 
     // Run the EXACT SAME deterministic pipeline as analyze-response
