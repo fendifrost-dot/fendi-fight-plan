@@ -32,8 +32,8 @@ function _workerDetectDuplicates(accounts: any[]): any[] {
 }
 
 const MAX_IMAGES_PER_CHUNK = 3;
-const AI_TIMEOUT_MS = 25000;
-const MAX_RETRIES = 1;
+const AI_TIMEOUT_MS = 50000; // 50s — credit report images need more time than 25s
+const MAX_RETRIES = 0; // No inner retry — chunk-level retry handles failures
 const RETRY_DELAY_MS = 1000;
 const STORAGE_BUCKET = "analysis-images";
 const CHUNK_RETRY_BACKOFF_MS = 3000;
