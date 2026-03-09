@@ -72,7 +72,20 @@ serve(async (req) => {
         totalPages: storagePaths.length,
       },
       checkpoints: {},
+      // Contract version metadata for forensic traceability
     });
+
+    // Stamp contract version into input_data for audit trail
+    await adminClient.from("analysis_jobs").update({
+      input_data: {
+        storagePaths,
+        questionnaire: questionnaire || {},
+        reportType: reportType || "unknown",
+        totalPages: storagePaths.length,
+        _contract_version: 'v2-canonical',
+        _started_at: new Date().toISOString(),
+      },
+    }).eq('id', jobId);
 
     if (insertError) {
       console.error("Failed to create job:", insertError);
