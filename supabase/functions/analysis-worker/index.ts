@@ -564,7 +564,7 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
     });
 
     await cleanupJobStorage(client, job.user_id, jobId);
-    console.log(`[worker] job=${jobId} FINALIZED status=${finalStatus} accounts=${allAccounts.length} elapsed=${totalElapsedMs}ms validation=${postProcessed.validation.status}`);
+    console.log(`[worker] job=${jobId} FINALIZED status=${finalStatus} accounts=${allAccounts.length} collections=${allCollections.length} inquiries=${allInquiries.length} public_records=${allPublicRecords.length} elapsed=${totalElapsedMs}ms validation=${postProcessed.validation.status}`);
 
     return new Response(JSON.stringify({ status: finalStatus, accountCount: allAccounts.length, workerElapsedMs: totalElapsedMs }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
