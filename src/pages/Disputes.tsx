@@ -26,7 +26,8 @@ import {
   HelpCircle,
   RotateCcw,
   Save,
-  FileDown
+  FileDown,
+  RefreshCw
 } from "lucide-react";
 import { exportAsWord, exportAsPdf } from "@/lib/letter-export";
 import { toast } from "sonner";
