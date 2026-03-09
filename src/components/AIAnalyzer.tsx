@@ -188,6 +188,9 @@ const AIAnalyzer = () => {
   // Track if job completed but results failed to load (for debug panel)
   const [jobCompletedButEmpty, setJobCompletedButEmpty] = useState(false);
   const [lastJobInfo, setLastJobInfo] = useState<{ jobId: string | null; resultCount: number } | null>(null);
+  
+  // Manual review accounts — tracked separately so they persist into dispute import
+  const [manualReviewAccounts, setManualReviewAccounts] = useState<any[]>([]);
 
   // Store the job ID for callbacks (avoids circular dependency)
   const currentJobIdRef = useRef<string | null>(null);
@@ -1468,17 +1471,21 @@ const AIAnalyzer = () => {
                 >
                   Keep as Derogatory
                 </Button>
-                <Button
+               <Button
                   variant="outline"
                   size="sm"
                   className="text-xs h-7 bg-warning/10 text-warning border-warning/30 hover:bg-warning/20"
                   onClick={() => {
+                    // Track in manual_review list before removing from derogatory
+                    setManualReviewAccounts(prev => [...prev, { ...item, _movedFrom: 'derogatory' }]);
                     setResults(prev => {
                       const updated = { ...prev };
                       for (const key of Object.keys(updated)) {
                         updated[key] = {
                           ...updated[key],
-                          derogatory_accounts: updated[key].derogatory_accounts.filter((_, idx) => !(key === Object.keys(prev).find(k => prev[k].derogatory_accounts.includes(item)) && idx === updated[key].derogatory_accounts.indexOf(item))),
+                          derogatory_accounts: updated[key].derogatory_accounts.filter(a => 
+                            a.creditor_name !== item.creditor_name || a.account_number !== item.account_number
+                          ),
                         };
                       }
                       return updated;
@@ -1661,7 +1668,59 @@ const AIAnalyzer = () => {
         </ResultCard>
       )}
 
-      {/* Next Steps */}
+      {/* Manual Review Accounts */}
+      {manualReviewAccounts.length > 0 && (
+        <ResultCard
+          title="Manual Review"
+          count={manualReviewAccounts.length}
+          variant="default"
+          onCopy={() => copySection("Manual Review", manualReviewAccounts.map(a => `${a.creditor_name} ${a.account_number}`).join("\n"))}
+          isCopied={copiedSection === "Manual Review"}
+        >
+          {manualReviewAccounts.map((item, i) => (
+            <div key={i} className="p-3 bg-warning/10 rounded-lg border border-warning/20">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-foreground">{item.creditor_name}</p>
+                  <p className="text-sm text-muted-foreground">{item.account_number}</p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs h-7"
+                  onClick={() => {
+                    // Move back to derogatory
+                    setManualReviewAccounts(prev => prev.filter((_, idx) => idx !== i));
+                    setResults(prev => {
+                      const updated = { ...prev };
+                      const firstKey = Object.keys(updated)[0];
+                      if (firstKey) {
+                        updated[firstKey] = {
+                          ...updated[firstKey],
+                          derogatory_accounts: [...updated[firstKey].derogatory_accounts, item],
+                        };
+                      }
+                      return updated;
+                    });
+                    toast({ title: "Restored to derogatory", description: `${item.creditor_name} moved back.` });
+                  }}
+                >
+                  Restore to Derogatory
+                </Button>
+              </div>
+              {item.derogatory_triggers?.length > 0 && (
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {item.derogatory_triggers.map((t: string, ti: number) => (
+                    <span key={ti} className="px-2 py-0.5 text-xs bg-warning/20 text-warning rounded">{t}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </ResultCard>
+      )}
+
+
       {result.next_steps && result.next_steps.length > 0 && (
         <div className="card-elevated rounded-xl border border-border/50 p-6">
           <h4 className="text-lg font-serif font-semibold text-foreground mb-4">Next Steps</h4>
