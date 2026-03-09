@@ -7,6 +7,7 @@ import type {
   ProcessingProgress,
   UploadedDocument,
   BureauKey,
+  AccountBucket,
 } from '@/types/disputes';
 import { defaultProcessingProgress } from '@/types/disputes';
 
@@ -725,17 +726,31 @@ function normalizeAccounts(rawAccounts: any[], documentMap: DocumentMap): Disput
                     acc.confidence === 'low' ? 0.5 :
                     typeof acc.confidence === 'number' ? acc.confidence : 0.8;
 
+      // Determine bucket from _bucket field set by postProcessAndValidate
+      const bucket: AccountBucket = acc._bucket === 'clean' ? 'clean' 
+        : acc._bucket === 'manual_review' ? 'manual_review'
+        : acc._bucket === 'derogatory' ? 'derogatory'
+        : (acc.derogatory_triggers && acc.derogatory_triggers.length > 0) ? 'derogatory' 
+        : 'manual_review';
+
+      // Derive triage from bucket: derogatory → included, manual_review → pending, clean → excluded
+      const triageState = bucket === 'derogatory' ? 'included' as const
+        : bucket === 'manual_review' ? 'pending' as const
+        : 'excluded' as const;
+
       accountMap.set(key, {
         id: crypto.randomUUID(),
         maskedAccountNumber: acc.account_number || acc.maskedAccountNumber || 'Unknown',
         creditorName: acc.creditor_name || acc.creditorName || 'Unknown Creditor',
         dateOpened: acc.date_opened || acc.dateOpened,
         bureauStatuses,
-        isSelected: confidence >= 0.7,
+        isSelected: triageState === 'included',
         disputeReason: acc.isCollection ? 'Collection account' : 
                        acc.isChargeOff ? 'Charge-off' : undefined,
         confidence,
-        triageState: confidence >= 0.7 ? "included" : "pending",
+        triageState,
+        bucket,
+        derogatoryTriggers: acc.derogatory_triggers || [],
       });
     }
   }

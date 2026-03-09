@@ -22,6 +22,7 @@ import {
   PARSER_ERROR_CODES,
   classifyTradeline,
   detectDuplicates,
+  isCleanTradeline,
 } from './parser-contract.ts';
 
 import {
@@ -227,23 +228,38 @@ export function validateCounts(report: any): ValidationResult {
  * - Preserve every extracted tradeline individually
  */
 export function postProcessAndValidate(rawResult: any, reportText?: string): PostProcessResult {
-  // Step 1: Ensure all arrays exist
   const report = ensureRequiredArrays(rawResult);
-
-  // Step 2: Schema validation
   const schema = validateSchema(report);
 
-  // Step 3 + 4: Re-classify and derive confidence deterministically
+  // ─── Three-bucket separation ─────────────────────────────────────────
+  const confirmedDerogatory: any[] = [];
+  const manualReview: any[] = [];
+
   if (report.derogatory_accounts && Array.isArray(report.derogatory_accounts)) {
+    report.all_tradelines = [...report.derogatory_accounts];
+
     for (const acct of report.derogatory_accounts) {
       const classification = classifyTradeline(acct);
       acct.derogatory_triggers = classification.triggers;
       acct.confidence = deriveConfidence(acct, classification.triggers);
-      if (!classification.isNegative) {
+
+      if (isCleanTradeline(acct)) {
+        acct._classification_note = 'Clean tradeline excluded from derogatory_accounts';
+        acct._bucket = 'clean';
+        manualReview.push(acct);
+      } else if (!classification.isNegative) {
         acct._no_triggers_detected = true;
         acct._classification_note = 'AI classified as negative but no deterministic triggers found';
+        acct._bucket = 'manual_review';
+        manualReview.push(acct);
+      } else {
+        acct._bucket = 'derogatory';
+        confirmedDerogatory.push(acct);
       }
     }
+
+    report.derogatory_accounts = confirmedDerogatory;
+    report.manual_review_accounts = manualReview;
   }
 
   if (report.charge_offs && Array.isArray(report.charge_offs)) {
@@ -251,41 +267,53 @@ export function postProcessAndValidate(rawResult: any, reportText?: string): Pos
       const classification = classifyTradeline(acct);
       acct.derogatory_triggers = classification.triggers;
       acct.confidence = deriveConfidence(acct, classification.triggers);
+      acct._bucket = 'derogatory';
     }
   }
 
-  // Step 5: Validate counts against bureau summary
   const validation = validateCounts(report);
 
-  // Step 6: Duplicate detection — FLAG ONLY, never merge
+  // ─── Leak guard ──────────────────────────────────────────────────────
+  const leakedItems = report.derogatory_accounts?.filter(
+    (a: any) => !a.derogatory_triggers || a.derogatory_triggers.length === 0
+  ) || [];
+  if (leakedItems.length > 0) {
+    validation.messages.push(
+      `INVALID_DEROGATORY_LEAK: ${leakedItems.length} account(s) in derogatory_accounts with zero triggers`
+    );
+    if (validation.status === 'PASS') validation.status = 'WARNING';
+    report.manual_review_accounts = [
+      ...(report.manual_review_accounts || []),
+      ...leakedItems,
+    ];
+    report.derogatory_accounts = report.derogatory_accounts.filter(
+      (a: any) => a.derogatory_triggers && a.derogatory_triggers.length > 0
+    );
+  }
+
   const allTradelines = [
     ...(report.derogatory_accounts || []),
     ...(report.charge_offs || []),
   ];
   const duplicateFlags = detectDuplicates(allTradelines);
 
-  // Step 7: Build tradeline inventory
-  // Pass 1 block count is independent of extracted negatives
   const pass1BlockCount = detectTradelineBlocks(reportText || report._raw_text || null);
   report.tradeline_inventory = {
     total_blocks_detected: pass1BlockCount > 0 ? pass1BlockCount : (allTradelines.length + (report.collections?.length ?? 0)),
     pass1_anchor_detected: pass1BlockCount,
     negative_extracted: allTradelines.length,
+    manual_review_count: (report.manual_review_accounts || []).length,
     collections_extracted: report.collections?.length ?? 0,
     public_records_extracted: report.public_records?.length ?? 0,
     inquiries_extracted: report.inquiries?.length ?? 0,
   };
 
-  // Step 8: Strip non-deterministic fields from contract output
   delete report.summary;
   delete report.next_steps;
 
-  // Step 9: Set validation status
   report.validation_status = `${validation.status}: ${validation.messages.join('; ')}`;
   report.duplicate_flags = duplicateFlags;
 
-  // CRITICAL: isError = true whenever validation.status === 'ERROR'
-  // Count mismatch ALONE is sufficient — no schema condition required
   const isError = validation.status === 'ERROR';
   const errorCode = isError ? PARSER_ERROR_CODES.EXTRACTION_INCOMPLETE : null;
   const errorMessage = isError
@@ -303,10 +331,6 @@ export function postProcessAndValidate(rawResult: any, reportText?: string): Pos
   };
 }
 
-/**
- * Post-processing for chunk results.
- * Same full pipeline — no lighter path allowed.
- */
 export function postProcessChunkResult(rawResult: any): any {
   const result = postProcessAndValidate(rawResult);
   return result.report;

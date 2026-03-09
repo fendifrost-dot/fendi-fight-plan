@@ -26,7 +26,8 @@ import {
   HelpCircle,
   RotateCcw,
   Save,
-  FileDown
+  FileDown,
+  RefreshCw
 } from "lucide-react";
 import { exportAsWord, exportAsPdf } from "@/lib/letter-export";
 import { toast } from "sonner";
@@ -183,6 +184,7 @@ const Disputes = () => {
     setManualClaimsText,
     resetSession,
     importAnalyzerData,
+    loadFromDatabase,
   } = useDisputeSession();
 
   // Use the new analysis hook
@@ -511,9 +513,33 @@ const Disputes = () => {
                   Saving...
                 </Badge>
               )}
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={() => {
+                  loadFromDatabase();
+                  toast.success("Analyzer state refreshed from database.");
+                }}
+                title="Re-pull latest analysis/job state without browser refresh"
+              >
+                <RefreshCw className="w-4 h-4 mr-2" />
+                Refresh Analyzer
+              </Button>
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={() => {
+                  updateConsumerInfo({ fullName: "", addressLine1: "", addressLine2: "", cityStateZip: "" });
+                  toast.success("Consumer info cleared. Re-enter your details.");
+                }}
+                title="Reset/reload consumer name, address, employment"
+              >
+                <RotateCcw className="w-4 h-4 mr-2" />
+                Reset Consumer Info
+              </Button>
               <Button variant="ghost" size="sm" onClick={handleReset} className="text-muted-foreground">
                 <RotateCcw className="w-4 h-4 mr-2" />
-                Reset
+                Reset All
               </Button>
             </div>
           </div>

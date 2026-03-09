@@ -54,6 +54,9 @@ export interface UploadedDocument {
   storageUrl?: string; // If persisted to backend storage
 }
 
+// Classification bucket: where the account sits after deterministic analysis
+export type AccountBucket = "derogatory" | "manual_review" | "clean";
+
 // Analysis result per account
 export interface DisputeAccount {
   id: string;
@@ -74,6 +77,10 @@ export interface DisputeAccount {
   triageState: "included" | "excluded" | "pending";
   excludeReason?: string;
   reviewedAt?: string;
+  /** Deterministic classification bucket */
+  bucket?: AccountBucket;
+  /** Exact deterministic triggers that caused derogatory classification */
+  derogatoryTriggers?: string[];
 }
 
 /** Derive isSelected from triageState (backward-compatible) */
