@@ -16,6 +16,7 @@ import {
   PARSER_ERROR_CODES,
   classifyTradeline,
   detectDuplicates,
+  isCleanTradeline,
 } from './parser-contract';
 
 import { validateSchema, ensureRequiredArrays, type SchemaValidationResult } from './parser-schema';
