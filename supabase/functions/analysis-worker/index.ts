@@ -429,8 +429,12 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
 
       try {
         const result = await processChunk(client, jobId, lovableApiKey, chunks[i], i, totalChunks);
-        // CRITICAL: Push every account individually — NEVER merge or deduplicate
+        // CRITICAL: Push every entity individually — NEVER merge or deduplicate
         allAccounts.push(...result.accounts);
+        allCollections.push(...result.collections);
+        allInquiries.push(...result.inquiries);
+        allPublicRecords.push(...result.publicRecords);
+        allChargeOffs.push(...result.chargeOffs);
         chunkTimings.push(result.timing);
         processedChunks = i + 1;
         chunksProcessedThisInvocation++;
