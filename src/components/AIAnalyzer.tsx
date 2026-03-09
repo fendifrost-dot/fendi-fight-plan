@@ -451,6 +451,7 @@ const AIAnalyzer = () => {
             userId,
             uploadId,
             file,
+            1,
             appendUploadEvent,
           );
           
