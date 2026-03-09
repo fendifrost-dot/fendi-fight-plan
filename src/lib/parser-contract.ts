@@ -13,9 +13,11 @@ export const NEGATIVE_STATUS_KEYWORDS: readonly string[] = [
   'late', 'late payment', 'late payments',
   '30 days late', '60 days late', '90 days late', '120 days late', '150 days late',
   '30-day late', '60-day late', '90-day late', '120-day late', '150-day late',
+  '30 days past due', '60 days past due', '90 days past due', '120 days past due',
   'potentially negative',
-  // NOTE: 'past due' removed — isPastDueNegative() handles value-aware past due detection.
+  // NOTE: plain 'past due' removed — isPastDueNegative() handles value-aware past due detection.
   'derogatory', 'charge off', 'charged off', 'charged-off', 'chargeoff',
+  'charged off as bad debt',
   'written off', 'write off', 'write-off',
   'collection', 'collections', 'repossession', 'foreclosure',
   'settled', 'settled for less',
