@@ -207,7 +207,7 @@ async function callAIWithTimeout(apiKey: string, messages: any[], timeoutMs: num
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-  try {
+   try {
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -215,7 +215,7 @@ async function callAIWithTimeout(apiKey: string, messages: any[], timeoutMs: num
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "openai/gpt-5-mini",
+        model: "google/gemini-3-flash-preview",
         messages,
         response_format: { type: "json_object" },
       }),
