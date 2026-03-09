@@ -330,8 +330,12 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
         'Complete the legal strategy survey',
         'Generate your dispute letters',
       ],
-      rawSummary: `Analyzed text (${fullText.length} chars). Found ${accounts.length} accounts via text-first extraction.`,
+      rawSummary: `Analyzed text (${fullText.length} chars). Found ${accounts.length} accounts, ${allInquiries.length} inquiries, ${allPublicRecords.length} public records via text-first extraction.`,
       accounts,
+      // Attach extracted inquiries and public records for display
+      _inquiries: allInquiries,
+      _publicRecords: allPublicRecords,
+      _collections: allCollections,
     };
 
     setProgress({
@@ -342,7 +346,7 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
       failedChunks: failedChunks.map(String),
       message: failedChunks.length > 0
         ? `Analysis complete. ${failedChunks.length} chunk(s) had issues.`
-        : `Found ${accounts.length} account(s) via text extraction. Review and select items to dispute.`,
+        : `Found ${accounts.length} account(s), ${allInquiries.length} inquiry(s), ${allPublicRecords.length} public record(s). Review and select items to dispute.`,
     });
 
     return { result, accounts };
