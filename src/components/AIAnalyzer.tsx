@@ -424,8 +424,8 @@ const AIAnalyzer = () => {
             };
 
             const pdfResult = await renderPages();
-            const pagesSucceeded = pdfResult.succeeded;
-            const failedPages = pdfResult.failed;
+            const pagesSucceeded = pdfResult.pagesSucceeded;
+            const failedPages = pdfResult.failedPages;
 
             setUploadedFiles(prev => prev.map(f =>
               f.id === fileId
