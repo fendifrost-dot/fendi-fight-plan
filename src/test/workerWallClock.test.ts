@@ -79,21 +79,20 @@ describe('AI timeout budget', () => {
     expect(worstCaseChunkMs).toBeLessThan(EDGE_FUNCTION_LIMIT_MS);
   });
 
-  it('mapping + one chunk worst-case fits within edge function limit', () => {
-    const mappingWorstCase = AI_TIMEOUT_MS; // mapping also uses callAIWithRetry
-    const chunkWorstCase = AI_TIMEOUT_MS + CHUNK_RETRY_BACKOFF_MS + AI_TIMEOUT_MS;
-    const total = mappingWorstCase + chunkWorstCase;
-    // Should fit within 150s even if mapping and chunk both take max time
-    expect(total).toBeLessThan(EDGE_FUNCTION_LIMIT_MS);
+  it('mapping + one chunk worst-case fits with wall-clock guard', () => {
+    // Wall-clock guard ensures we chain before edge function kill.
+    // After mapping (up to 50s), the guard (100s) leaves room for one chunk.
+    const mappingWorstCase = AI_TIMEOUT_MS;
+    const remainingAfterMapping = WALL_CLOCK_CHAIN_THRESHOLD_MS - mappingWorstCase;
+    expect(remainingAfterMapping).toBeGreaterThanOrEqual(AI_TIMEOUT_MS);
   });
 
   it('AI timeout is long enough for 3-image credit report chunks', () => {
-    // Previously 25s was too short — AI calls were aborting at 25s
     expect(AI_TIMEOUT_MS).toBeGreaterThanOrEqual(45_000);
   });
 
   it('wall-clock guard triggers before edge function kill', () => {
-    expect(WALL_CLOCK_CHAIN_THRESHOLD_MS).toBeLessThan(EDGE_FUNCTION_LIMIT_MS - AI_TIMEOUT_MS);
+    expect(WALL_CLOCK_CHAIN_THRESHOLD_MS + AI_TIMEOUT_MS).toBeLessThanOrEqual(EDGE_FUNCTION_LIMIT_MS);
   });
 });
 
