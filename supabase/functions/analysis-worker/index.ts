@@ -7,8 +7,11 @@ import { postProcessAndValidate } from "../_shared/parser-validator.ts";
 import { PARSER_ERROR_CODES } from "../_shared/parser-contract.ts";
 import { validateSchema, ensureRequiredArrays } from "../_shared/parser-schema.ts";
 
+// Contract version for traceability
+const PARSER_CONTRACT_VERSION = "v2-canonical";
+
 // Build fingerprint
-console.log("ANALYSIS_WORKER_BUILD", { version: "contract_enforced_v2_no_merge", model: "google/gemini-3-flash-preview", wallClockThresholdMs: 100000, aiTimeoutMs: 30000, maxRetries: 0, sharedContract: true, merging: false });
+console.log("ANALYSIS_WORKER_BUILD", { version: "contract_enforced_v2_canonical", model: "google/gemini-3-flash-preview", wallClockThresholdMs: 100000, aiTimeoutMs: 30000, maxRetries: 0, sharedContract: true, merging: false, contractVersion: PARSER_CONTRACT_VERSION });
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -37,6 +40,7 @@ interface Job {
     questionnaire: any;
     reportType: string;
     totalPages: number;
+    contractVersion?: string;
   };
   checkpoints: {
     documentMap?: any;
@@ -45,6 +49,10 @@ interface Job {
     inquiries?: any[];
     publicRecords?: any[];
     chargeOffs?: any[];
+    inaccurateNames?: any[];
+    inaccurateAddresses?: any[];
+    inaccurateEmployers?: any[];
+    extraIdentifierMismatches?: any[];
     processedChunks?: number;
     totalChunks?: number;
     failedChunks?: number[];
@@ -171,7 +179,7 @@ async function callAIWithTimeout(apiKey: string, messages: any[], timeoutMs: num
     }
     const data = await response.json();
     const result = JSON.parse(data.choices?.[0]?.message?.content || "{}");
-    console.log(`[ai_call] OK in ${aiMs}ms, accounts=${result.accounts?.length || 0}`);
+    console.log(`[ai_call] OK in ${aiMs}ms, accounts=${result.accounts?.length || result.derogatory_accounts?.length || 0}`);
     return result;
   } catch (error) {
     clearTimeout(timeoutId);
@@ -192,10 +200,23 @@ async function callAIWithRetry(apiKey: string, messages: any[], retries = MAX_RE
   throw lastError;
 }
 
+interface ChunkEntities {
+  accounts: any[];
+  collections: any[];
+  inquiries: any[];
+  publicRecords: any[];
+  chargeOffs: any[];
+  inaccurateNames: any[];
+  inaccurateAddresses: any[];
+  inaccurateEmployers: any[];
+  extraIdentifierMismatches: any[];
+  timing: ChunkTiming;
+}
+
 async function processChunk(
   client: any, jobId: string, lovableApiKey: string,
   chunkPaths: string[], chunkIndex: number, totalChunks: number,
-): Promise<{ accounts: any[]; collections: any[]; inquiries: any[]; publicRecords: any[]; chargeOffs: any[]; timing: ChunkTiming }> {
+): Promise<ChunkEntities> {
   const startedAt = new Date();
   console.log(`[chunk] job=${jobId} chunk=${chunkIndex + 1}/${totalChunks} pages=${chunkPaths.length} started`);
 
@@ -221,29 +242,37 @@ async function processChunk(
     ]);
 
     // Schema validation on chunk result (informational — never discard)
-    if (result.accounts && Array.isArray(result.accounts)) {
-      const schemaCheck = validateSchema({ derogatory_accounts: result.accounts });
-      if (schemaCheck.rejectedAccounts.length > 0) {
-        console.warn(`[chunk] job=${jobId} chunk=${chunkIndex + 1} schema rejected ${schemaCheck.rejectedAccounts.length} accounts`);
-      }
+    const normalized = ensureRequiredArrays(result);
+    const schemaCheck = validateSchema(normalized);
+    if (schemaCheck.rejectedAccounts.length > 0) {
+      console.warn(`[chunk] job=${jobId} chunk=${chunkIndex + 1} schema rejected ${schemaCheck.rejectedAccounts.length} accounts`);
     }
 
     await heartbeat(client, jobId, { step: `chunk_${chunkIndex + 1}_complete` });
     const endedAt = new Date();
     const elapsedMs = endedAt.getTime() - startedAt.getTime();
-    const acctCount = result.accounts?.length || 0;
+    
+    // Log ALL entity counts
+    const acctCount = result.accounts?.length || result.derogatory_accounts?.length || 0;
     const colCount = result.collections?.length || 0;
     const inqCount = result.inquiries?.length || 0;
     const prCount = result.public_records?.length || 0;
     const coCount = result.charge_offs?.length || 0;
-    console.log(`[chunk] job=${jobId} chunk=${chunkIndex + 1}/${totalChunks} completed in ${elapsedMs}ms accounts=${acctCount} collections=${colCount} inquiries=${inqCount} public_records=${prCount} charge_offs=${coCount}`);
+    const nameCount = result.inaccurate_names?.length || 0;
+    const addrCount = result.inaccurate_addresses?.length || 0;
+    const empCount = result.inaccurate_employers?.length || 0;
+    console.log(`[chunk] job=${jobId} chunk=${chunkIndex + 1}/${totalChunks} completed in ${elapsedMs}ms accounts=${acctCount} collections=${colCount} inquiries=${inqCount} public_records=${prCount} charge_offs=${coCount} names=${nameCount} addresses=${addrCount} employers=${empCount}`);
 
     return {
-      accounts: Array.isArray(result.accounts) ? result.accounts : [],
+      accounts: Array.isArray(result.accounts) ? result.accounts : (Array.isArray(result.derogatory_accounts) ? result.derogatory_accounts : []),
       collections: Array.isArray(result.collections) ? result.collections : [],
       inquiries: Array.isArray(result.inquiries) ? result.inquiries : [],
       publicRecords: Array.isArray(result.public_records) ? result.public_records : [],
       chargeOffs: Array.isArray(result.charge_offs) ? result.charge_offs : [],
+      inaccurateNames: Array.isArray(result.inaccurate_names) ? result.inaccurate_names : [],
+      inaccurateAddresses: Array.isArray(result.inaccurate_addresses) ? result.inaccurate_addresses : [],
+      inaccurateEmployers: Array.isArray(result.inaccurate_employers) ? result.inaccurate_employers : [],
+      extraIdentifierMismatches: Array.isArray(result.extra_identifier_mismatches) ? result.extra_identifier_mismatches : [],
       timing: { chunkIndex, startedAt: startedAt.toISOString(), endedAt: endedAt.toISOString(), elapsedMs, status: "ok" },
     };
   } catch (error) {
@@ -382,10 +411,6 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
     }
 
     // Step 2: Chunk and analyze ALL pages
-    // CRITICAL: Process ALL pages, not just the accounts section.
-    // Collections, inquiries, and public records may appear on pages
-    // outside the accounts section. The AI prompt extracts all entity
-    // types from whatever pages it receives.
     await updateJob(client, jobId, { step: "analyzing", progress: 20 });
 
     const chunks: string[][] = [];
@@ -396,11 +421,16 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
     const totalChunks = chunks.length;
     const resumeFromDb = checkpoints.processedChunks ?? 0;
     let processedChunks = Number.isFinite(startChunk) ? startChunk : resumeFromDb;
+    // Canonical entity accumulators
     const allAccounts: any[] = checkpoints.accounts || [];
     const allCollections: any[] = checkpoints.collections || [];
     const allInquiries: any[] = checkpoints.inquiries || [];
     const allPublicRecords: any[] = checkpoints.publicRecords || [];
     const allChargeOffs: any[] = checkpoints.chargeOffs || [];
+    const allInaccurateNames: any[] = checkpoints.inaccurateNames || [];
+    const allInaccurateAddresses: any[] = checkpoints.inaccurateAddresses || [];
+    const allInaccurateEmployers: any[] = checkpoints.inaccurateEmployers || [];
+    const allExtraIdentifierMismatches: any[] = checkpoints.extraIdentifierMismatches || [];
     const failedChunks: number[] = checkpoints.failedChunks || [];
     const chunkTimings: ChunkTiming[] = checkpoints.chunkTimings || [];
 
@@ -408,6 +438,14 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
     if (processedChunks > 0) console.log("CHAIN_RESUME", { jobId, resumedFrom: processedChunks, invocationId });
 
     let chunksProcessedThisInvocation = 0;
+
+    const buildCheckpoints = () => ({
+      documentMap, accounts: allAccounts, collections: allCollections,
+      inquiries: allInquiries, publicRecords: allPublicRecords, chargeOffs: allChargeOffs,
+      inaccurateNames: allInaccurateNames, inaccurateAddresses: allInaccurateAddresses,
+      inaccurateEmployers: allInaccurateEmployers, extraIdentifierMismatches: allExtraIdentifierMismatches,
+      processedChunks, totalChunks, failedChunks, chunkTimings,
+    });
 
     for (let i = processedChunks; i < chunks.length; i++) {
       const elapsedMs = Date.now() - invocationStartedAt;
@@ -418,7 +456,7 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
         console.log(`[worker] job=${jobId} self-chaining: ${reason}, remaining ${totalChunks - i} chunks`);
         await updateJob(client, jobId, {
           step: `chaining_at_${i}_of_${totalChunks}`, progress: 20 + Math.round((i / totalChunks) * 70),
-          checkpoints: { documentMap, accounts: allAccounts, collections: allCollections, inquiries: allInquiries, publicRecords: allPublicRecords, chargeOffs: allChargeOffs, processedChunks: i, totalChunks, failedChunks, chunkTimings },
+          checkpoints: buildCheckpoints(),
         });
         await selfChain(supabaseUrl, supabaseServiceKey, jobId, i, invocationId);
         return new Response(null, { status: 202 });
@@ -427,7 +465,7 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
       const progressPct = 20 + Math.round((i / totalChunks) * 70);
       await updateJob(client, jobId, {
         step: `chunk_${i + 1}_of_${totalChunks}`, progress: progressPct,
-        checkpoints: { documentMap, accounts: allAccounts, collections: allCollections, inquiries: allInquiries, publicRecords: allPublicRecords, chargeOffs: allChargeOffs, processedChunks: i, totalChunks, failedChunks, chunkTimings },
+        checkpoints: buildCheckpoints(),
       });
 
       try {
@@ -438,6 +476,10 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
         allInquiries.push(...result.inquiries);
         allPublicRecords.push(...result.publicRecords);
         allChargeOffs.push(...result.chargeOffs);
+        allInaccurateNames.push(...result.inaccurateNames);
+        allInaccurateAddresses.push(...result.inaccurateAddresses);
+        allInaccurateEmployers.push(...result.inaccurateEmployers);
+        allExtraIdentifierMismatches.push(...result.extraIdentifierMismatches);
         chunkTimings.push(result.timing);
         processedChunks = i + 1;
         chunksProcessedThisInvocation++;
@@ -458,6 +500,10 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
           allInquiries.push(...retryResult.inquiries);
           allPublicRecords.push(...retryResult.publicRecords);
           allChargeOffs.push(...retryResult.chargeOffs);
+          allInaccurateNames.push(...retryResult.inaccurateNames);
+          allInaccurateAddresses.push(...retryResult.inaccurateAddresses);
+          allInaccurateEmployers.push(...retryResult.inaccurateEmployers);
+          allExtraIdentifierMismatches.push(...retryResult.extraIdentifierMismatches);
           chunkTimings.push({ ...retryResult.timing, status: "retried_ok", retryElapsedMs: retryResult.timing.elapsedMs });
           processedChunks = i + 1;
           chunksProcessedThisInvocation++;
@@ -473,9 +519,7 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
         }
       }
 
-      await updateJob(client, jobId, {
-        checkpoints: { documentMap, accounts: allAccounts, collections: allCollections, inquiries: allInquiries, publicRecords: allPublicRecords, chargeOffs: allChargeOffs, processedChunks, totalChunks, failedChunks, chunkTimings },
-      });
+      await updateJob(client, jobId, { checkpoints: buildCheckpoints() });
 
       if (i < chunks.length - 1) await new Promise(r => setTimeout(r, 500));
     }
@@ -483,15 +527,16 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
     // ── All chunks done — finalize with SAME pipeline as analyze-response ──
     await updateJob(client, jobId, { step: "validating", progress: 92 });
 
-    // CRITICAL: NO merging, NO deduplication, NO normalization.
-    // Every extracted tradeline is preserved individually.
-    // Wrap raw accounts into the contract structure for postProcessAndValidate.
     const rawResult = {
       derogatory_accounts: allAccounts,
       collections: allCollections,
       charge_offs: allChargeOffs,
       inquiries: allInquiries,
       public_records: allPublicRecords,
+      inaccurate_names: allInaccurateNames,
+      inaccurate_addresses: allInaccurateAddresses,
+      inaccurate_employers: allInaccurateEmployers,
+      extra_identifier_mismatches: allExtraIdentifierMismatches,
     };
 
     // Run the EXACT SAME deterministic pipeline as analyze-response
@@ -502,7 +547,6 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
     if (failedChunks.length > 0 && allAccounts.length === 0) {
       finalStatus = "FAILED";
     } else if (postProcessed.isError) {
-      // Count mismatch = EXTRACTION_INCOMPLETE — still output data but flag error
       finalStatus = failedChunks.length > 0 ? "PARTIAL" : "DONE";
     } else if (failedChunks.length > 0) {
       finalStatus = "PARTIAL";
@@ -512,13 +556,31 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
 
     const totalElapsedMs = Date.now() - invocationStartedAt;
 
+    // ── Canonical result_data: SAME shape as analyze-response ──
     const resultData = {
-      // Preserve every entity individually — no merging
-      accounts: postProcessed.report.derogatory_accounts,
+      // Bucketed accounts from validator
+      derogatory_accounts: postProcessed.report.derogatory_accounts,
+      manual_review_accounts: postProcessed.report.manual_review_accounts || [],
+      clean_accounts: postProcessed.report.clean_accounts || [],
+      all_tradelines: postProcessed.report.all_tradelines || [],
+      // Non-account entities
       collections: postProcessed.report.collections,
       charge_offs: postProcessed.report.charge_offs,
       inquiries: postProcessed.report.inquiries,
       public_records: postProcessed.report.public_records,
+      // Identity mismatches
+      inaccurate_names: postProcessed.report.inaccurate_names || allInaccurateNames,
+      inaccurate_addresses: postProcessed.report.inaccurate_addresses || allInaccurateAddresses,
+      inaccurate_employers: postProcessed.report.inaccurate_employers || allInaccurateEmployers,
+      extra_identifier_mismatches: postProcessed.report.extra_identifier_mismatches || allExtraIdentifierMismatches,
+      // Validation metadata
+      duplicate_flags: postProcessed.duplicateFlags,
+      tradeline_inventory: postProcessed.report.tradeline_inventory,
+      validation_status: postProcessed.report.validation_status,
+      validation_messages: postProcessed.report.validation_messages || postProcessed.validation.messages,
+      warnings: postProcessed.report.warnings || [],
+      report_metadata: { documentMap, totalPages: storagePaths.length, reportType: inputData.reportType },
+      // Worker metadata
       documentMap,
       totalPages: storagePaths.length,
       processedChunks,
@@ -526,10 +588,8 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
       failedChunks,
       chunkTimings,
       workerElapsedMs: totalElapsedMs,
-      // From shared validator — same as analyze-response
-      duplicate_flags: postProcessed.duplicateFlags,
-      tradeline_inventory: postProcessed.report.tradeline_inventory,
-      validation_status: postProcessed.report.validation_status,
+      // Contract version for traceability
+      _contract_version: PARSER_CONTRACT_VERSION,
       _schema_violations: postProcessed.schema.violations.length,
       _schema_rejected: postProcessed.schema.rejectedAccounts.length,
       _extraction_error: postProcessed.isError ? PARSER_ERROR_CODES.EXTRACTION_INCOMPLETE : null,
@@ -558,12 +618,12 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
 
     await updateJob(client, jobId, {
       status: finalStatus, step: "complete", progress: 100, result_data: resultData,
-      checkpoints: { documentMap, accounts: allAccounts, collections: allCollections, inquiries: allInquiries, publicRecords: allPublicRecords, chargeOffs: allChargeOffs, processedChunks, totalChunks, failedChunks, chunkTimings },
+      checkpoints: buildCheckpoints(),
       completed_at: new Date().toISOString(), ...errorFields,
     });
 
     await cleanupJobStorage(client, job.user_id, jobId);
-    console.log(`[worker] job=${jobId} FINALIZED status=${finalStatus} accounts=${allAccounts.length} collections=${allCollections.length} inquiries=${allInquiries.length} public_records=${allPublicRecords.length} elapsed=${totalElapsedMs}ms validation=${postProcessed.validation.status}`);
+    console.log(`[worker] job=${jobId} FINALIZED status=${finalStatus} derogatory=${postProcessed.report.derogatory_accounts?.length || 0} manual_review=${(postProcessed.report.manual_review_accounts || []).length} clean=${(postProcessed.report.clean_accounts || []).length} collections=${allCollections.length} inquiries=${allInquiries.length} public_records=${allPublicRecords.length} names=${allInaccurateNames.length} addresses=${allInaccurateAddresses.length} elapsed=${totalElapsedMs}ms validation=${postProcessed.validation.status} contract=${PARSER_CONTRACT_VERSION}`);
 
     return new Response(JSON.stringify({ status: finalStatus, accountCount: allAccounts.length, workerElapsedMs: totalElapsedMs }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },

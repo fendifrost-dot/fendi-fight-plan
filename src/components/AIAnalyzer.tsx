@@ -20,96 +20,8 @@ import { useChunkedAnalysis } from "@/hooks/useChunkedAnalysis";
 import { AnalysisProgress } from "./AnalysisProgress";
 import { useAnalysisJobV2 } from "@/hooks/useAnalysisJobV2";
 import { AnalysisJobProgress } from "./AnalysisJobProgress";
-import { parseJobResultAccounts } from "@/lib/analysisJobs";
-
-// Bureau type for multi-bureau support
-type BureauName = 'experian' | 'equifax' | 'transunion';
-
-// Dispute-grade analysis result interface with per-bureau status
-interface DisputeAnalysisResult {
-  bureau?: string;
-  is_multi_bureau_report?: boolean;
-  detected_bureaus?: BureauName[];
-  inaccurate_names: {
-    reported_name: string;
-    mismatch_reason: string;
-    source?: string;
-    bureaus?: BureauName[];
-  }[];
-  inaccurate_addresses: {
-    reported_address: string;
-    linked_to_derogatory: boolean;
-    source?: string;
-    bureaus?: BureauName[];
-  }[];
-  inaccurate_employers: {
-    reported_employer: string;
-    source?: string;
-    bureaus?: BureauName[];
-  }[];
-  extra_identifier_mismatches: {
-    field: string;
-    reported_value: string;
-    status: string;
-    source?: string;
-    bureaus?: BureauName[];
-  }[];
-  derogatory_accounts: {
-    creditor_name: string;
-    account_number: string;
-    date_opened: string;
-    derogatory_triggers: string[];
-    status_as_reported: string;
-    confidence: "high" | "medium" | "low" | "incomplete";
-    source?: string;
-    bureaus?: BureauName[];
-    bureau_status?: Record<BureauName, string>;
-  }[];
-  late_payment_summary: {
-    severity: "30-day" | "60-day" | "90-day";
-    accounts: {
-      creditor_name: string;
-      account_number: string;
-      months_detected: string;
-      source?: string;
-      bureaus?: BureauName[];
-    }[];
-  }[];
-  collections: {
-    creditor_name: string;
-    account_number: string;
-    original_creditor: string;
-    balance: string;
-    source?: string;
-    bureaus?: BureauName[];
-  }[];
-  charge_offs: {
-    creditor_name: string;
-    account_number: string;
-    date_charged_off: string;
-    balance: string;
-    source?: string;
-    bureaus?: BureauName[];
-  }[];
-  public_records: {
-    type: string;
-    court_jurisdiction: string;
-    filing_date: string;
-    status: string;
-    source?: string;
-    bureaus?: BureauName[];
-  }[];
-  inquiries: {
-    creditor_name: string;
-    date: string;
-    type: string;
-    source?: string;
-    bureaus?: BureauName[];
-  }[];
-  summary: string;
-  next_steps: string[];
-  warnings: string[];
-}
+import { parseJobResult, parseCheckpointResult } from "@/lib/analysisJobs";
+import { hydrateCanonicalResult, type CanonicalAnalyzerResult, createEmptyCanonicalResult } from "@/types/disputes";
 
 // File mapping for multi-bureau uploads
 interface UploadedFile {
@@ -168,7 +80,7 @@ const AIAnalyzer = () => {
   
   // State
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [results, setResults] = useState<Record<string, DisputeAnalysisResult>>({});
+  const [results, setResults] = useState<Record<string, CanonicalAnalyzerResult>>({});
   const [activeTab, setActiveTab] = useState<string>("combined");
   const [error, setError] = useState<string | null>(null);
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
@@ -200,70 +112,31 @@ const AIAnalyzer = () => {
    * Returns true only if hydration succeeds.
    * Toast will only fire after this returns true.
    */
-  const handleJobComplete = useCallback((resultData: any, accounts: any[]) => {
-    console.log('[AIAnalyzer] handleJobComplete called with', accounts.length, 'accounts');
-    setLastJobInfo({ jobId: currentJobIdRef.current, resultCount: accounts.length });
+  const handleJobComplete = useCallback((canonicalResult: CanonicalAnalyzerResult) => {
+    const totalAccounts = canonicalResult.derogatory_accounts.length + canonicalResult.collections.length + canonicalResult.charge_offs.length;
+    console.log('[AIAnalyzer] handleJobComplete called with', totalAccounts, 'accounts');
+    setLastJobInfo({ jobId: currentJobIdRef.current, resultCount: totalAccounts });
     
-    if (!accounts || accounts.length === 0) {
-      console.warn('[AIAnalyzer] Job complete but no accounts extracted');
+    if (totalAccounts === 0 && canonicalResult.inquiries.length === 0) {
+      console.warn('[AIAnalyzer] Job complete but no entities extracted');
       setJobCompletedButEmpty(true);
       setIsAnalyzing(false);
-      return false; // Don't show success toast
+      return false;
     }
 
     try {
-      // Convert job accounts to DisputeAnalysisResult format
-      const hydratedResult: DisputeAnalysisResult = {
-        bureau: resultData?.documentMap?.is_multi_bureau ? 'Multi-Bureau' : 'Credit Report',
-        is_multi_bureau_report: resultData?.documentMap?.is_multi_bureau || false,
-        detected_bureaus: resultData?.documentMap?.detected_bureaus || [],
-        inaccurate_names: [],
-        inaccurate_addresses: [],
-        inaccurate_employers: [],
-        extra_identifier_mismatches: [],
-        derogatory_accounts: accounts.map((acc: any) => ({
-          creditor_name: acc.creditorName || acc.creditor_name || 'Unknown',
-          account_number: acc.maskedAccountNumber || acc.account_number || 'Unknown',
-          date_opened: acc.dateOpened || acc.date_opened || '',
-          derogatory_triggers: acc.derogatoryTriggers || acc.derogatory_triggers || [],
-          status_as_reported: acc.status || 'Unknown',
-          confidence: (acc.confidence >= 0.9 ? 'high' : acc.confidence >= 0.7 ? 'medium' : 'low') as "high" | "medium" | "low",
-          bureaus: acc.bureaus || [],
-        })),
-        late_payment_summary: [],
-        collections: [],
-        charge_offs: [],
-        public_records: [],
-        inquiries: (resultData?.inquiries || resultData?._inquiries || []).map((inq: any) => ({
-          creditor_name: inq.creditor_name || inq.creditorName || 'Unknown',
-          date: inq.inquiry_date || inq.date || '',
-          type: inq.type || inq.inquiry_type || 'hard',
-          bureaus: inq.bureaus || [],
-        })),
-        summary: `Extracted ${accounts.length} account(s) from ${resultData?.totalPages || 'multiple'} pages.`,
-        next_steps: [
-          "Review each account for accuracy",
-          "Select accounts to dispute",
-          "Generate dispute letters"
-        ],
-        warnings: resultData?.failedChunks?.length > 0 
-          ? [`${resultData.failedChunks.length} page chunk(s) failed to process`] 
-          : [],
-      };
-
-      // Hydrate into results state
-      setResults({ 'async-job': hydratedResult });
+      setResults({ 'async-job': canonicalResult });
       setActiveTab('async-job');
       setIsAnalyzing(false);
       setJobCompletedButEmpty(false);
       
-      console.log('[AIAnalyzer] Results hydrated successfully:', Object.keys({ 'async-job': hydratedResult }));
-      return true; // Success - show toast
+      console.log('[AIAnalyzer] Results hydrated successfully via canonical contract');
+      return true;
     } catch (err) {
       console.error('[AIAnalyzer] Failed to hydrate results:', err);
       setJobCompletedButEmpty(true);
       setIsAnalyzing(false);
-      return false; // Don't show success toast
+      return false;
     }
   }, []);
 
@@ -273,9 +146,10 @@ const AIAnalyzer = () => {
     setError(errorMessage || 'Analysis failed');
   }, []);
 
-  const handleJobPartial = useCallback((accounts: any[]) => {
-    console.log('[AIAnalyzer] Partial results:', accounts.length, 'accounts');
-    setLastJobInfo({ jobId: currentJobIdRef.current, resultCount: accounts.length });
+  const handleJobPartial = useCallback((canonicalResult: CanonicalAnalyzerResult) => {
+    const totalAccounts = canonicalResult.derogatory_accounts.length + canonicalResult.collections.length;
+    console.log('[AIAnalyzer] Partial results:', totalAccounts, 'accounts');
+    setLastJobInfo({ jobId: currentJobIdRef.current, resultCount: totalAccounts });
     setIsAnalyzing(false);
   }, []);
   
