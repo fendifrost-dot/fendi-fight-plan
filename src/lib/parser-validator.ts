@@ -8,6 +8,7 @@
  * - Never merge/deduplicate — flag only
  * - summary/next_steps stripped from contract output
  * - Confidence derived deterministically from triggers
+ * - Three-bucket output: derogatory_accounts, manual_review_accounts, clean_accounts
  */
 
 import {
@@ -139,11 +140,9 @@ export function postProcessAndValidate(rawResult: any, reportText?: string): Pos
   const schema = validateSchema(report);
 
   // ─── Three-bucket separation ─────────────────────────────────────────
-  // all_tradelines: everything AI extracted as "derogatory"
-  // derogatory_accounts: only those with ≥1 deterministic trigger AND not clean
-  // manual_review_accounts: AI said negative but no triggers, or clean tradeline leaked in
   const confirmedDerogatory: any[] = [];
   const manualReview: any[] = [];
+  const cleanAccounts: any[] = [];
 
   if (report.derogatory_accounts && Array.isArray(report.derogatory_accounts)) {
     // Preserve original for inventory
@@ -155,12 +154,10 @@ export function postProcessAndValidate(rawResult: any, reportText?: string): Pos
       acct.confidence = deriveConfidence(acct, classification.triggers);
 
       if (isCleanTradeline(acct)) {
-        // Hard exclusion: clean tradeline must NOT be in derogatory
         acct._classification_note = 'Clean tradeline excluded from derogatory_accounts';
         acct._bucket = 'clean';
-        manualReview.push(acct);
+        cleanAccounts.push(acct);
       } else if (!classification.isNegative) {
-        // No triggers but not provably clean → manual review
         acct._no_triggers_detected = true;
         acct._classification_note = 'AI classified as negative but no deterministic triggers found';
         acct._bucket = 'manual_review';
@@ -171,9 +168,9 @@ export function postProcessAndValidate(rawResult: any, reportText?: string): Pos
       }
     }
 
-    // Replace derogatory_accounts with only confirmed derogatory
     report.derogatory_accounts = confirmedDerogatory;
     report.manual_review_accounts = manualReview;
+    report.clean_accounts = cleanAccounts;
   }
 
   if (report.charge_offs && Array.isArray(report.charge_offs)) {
@@ -196,7 +193,6 @@ export function postProcessAndValidate(rawResult: any, reportText?: string): Pos
       `INVALID_DEROGATORY_LEAK: ${leakedItems.length} account(s) in derogatory_accounts with zero triggers`
     );
     if (validation.status === 'PASS') validation.status = 'WARNING';
-    // Move leaked items to manual_review
     report.manual_review_accounts = [
       ...(report.manual_review_accounts || []),
       ...leakedItems,
@@ -215,6 +211,7 @@ export function postProcessAndValidate(rawResult: any, reportText?: string): Pos
     pass1_anchor_detected: pass1BlockCount,
     negative_extracted: allTradelines.length,
     manual_review_count: (report.manual_review_accounts || []).length,
+    clean_count: (report.clean_accounts || []).length,
     collections_extracted: report.collections?.length ?? 0,
     public_records_extracted: report.public_records?.length ?? 0,
     inquiries_extracted: report.inquiries?.length ?? 0,
@@ -224,6 +221,7 @@ export function postProcessAndValidate(rawResult: any, reportText?: string): Pos
   delete report.next_steps;
 
   report.validation_status = `${validation.status}: ${validation.messages.join('; ')}`;
+  report.validation_messages = validation.messages;
   report.duplicate_flags = duplicateFlags;
 
   const isError = validation.status === 'ERROR';
