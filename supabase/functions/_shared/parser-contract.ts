@@ -28,8 +28,8 @@ export const NEGATIVE_STATUS_KEYWORDS: readonly string[] = [
   '120-day late',
   '150-day late',
   'potentially negative',
-  'past due',
-  'past-due',
+  // NOTE: 'past due' removed from keyword list — isPastDueNegative() handles value-aware past due detection.
+  // Do NOT re-add 'past due' or 'past-due' here; it causes false positives from field labels.
   'derogatory',
   'charge off',
   'charged off',
