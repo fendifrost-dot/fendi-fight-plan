@@ -1468,17 +1468,21 @@ const AIAnalyzer = () => {
                 >
                   Keep as Derogatory
                 </Button>
-                <Button
+               <Button
                   variant="outline"
                   size="sm"
                   className="text-xs h-7 bg-warning/10 text-warning border-warning/30 hover:bg-warning/20"
                   onClick={() => {
+                    // Track in manual_review list before removing from derogatory
+                    setManualReviewAccounts(prev => [...prev, { ...item, _movedFrom: 'derogatory' }]);
                     setResults(prev => {
                       const updated = { ...prev };
                       for (const key of Object.keys(updated)) {
                         updated[key] = {
                           ...updated[key],
-                          derogatory_accounts: updated[key].derogatory_accounts.filter((_, idx) => !(key === Object.keys(prev).find(k => prev[k].derogatory_accounts.includes(item)) && idx === updated[key].derogatory_accounts.indexOf(item))),
+                          derogatory_accounts: updated[key].derogatory_accounts.filter(a => 
+                            a.creditor_name !== item.creditor_name || a.account_number !== item.account_number
+                          ),
                         };
                       }
                       return updated;
