@@ -33,14 +33,16 @@ function _workerDetectDuplicates(accounts: any[]): any[] {
 
 const MAX_IMAGES_PER_CHUNK = 3;
 const AI_TIMEOUT_MS = 25000;
-const MAX_RETRIES = 2;
+const MAX_RETRIES = 1;
 const RETRY_DELAY_MS = 1000;
 const STORAGE_BUCKET = "analysis-images";
 const CHUNK_RETRY_BACKOFF_MS = 3000;
 
-// Self-chaining: max chunks per invocation to stay within edge function wall clock (~150s)
-// Each chunk ~30-45s (download + AI), so 3 chunks ≈ 90-135s safely within limits
+// Self-chaining: max chunks per invocation AND wall-clock guard
+// The wall-clock guard is the PRIMARY safety net — it self-chains before
+// the edge function is killed (~150s limit). MAX_CHUNKS is a secondary cap.
 const MAX_CHUNKS_PER_INVOCATION = 3;
+const WALL_CLOCK_CHAIN_THRESHOLD_MS = 100_000; // 100s — leave 50s buffer for chaining + cleanup
 
 interface Job {
   id: string;
