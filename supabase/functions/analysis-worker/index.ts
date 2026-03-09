@@ -567,9 +567,16 @@ Output JSON: { "accounts": [{ "creditor_name": "...", "account_number": "XXXX...
     let chunksProcessedThisInvocation = 0;
 
     for (let i = processedChunks; i < chunks.length; i++) {
-      // Check if we should self-chain to avoid wall clock timeout
-      if (chunksProcessedThisInvocation >= MAX_CHUNKS_PER_INVOCATION) {
-        console.log(`[worker] job=${jobId} hit invocation limit (${MAX_CHUNKS_PER_INVOCATION} chunks), self-chaining for remaining ${totalChunks - i} chunks`);
+      // Wall-clock guard: self-chain if approaching edge function timeout
+      const elapsedMs = Date.now() - invocationStartedAt;
+      const shouldChain = chunksProcessedThisInvocation >= MAX_CHUNKS_PER_INVOCATION ||
+                          elapsedMs >= WALL_CLOCK_CHAIN_THRESHOLD_MS;
+
+      if (shouldChain) {
+        const reason = elapsedMs >= WALL_CLOCK_CHAIN_THRESHOLD_MS
+          ? `wall-clock guard (${Math.round(elapsedMs / 1000)}s elapsed)`
+          : `chunk limit (${MAX_CHUNKS_PER_INVOCATION} chunks)`;
+        console.log(`[worker] job=${jobId} self-chaining: ${reason}, remaining ${totalChunks - i} chunks`);
 
         // Save checkpoint before chaining
         await updateJob(client, jobId, {
