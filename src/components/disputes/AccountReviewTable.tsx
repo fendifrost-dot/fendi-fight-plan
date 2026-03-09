@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CheckCircle2, XCircle, AlertTriangle, ChevronDown, ChevronRight, FileText } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronRight, FileText, ShieldCheck, ShieldAlert, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
@@ -17,7 +17,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import type { DisputeAccount, BureauKey, AccountStatus } from "@/types/disputes";
+import type { DisputeAccount, BureauKey, AccountStatus, AccountBucket } from "@/types/disputes";
 
 interface AccountReviewTableProps {
   accounts: DisputeAccount[];
@@ -35,6 +35,12 @@ const STATUS_COLORS: Record<string, string> = {
   unknown: "bg-muted text-muted-foreground border-border",
 };
 
+const BUCKET_LABELS: Record<AccountBucket, { label: string; color: string; icon: typeof ShieldAlert }> = {
+  derogatory: { label: "Derogatory", color: "bg-red-500/20 text-red-400 border-red-500/30", icon: ShieldAlert },
+  manual_review: { label: "Manual Review", color: "bg-amber-500/20 text-amber-400 border-amber-500/30", icon: Eye },
+  clean: { label: "Clean", color: "bg-green-500/20 text-green-400 border-green-500/30", icon: ShieldCheck },
+};
+
 const DISPUTE_REASONS = [
   "Not my account",
   "Identity theft / Fraud",
@@ -49,14 +55,42 @@ const DISPUTE_REASONS = [
 ];
 
 function StatusBadge({ status }: { status?: AccountStatus }) {
-  if (!status) {
-    return <span className="text-xs text-muted-foreground">—</span>;
-  }
-
+  if (!status) return <span className="text-xs text-muted-foreground">—</span>;
   return (
     <Badge variant="outline" className={STATUS_COLORS[status.status] || STATUS_COLORS.unknown}>
       {status.status.replace("_", " ")}
     </Badge>
+  );
+}
+
+function BucketBadge({ bucket }: { bucket?: AccountBucket }) {
+  const info = BUCKET_LABELS[bucket || "manual_review"];
+  const Icon = info.icon;
+  return (
+    <Badge variant="outline" className={info.color}>
+      <Icon className="w-3 h-3 mr-1" />
+      {info.label}
+    </Badge>
+  );
+}
+
+function TriggerList({ triggers }: { triggers?: string[] }) {
+  if (!triggers || triggers.length === 0) {
+    return (
+      <p className="text-xs text-muted-foreground italic">No deterministic triggers detected</p>
+    );
+  }
+  return (
+    <div className="space-y-1">
+      <p className="text-xs font-medium text-muted-foreground">Deterministic Triggers:</p>
+      <div className="flex flex-wrap gap-1">
+        {triggers.map((t, i) => (
+          <Badge key={i} variant="secondary" className="text-xs font-mono">
+            {t}
+          </Badge>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -74,17 +108,33 @@ function AccountRow({
     (s) => s && ["late", "charge_off", "collection"].includes(s.status)
   );
 
+  const handleMoveToBucket = (newBucket: AccountBucket) => {
+    const changes: Partial<DisputeAccount> = { bucket: newBucket };
+    if (newBucket === "derogatory") {
+      changes.triageState = "included";
+      changes.isSelected = true;
+    } else if (newBucket === "manual_review") {
+      changes.triageState = "pending";
+      changes.isSelected = false;
+    } else {
+      changes.triageState = "excluded";
+      changes.isSelected = false;
+      changes.excludeReason = "Clean tradeline — no derogatory triggers";
+    }
+    onAccountChange(account.id, changes);
+  };
+
   return (
     <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
-        <div className={`border rounded-lg transition-colors ${
-          account.triageState === "excluded" 
-            ? "border-destructive/30 bg-destructive/5 opacity-60" 
-            : account.triageState === "pending"
-            ? "border-amber-500/30 bg-amber-500/5"
-            : account.isSelected 
-            ? "border-primary/50 bg-primary/5" 
-            : "border-border"
-        }`}>
+      <div className={`border rounded-lg transition-colors ${
+        account.triageState === "excluded" 
+          ? "border-destructive/30 bg-destructive/5 opacity-60" 
+          : account.triageState === "pending"
+          ? "border-amber-500/30 bg-amber-500/5"
+          : account.isSelected 
+          ? "border-primary/50 bg-primary/5" 
+          : "border-border"
+      }`}>
         {/* Main row */}
         <div className="flex items-center gap-4 p-4">
           <Checkbox
@@ -100,6 +150,7 @@ function AccountRow({
               {hasDerogatory && (
                 <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0" />
               )}
+              <BucketBadge bucket={account.bucket} />
             </div>
             <p className="text-sm text-muted-foreground font-mono">
               {account.maskedAccountNumber}
@@ -157,34 +208,59 @@ function AccountRow({
               </div>
             </div>
 
-            {/* Triage controls */}
+            {/* Triggers proof */}
+            <TriggerList triggers={account.derogatoryTriggers} />
+
+            {/* Confidence + bucket info */}
+            <div className="flex items-center gap-3 flex-wrap text-xs">
+              <Badge variant="secondary">
+                {Math.round(account.confidence * 100)}% confidence
+              </Badge>
+              <span className="text-muted-foreground">
+                Bucket: <strong>{account.bucket || "unknown"}</strong>
+              </span>
+            </div>
+
+            {/* Manual correction controls */}
             <div className="flex items-center gap-2 flex-wrap">
-              <Badge 
-                variant={account.triageState === "included" ? "default" : "outline"}
-                className="cursor-pointer"
-                onClick={() => onAccountChange(account.id, { triageState: "included" })}
+              <span className="text-xs text-muted-foreground mr-1">Move to:</span>
+              <Button
+                size="sm"
+                variant={account.bucket === "derogatory" ? "default" : "outline"}
+                onClick={() => handleMoveToBucket("derogatory")}
+                disabled={disabled}
+                className="h-7 text-xs"
               >
-                ✓ Include
-              </Badge>
-              <Badge 
-                variant={account.triageState === "excluded" ? "destructive" : "outline"}
-                className="cursor-pointer"
-                onClick={() => onAccountChange(account.id, { triageState: "excluded" })}
+                <ShieldAlert className="w-3 h-3 mr-1" />
+                Keep as Derogatory
+              </Button>
+              <Button
+                size="sm"
+                variant={account.bucket === "manual_review" ? "default" : "outline"}
+                onClick={() => handleMoveToBucket("manual_review")}
+                disabled={disabled}
+                className="h-7 text-xs"
               >
-                ✗ Exclude
-              </Badge>
-              {account.confidence < 0.8 && (
-                <Badge variant="secondary" className="text-xs">
-                  {Math.round(account.confidence * 100)}% confidence
-                </Badge>
-              )}
+                <Eye className="w-3 h-3 mr-1" />
+                Manual Review
+              </Button>
+              <Button
+                size="sm"
+                variant={account.bucket === "clean" ? "default" : "outline"}
+                onClick={() => handleMoveToBucket("clean")}
+                disabled={disabled}
+                className="h-7 text-xs"
+              >
+                <ShieldCheck className="w-3 h-3 mr-1" />
+                Remove from Derogatory
+              </Button>
             </div>
 
             {/* Pending indicator */}
             {account.triageState === "pending" && (
               <div className="flex items-center gap-2 text-amber-500 text-sm">
                 <AlertTriangle className="w-4 h-4" />
-                <span>Medium confidence — review before including</span>
+                <span>Manual review needed — no deterministic triggers confirmed this as derogatory</span>
               </div>
             )}
 
@@ -250,9 +326,6 @@ function AccountRow({
                   Source: {account.sourceFile}
                   {account.sourcePage && `, Page ${account.sourcePage}`}
                 </span>
-                <Badge variant="outline" className="text-xs">
-                  {Math.round(account.confidence * 100)}% confidence
-                </Badge>
               </div>
             )}
           </div>
@@ -272,6 +345,10 @@ export function AccountReviewTable({
   const allSelected = accounts.length > 0 && selectedCount === accounts.length;
   const someSelected = selectedCount > 0 && selectedCount < accounts.length;
 
+  const derogatoryCount = accounts.filter(a => a.bucket === "derogatory").length;
+  const reviewCount = accounts.filter(a => a.bucket === "manual_review").length;
+  const cleanCount = accounts.filter(a => a.bucket === "clean").length;
+
   if (accounts.length === 0) {
     return (
       <div className="text-center py-8 text-muted-foreground">
@@ -284,8 +361,8 @@ export function AccountReviewTable({
 
   return (
     <div className="space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+      {/* Header with bucket summary */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-3">
           <Checkbox
             checked={allSelected}
@@ -300,10 +377,16 @@ export function AccountReviewTable({
           </span>
         </div>
 
-        <div className="hidden md:flex items-center gap-6 text-xs text-muted-foreground">
-          <span className="w-[100px] text-center">Experian</span>
-          <span className="w-[100px] text-center">Equifax</span>
-          <span className="w-[100px] text-center">TransUnion</span>
+        <div className="flex items-center gap-2 text-xs">
+          <Badge variant="outline" className="bg-red-500/10 text-red-400 border-red-500/20">
+            {derogatoryCount} derogatory
+          </Badge>
+          <Badge variant="outline" className="bg-amber-500/10 text-amber-400 border-amber-500/20">
+            {reviewCount} review
+          </Badge>
+          <Badge variant="outline" className="bg-green-500/10 text-green-400 border-green-500/20">
+            {cleanCount} clean
+          </Badge>
         </div>
       </div>
 
