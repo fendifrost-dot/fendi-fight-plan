@@ -524,7 +524,8 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
     // Step 2: Chunk and analyze accounts
     await updateJob(client, jobId, { step: "analyzing", progress: 20 });
 
-    const accountsSection = documentMap.sections?.accounts || { start_page: 1, end_page: storagePaths.length };
+    // Handle both flat (accounts at top level) and nested (sections.accounts) documentMap formats
+    const accountsSection = documentMap.accounts || documentMap.sections?.accounts || { start_page: 1, end_page: storagePaths.length };
     const startIdx = (accountsSection.start_page || 1) - 1;
     const endIdx = accountsSection.end_page || storagePaths.length;
     const sectionPaths = storagePaths.slice(startIdx, endIdx);
