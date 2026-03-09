@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // Build fingerprint — proves THIS code is deployed
-console.log("ANALYSIS_WORKER_BUILD", { version: "wall_clock_guard_v3", wallClockThresholdMs: 100000, maxRetries: 1, flatDocMapSupport: true });
+console.log("ANALYSIS_WORKER_BUILD", { version: "wall_clock_guard_v4", wallClockThresholdMs: 100000, aiTimeoutMs: 50000, maxRetries: 0, flatDocMapSupport: true });
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -32,8 +32,8 @@ function _workerDetectDuplicates(accounts: any[]): any[] {
 }
 
 const MAX_IMAGES_PER_CHUNK = 3;
-const AI_TIMEOUT_MS = 25000;
-const MAX_RETRIES = 1;
+const AI_TIMEOUT_MS = 50000; // 50s — credit report images need more time than 25s
+const MAX_RETRIES = 0; // No inner retry — chunk-level retry handles failures
 const RETRY_DELAY_MS = 1000;
 const STORAGE_BUCKET = "analysis-images";
 const CHUNK_RETRY_BACKOFF_MS = 3000;
