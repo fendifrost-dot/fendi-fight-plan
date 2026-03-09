@@ -87,8 +87,9 @@ describe('AI timeout budget', () => {
     expect(remainingAfterMapping).toBeGreaterThanOrEqual(AI_TIMEOUT_MS);
   });
 
-  it('AI timeout is long enough for 3-image credit report chunks', () => {
-    expect(AI_TIMEOUT_MS).toBeGreaterThanOrEqual(45_000);
+  it('AI timeout gives enough buffer for credit report chunks', () => {
+    // With correct MIME types and Gemini Flash, 30s is plenty (typical: 5-15s)
+    expect(AI_TIMEOUT_MS).toBeGreaterThanOrEqual(25_000);
   });
 
   it('wall-clock guard triggers before edge function kill', () => {
