@@ -451,6 +451,10 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
         try {
           const retryResult = await processChunk(client, jobId, lovableApiKey, chunks[i], i, totalChunks);
           allAccounts.push(...retryResult.accounts);
+          allCollections.push(...retryResult.collections);
+          allInquiries.push(...retryResult.inquiries);
+          allPublicRecords.push(...retryResult.publicRecords);
+          allChargeOffs.push(...retryResult.chargeOffs);
           chunkTimings.push({ ...retryResult.timing, status: "retried_ok", retryElapsedMs: retryResult.timing.elapsedMs });
           processedChunks = i + 1;
           chunksProcessedThisInvocation++;
