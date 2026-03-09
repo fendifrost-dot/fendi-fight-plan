@@ -415,7 +415,7 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
         console.log(`[worker] job=${jobId} self-chaining: ${reason}, remaining ${totalChunks - i} chunks`);
         await updateJob(client, jobId, {
           step: `chaining_at_${i}_of_${totalChunks}`, progress: 20 + Math.round((i / totalChunks) * 70),
-          checkpoints: { documentMap, accounts: allAccounts, processedChunks: i, totalChunks, failedChunks, chunkTimings },
+          checkpoints: { documentMap, accounts: allAccounts, collections: allCollections, inquiries: allInquiries, publicRecords: allPublicRecords, chargeOffs: allChargeOffs, processedChunks: i, totalChunks, failedChunks, chunkTimings },
         });
         await selfChain(supabaseUrl, supabaseServiceKey, jobId, i, invocationId);
         return new Response(null, { status: 202 });
