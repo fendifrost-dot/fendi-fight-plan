@@ -138,16 +138,42 @@ export function postProcessAndValidate(rawResult: any, reportText?: string): Pos
   const report = ensureRequiredArrays(rawResult);
   const schema = validateSchema(report);
 
+  // ─── Three-bucket separation ─────────────────────────────────────────
+  // all_tradelines: everything AI extracted as "derogatory"
+  // derogatory_accounts: only those with ≥1 deterministic trigger AND not clean
+  // manual_review_accounts: AI said negative but no triggers, or clean tradeline leaked in
+  const confirmedDerogatory: any[] = [];
+  const manualReview: any[] = [];
+
   if (report.derogatory_accounts && Array.isArray(report.derogatory_accounts)) {
+    // Preserve original for inventory
+    report.all_tradelines = [...report.derogatory_accounts];
+
     for (const acct of report.derogatory_accounts) {
       const classification = classifyTradeline(acct);
       acct.derogatory_triggers = classification.triggers;
       acct.confidence = deriveConfidence(acct, classification.triggers);
-      if (!classification.isNegative) {
+
+      if (isCleanTradeline(acct)) {
+        // Hard exclusion: clean tradeline must NOT be in derogatory
+        acct._classification_note = 'Clean tradeline excluded from derogatory_accounts';
+        acct._bucket = 'clean';
+        manualReview.push(acct);
+      } else if (!classification.isNegative) {
+        // No triggers but not provably clean → manual review
         acct._no_triggers_detected = true;
         acct._classification_note = 'AI classified as negative but no deterministic triggers found';
+        acct._bucket = 'manual_review';
+        manualReview.push(acct);
+      } else {
+        acct._bucket = 'derogatory';
+        confirmedDerogatory.push(acct);
       }
     }
+
+    // Replace derogatory_accounts with only confirmed derogatory
+    report.derogatory_accounts = confirmedDerogatory;
+    report.manual_review_accounts = manualReview;
   }
 
   if (report.charge_offs && Array.isArray(report.charge_offs)) {
@@ -155,10 +181,30 @@ export function postProcessAndValidate(rawResult: any, reportText?: string): Pos
       const classification = classifyTradeline(acct);
       acct.derogatory_triggers = classification.triggers;
       acct.confidence = deriveConfidence(acct, classification.triggers);
+      acct._bucket = 'derogatory';
     }
   }
 
   const validation = validateCounts(report);
+
+  // ─── Leak guard: no zero-trigger items in derogatory_accounts ────────
+  const leakedItems = report.derogatory_accounts?.filter(
+    (a: any) => !a.derogatory_triggers || a.derogatory_triggers.length === 0
+  ) || [];
+  if (leakedItems.length > 0) {
+    validation.messages.push(
+      `INVALID_DEROGATORY_LEAK: ${leakedItems.length} account(s) in derogatory_accounts with zero triggers`
+    );
+    if (validation.status === 'PASS') validation.status = 'WARNING';
+    // Move leaked items to manual_review
+    report.manual_review_accounts = [
+      ...(report.manual_review_accounts || []),
+      ...leakedItems,
+    ];
+    report.derogatory_accounts = report.derogatory_accounts.filter(
+      (a: any) => a.derogatory_triggers && a.derogatory_triggers.length > 0
+    );
+  }
 
   const allTradelines = [...(report.derogatory_accounts || []), ...(report.charge_offs || [])];
   const duplicateFlags = detectDuplicates(allTradelines);
@@ -168,6 +214,7 @@ export function postProcessAndValidate(rawResult: any, reportText?: string): Pos
     total_blocks_detected: pass1BlockCount > 0 ? pass1BlockCount : (allTradelines.length + (report.collections?.length ?? 0)),
     pass1_anchor_detected: pass1BlockCount,
     negative_extracted: allTradelines.length,
+    manual_review_count: (report.manual_review_accounts || []).length,
     collections_extracted: report.collections?.length ?? 0,
     public_records_extracted: report.public_records?.length ?? 0,
     inquiries_extracted: report.inquiries?.length ?? 0,
