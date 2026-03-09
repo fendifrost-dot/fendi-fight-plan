@@ -191,7 +191,7 @@ async function callAIWithRetry(apiKey: string, messages: any[], retries = MAX_RE
 async function processChunk(
   client: any, jobId: string, lovableApiKey: string,
   chunkPaths: string[], chunkIndex: number, totalChunks: number,
-): Promise<{ accounts: any[]; timing: ChunkTiming }> {
+): Promise<{ accounts: any[]; collections: any[]; inquiries: any[]; publicRecords: any[]; chargeOffs: any[]; timing: ChunkTiming }> {
   const startedAt = new Date();
   console.log(`[chunk] job=${jobId} chunk=${chunkIndex + 1}/${totalChunks} pages=${chunkPaths.length} started`);
 
@@ -227,10 +227,19 @@ async function processChunk(
     await heartbeat(client, jobId, { step: `chunk_${chunkIndex + 1}_complete` });
     const endedAt = new Date();
     const elapsedMs = endedAt.getTime() - startedAt.getTime();
-    console.log(`[chunk] job=${jobId} chunk=${chunkIndex + 1}/${totalChunks} completed in ${elapsedMs}ms accounts=${result.accounts?.length || 0}`);
+    const acctCount = result.accounts?.length || 0;
+    const colCount = result.collections?.length || 0;
+    const inqCount = result.inquiries?.length || 0;
+    const prCount = result.public_records?.length || 0;
+    const coCount = result.charge_offs?.length || 0;
+    console.log(`[chunk] job=${jobId} chunk=${chunkIndex + 1}/${totalChunks} completed in ${elapsedMs}ms accounts=${acctCount} collections=${colCount} inquiries=${inqCount} public_records=${prCount} charge_offs=${coCount}`);
 
     return {
-      accounts: result.accounts && Array.isArray(result.accounts) ? result.accounts : [],
+      accounts: Array.isArray(result.accounts) ? result.accounts : [],
+      collections: Array.isArray(result.collections) ? result.collections : [],
+      inquiries: Array.isArray(result.inquiries) ? result.inquiries : [],
+      publicRecords: Array.isArray(result.public_records) ? result.public_records : [],
+      chargeOffs: Array.isArray(result.charge_offs) ? result.charge_offs : [],
       timing: { chunkIndex, startedAt: startedAt.toISOString(), endedAt: endedAt.toISOString(), elapsedMs, status: "ok" },
     };
   } catch (error) {
