@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // Build fingerprint — proves THIS code is deployed
-console.log("ANALYSIS_WORKER_BUILD", { version: "chain_bugs_fixed_v2", abortControllerSelfChain: true, sendsStartChunk: true, deterministicChainLogs: true });
+console.log("ANALYSIS_WORKER_BUILD", { version: "wall_clock_guard_v3", wallClockThresholdMs: 100000, maxRetries: 1, flatDocMapSupport: true });
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -33,14 +33,16 @@ function _workerDetectDuplicates(accounts: any[]): any[] {
 
 const MAX_IMAGES_PER_CHUNK = 3;
 const AI_TIMEOUT_MS = 25000;
-const MAX_RETRIES = 2;
+const MAX_RETRIES = 1;
 const RETRY_DELAY_MS = 1000;
 const STORAGE_BUCKET = "analysis-images";
 const CHUNK_RETRY_BACKOFF_MS = 3000;
 
-// Self-chaining: max chunks per invocation to stay within edge function wall clock (~150s)
-// Each chunk ~30-45s (download + AI), so 3 chunks ≈ 90-135s safely within limits
+// Self-chaining: max chunks per invocation AND wall-clock guard
+// The wall-clock guard is the PRIMARY safety net — it self-chains before
+// the edge function is killed (~150s limit). MAX_CHUNKS is a secondary cap.
 const MAX_CHUNKS_PER_INVOCATION = 3;
+const WALL_CLOCK_CHAIN_THRESHOLD_MS = 100_000; // 100s — leave 50s buffer for chaining + cleanup
 
 interface Job {
   id: string;
@@ -522,7 +524,8 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
     // Step 2: Chunk and analyze accounts
     await updateJob(client, jobId, { step: "analyzing", progress: 20 });
 
-    const accountsSection = documentMap.sections?.accounts || { start_page: 1, end_page: storagePaths.length };
+    // Handle both flat (accounts at top level) and nested (sections.accounts) documentMap formats
+    const accountsSection = documentMap.accounts || documentMap.sections?.accounts || { start_page: 1, end_page: storagePaths.length };
     const startIdx = (accountsSection.start_page || 1) - 1;
     const endIdx = accountsSection.end_page || storagePaths.length;
     const sectionPaths = storagePaths.slice(startIdx, endIdx);
@@ -564,9 +567,16 @@ Output JSON: { "accounts": [{ "creditor_name": "...", "account_number": "XXXX...
     let chunksProcessedThisInvocation = 0;
 
     for (let i = processedChunks; i < chunks.length; i++) {
-      // Check if we should self-chain to avoid wall clock timeout
-      if (chunksProcessedThisInvocation >= MAX_CHUNKS_PER_INVOCATION) {
-        console.log(`[worker] job=${jobId} hit invocation limit (${MAX_CHUNKS_PER_INVOCATION} chunks), self-chaining for remaining ${totalChunks - i} chunks`);
+      // Wall-clock guard: self-chain if approaching edge function timeout
+      const elapsedMs = Date.now() - invocationStartedAt;
+      const shouldChain = chunksProcessedThisInvocation >= MAX_CHUNKS_PER_INVOCATION ||
+                          elapsedMs >= WALL_CLOCK_CHAIN_THRESHOLD_MS;
+
+      if (shouldChain) {
+        const reason = elapsedMs >= WALL_CLOCK_CHAIN_THRESHOLD_MS
+          ? `wall-clock guard (${Math.round(elapsedMs / 1000)}s elapsed)`
+          : `chunk limit (${MAX_CHUNKS_PER_INVOCATION} chunks)`;
+        console.log(`[worker] job=${jobId} self-chaining: ${reason}, remaining ${totalChunks - i} chunks`);
 
         // Save checkpoint before chaining
         await updateJob(client, jobId, {
