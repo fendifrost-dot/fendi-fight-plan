@@ -3,7 +3,21 @@
  * 
  * Validates that AI output contains all required fields with correct types.
  * Rejects malformed output before it enters the pipeline.
+ * 
+ * CRITICAL: Missing account_number is a CRITICAL violation unless the value
+ * is an explicit contract-compliant placeholder: "N/A" or "UNEXTRACTABLE".
  */
+
+// ─── Contract-Compliant Placeholders ───────────────────────────────────────
+// These are the ONLY acceptable placeholder values for required fields.
+// Any other empty/missing value is a critical violation.
+
+const CONTRACT_PLACEHOLDERS = ['N/A', 'UNEXTRACTABLE'] as const;
+
+function isContractPlaceholder(val: any): boolean {
+  if (typeof val !== 'string') return false;
+  return (CONTRACT_PLACEHOLDERS as readonly string[]).includes(val.trim().toUpperCase());
+}
 
 // ─── Required Fields Per Entity Type ───────────────────────────────────────
 
@@ -19,6 +33,7 @@ export interface SchemaViolation {
   index: number;
   field: string;
   reason: string;
+  critical: boolean;
 }
 
 // ─── Schema Validation Result ──────────────────────────────────────────────
@@ -26,9 +41,7 @@ export interface SchemaViolation {
 export interface SchemaValidationResult {
   valid: boolean;
   violations: SchemaViolation[];
-  /** Accounts that passed schema validation */
   validAccounts: any[];
-  /** Accounts rejected by schema validation */
   rejectedAccounts: any[];
 }
 
@@ -36,6 +49,10 @@ export interface SchemaValidationResult {
 
 function isNonEmptyString(val: any): boolean {
   return typeof val === 'string' && val.trim().length > 0;
+}
+
+function isNonEmptyStringOrPlaceholder(val: any): boolean {
+  return isNonEmptyString(val);
 }
 
 function isStringOrNull(val: any): boolean {
@@ -51,37 +68,47 @@ function isArrayOrUndefined(val: any): boolean {
 function validateDerogatoryAccount(account: any, index: number): SchemaViolation[] {
   const violations: SchemaViolation[] = [];
 
-  for (const field of DEROGATORY_ACCOUNT_REQUIRED) {
-    if (!isNonEmptyString(account[field])) {
-      violations.push({
-        entity: 'derogatory_accounts',
-        index,
-        field,
-        reason: `Missing or empty required field "${field}"`,
-      });
-    }
+  // creditor_name: CRITICAL — must be non-empty
+  if (!isNonEmptyString(account.creditor_name)) {
+    violations.push({
+      entity: 'derogatory_accounts', index, field: 'creditor_name',
+      reason: 'Missing or empty required field "creditor_name"',
+      critical: true,
+    });
   }
+
+  // account_number: CRITICAL unless contract placeholder (N/A, UNEXTRACTABLE)
+  if (!isNonEmptyString(account.account_number)) {
+    violations.push({
+      entity: 'derogatory_accounts', index, field: 'account_number',
+      reason: 'Missing or empty required field "account_number". Must be actual value, "N/A", or "UNEXTRACTABLE".',
+      critical: true,
+    });
+  } else if (!isContractPlaceholder(account.account_number)) {
+    // Has a value — that's fine, it's a real account number
+  }
+  // If it IS a contract placeholder, that's explicitly allowed — no violation
 
   // Type checks on optional fields
   if (!isStringOrNull(account.date_opened)) {
-    violations.push({ entity: 'derogatory_accounts', index, field: 'date_opened', reason: 'Must be string or null' });
+    violations.push({ entity: 'derogatory_accounts', index, field: 'date_opened', reason: 'Must be string or null', critical: false });
   }
   if (!isStringOrNull(account.balance)) {
-    violations.push({ entity: 'derogatory_accounts', index, field: 'balance', reason: 'Must be string or null' });
+    violations.push({ entity: 'derogatory_accounts', index, field: 'balance', reason: 'Must be string or null', critical: false });
   }
   if (!isStringOrNull(account.status_as_reported) && !isStringOrNull(account.status)) {
-    violations.push({ entity: 'derogatory_accounts', index, field: 'status_as_reported', reason: 'Must be string or null' });
+    violations.push({ entity: 'derogatory_accounts', index, field: 'status_as_reported', reason: 'Must be string or null', critical: false });
   }
   if (!isArrayOrUndefined(account.bureaus)) {
-    violations.push({ entity: 'derogatory_accounts', index, field: 'bureaus', reason: 'Must be array or undefined' });
+    violations.push({ entity: 'derogatory_accounts', index, field: 'bureaus', reason: 'Must be array or undefined', critical: false });
   }
   if (!isArrayOrUndefined(account.derogatory_triggers)) {
-    violations.push({ entity: 'derogatory_accounts', index, field: 'derogatory_triggers', reason: 'Must be array or undefined' });
+    violations.push({ entity: 'derogatory_accounts', index, field: 'derogatory_triggers', reason: 'Must be array or undefined', critical: false });
   }
 
   // Confidence must be one of the valid levels if present
   if (account.confidence && !['high', 'medium', 'low', 'incomplete'].includes(account.confidence)) {
-    violations.push({ entity: 'derogatory_accounts', index, field: 'confidence', reason: `Invalid confidence level: ${account.confidence}` });
+    violations.push({ entity: 'derogatory_accounts', index, field: 'confidence', reason: `Invalid confidence level: ${account.confidence}`, critical: false });
   }
 
   return violations;
@@ -93,21 +120,19 @@ function validateCollection(collection: any, index: number): SchemaViolation[] {
   for (const field of COLLECTION_REQUIRED) {
     if (!isNonEmptyString(collection[field])) {
       violations.push({
-        entity: 'collections',
-        index,
-        field,
+        entity: 'collections', index, field,
         reason: `Missing or empty required field "${field}"`,
+        critical: false,
       });
     }
   }
 
-  // At least one name field must be present
   if (!isNonEmptyString(collection.collection_agency) && !isNonEmptyString(collection.creditor_name) && !isNonEmptyString(collection.original_creditor)) {
     violations.push({
-      entity: 'collections',
-      index,
+      entity: 'collections', index,
       field: 'collection_agency|creditor_name|original_creditor',
-      reason: 'At least one name field (collection_agency, creditor_name, or original_creditor) must be present',
+      reason: 'At least one name field must be present',
+      critical: true,
     });
   }
 
@@ -120,16 +145,15 @@ function validateInquiry(inquiry: any, index: number): SchemaViolation[] {
   for (const field of INQUIRY_REQUIRED) {
     if (!isNonEmptyString(inquiry[field])) {
       violations.push({
-        entity: 'inquiries',
-        index,
-        field,
+        entity: 'inquiries', index, field,
         reason: `Missing or empty required field "${field}"`,
+        critical: false,
       });
     }
   }
 
   if (inquiry.type && !['hard', 'soft', 'promotional', 'account_review', 'unknown'].includes(inquiry.type)) {
-    violations.push({ entity: 'inquiries', index, field: 'type', reason: `Invalid inquiry type: ${inquiry.type}` });
+    violations.push({ entity: 'inquiries', index, field: 'type', reason: `Invalid inquiry type: ${inquiry.type}`, critical: false });
   }
 
   return violations;
@@ -141,10 +165,9 @@ function validatePublicRecord(record: any, index: number): SchemaViolation[] {
   for (const field of PUBLIC_RECORD_REQUIRED) {
     if (!isNonEmptyString(record[field])) {
       violations.push({
-        entity: 'public_records',
-        index,
-        field,
+        entity: 'public_records', index, field,
         reason: `Missing or empty required field "${field}"`,
+        critical: true,
       });
     }
   }
@@ -154,10 +177,6 @@ function validatePublicRecord(record: any, index: number): SchemaViolation[] {
 
 // ─── Top-Level Schema Validation ───────────────────────────────────────────
 
-/**
- * Validate the structure and required fields of an AI extraction result.
- * Does NOT remove invalid entries — flags them for the caller to decide.
- */
 export function validateSchema(result: any): SchemaValidationResult {
   const violations: SchemaViolation[] = [];
   const validAccounts: any[] = [];
@@ -166,7 +185,7 @@ export function validateSchema(result: any): SchemaValidationResult {
   if (!result || typeof result !== 'object') {
     return {
       valid: false,
-      violations: [{ entity: 'root', index: -1, field: 'result', reason: 'Result is not an object' }],
+      violations: [{ entity: 'root', index: -1, field: 'result', reason: 'Result is not an object', critical: true }],
       validAccounts: [],
       rejectedAccounts: [],
     };
@@ -179,8 +198,7 @@ export function validateSchema(result: any): SchemaValidationResult {
       const acctViolations = validateDerogatoryAccount(derogatoryAccounts[i], i);
       if (acctViolations.length > 0) {
         violations.push(...acctViolations);
-        // Only reject if CRITICAL fields are missing (creditor_name)
-        const hasCriticalViolation = acctViolations.some(v => v.field === 'creditor_name');
+        const hasCriticalViolation = acctViolations.some(v => v.critical);
         if (hasCriticalViolation) {
           rejectedAccounts.push({ ...derogatoryAccounts[i], _rejection_reasons: acctViolations.map(v => v.reason) });
         } else {
@@ -213,11 +231,11 @@ export function validateSchema(result: any): SchemaValidationResult {
     }
   }
 
-  // Validate charge_offs have at minimum creditor_name
+  // Validate charge_offs
   if (result.charge_offs && Array.isArray(result.charge_offs)) {
     for (let i = 0; i < result.charge_offs.length; i++) {
       if (!isNonEmptyString(result.charge_offs[i]?.creditor_name)) {
-        violations.push({ entity: 'charge_offs', index: i, field: 'creditor_name', reason: 'Missing creditor_name' });
+        violations.push({ entity: 'charge_offs', index: i, field: 'creditor_name', reason: 'Missing creditor_name', critical: true });
       }
     }
   }
@@ -232,7 +250,6 @@ export function validateSchema(result: any): SchemaValidationResult {
 
 /**
  * Ensure all expected top-level arrays exist with defaults.
- * Does NOT reject — just fills missing fields.
  */
 export function ensureRequiredArrays(result: any): any {
   return {
