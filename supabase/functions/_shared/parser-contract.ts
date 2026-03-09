@@ -237,7 +237,7 @@ export function hasActualDateOfFirstDelinquency(dofd: any): boolean {
     /^\d{1,2}-\d{1,2}-\d{2,4}$/,    // MM-DD-YYYY
     /^[A-Za-z]{3,9}\s+\d{2,4}$/,    // Mon YYYY or Month YYYY
     /^\d{1,2}-\d{4}$/,              // MM-YYYY
-    /^\d{4}$/,                       // YYYY alone
+    // Bare YYYY removed — too many false positives (e.g. account numbers, zip fragments)
   ];
   return datePatterns.some(p => p.test(trimmed));
 }
