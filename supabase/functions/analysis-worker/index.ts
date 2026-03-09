@@ -471,7 +471,7 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
       }
 
       await updateJob(client, jobId, {
-        checkpoints: { documentMap, accounts: allAccounts, processedChunks, totalChunks, failedChunks, chunkTimings },
+        checkpoints: { documentMap, accounts: allAccounts, collections: allCollections, inquiries: allInquiries, publicRecords: allPublicRecords, chargeOffs: allChargeOffs, processedChunks, totalChunks, failedChunks, chunkTimings },
       });
 
       if (i < chunks.length - 1) await new Promise(r => setTimeout(r, 500));
