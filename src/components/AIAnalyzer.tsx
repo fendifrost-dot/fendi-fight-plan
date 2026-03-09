@@ -80,7 +80,7 @@ const AIAnalyzer = () => {
   
   // State
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [results, setResults] = useState<Record<string, DisputeAnalysisResult>>({});
+  const [results, setResults] = useState<Record<string, CanonicalAnalyzerResult>>({});
   const [activeTab, setActiveTab] = useState<string>("combined");
   const [error, setError] = useState<string | null>(null);
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
