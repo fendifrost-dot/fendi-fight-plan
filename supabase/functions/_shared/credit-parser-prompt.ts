@@ -57,7 +57,8 @@ Negative codes: 2=30 days late, 3=60 days late, 4=90 days late, 5=120+ days late
 If a tradeline appears under "Potentially Negative Items", "Negative Accounts", "Adverse Accounts", "Collection Accounts", or "Derogatory" → include it as negative regardless.
 
 ### Date of First Delinquency Rule (VALUE-AWARE)
-Flag as negative ONLY if the value contains an actual date (has digits).
+Flag as negative ONLY if the value matches a real date pattern: MM/YYYY, MM/DD/YYYY, YYYY-MM-DD, MM-DD-YYYY, "Month YYYY", MM-YYYY.
+Bare years like "2020" do NOT qualify. Strings without date separators do NOT qualify.
 null, N/A, UNEXTRACTABLE, blank, "-", "not reported" = NOT a negative trigger.
 Do NOT trigger from the field label "Date of First Delinquency" alone.
 
