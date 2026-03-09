@@ -369,16 +369,8 @@ describe('Defect 9: account_number schema enforcement', () => {
 
 describe('Defect 10: detectTradelineBlocks', () => {
   it('detects blocks from account-related anchors', () => {
-    const text = `
-Account Name: CHASE BANK
-Balance: $5,000
-
-Account Name: WELLS FARGO
-Balance: $12,000
-
-Creditor Name: CAPITAL ONE
-Account Number: XXXX1234
-`;
+    const block = (name: string, anchor: string) => `\n${anchor}: ${name}\nAccount Type: Individual\nDate Opened: 01/2020\nBalance: $5,000\nPayment Status: Current\nStatus: OK\nRemarks: None\nEnd of block\n${'x'.repeat(100)}\n`;
+    const text = block('CHASE BANK', 'Account Name') + block('WELLS FARGO', 'Account Name') + block('CAPITAL ONE', 'Creditor Name');
     const count = detectTradelineBlocks(text);
     expect(count).toBeGreaterThanOrEqual(3);
   });
