@@ -99,7 +99,7 @@ export interface AccountStatus {
 
 // Bureau response analysis result
 export interface AnalysisResult {
-  bureau: BureauKey | "multi-bureau";
+  bureau: BureauKey | "multi-bureau" | string;
   outcome: "verified" | "partial" | "deleted" | "no_response" | "frivolous" | "reinsertion";
   itemsVerified: string[];
   itemsDeleted: string[];
@@ -108,6 +108,10 @@ export interface AnalysisResult {
   nextSteps: string[];
   rawSummary: string;
   accounts: DisputeAccount[];
+  // Independently extracted entities (not tied to tradeline classification)
+  _inquiries?: any[];
+  _publicRecords?: any[];
+  _collections?: any[];
 }
 
 // Outcome questionnaire
