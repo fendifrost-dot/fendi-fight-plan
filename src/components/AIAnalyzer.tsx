@@ -112,70 +112,31 @@ const AIAnalyzer = () => {
    * Returns true only if hydration succeeds.
    * Toast will only fire after this returns true.
    */
-  const handleJobComplete = useCallback((resultData: any, accounts: any[]) => {
-    console.log('[AIAnalyzer] handleJobComplete called with', accounts.length, 'accounts');
-    setLastJobInfo({ jobId: currentJobIdRef.current, resultCount: accounts.length });
+  const handleJobComplete = useCallback((canonicalResult: CanonicalAnalyzerResult) => {
+    const totalAccounts = canonicalResult.derogatory_accounts.length + canonicalResult.collections.length + canonicalResult.charge_offs.length;
+    console.log('[AIAnalyzer] handleJobComplete called with', totalAccounts, 'accounts');
+    setLastJobInfo({ jobId: currentJobIdRef.current, resultCount: totalAccounts });
     
-    if (!accounts || accounts.length === 0) {
-      console.warn('[AIAnalyzer] Job complete but no accounts extracted');
+    if (totalAccounts === 0 && canonicalResult.inquiries.length === 0) {
+      console.warn('[AIAnalyzer] Job complete but no entities extracted');
       setJobCompletedButEmpty(true);
       setIsAnalyzing(false);
-      return false; // Don't show success toast
+      return false;
     }
 
     try {
-      // Convert job accounts to DisputeAnalysisResult format
-      const hydratedResult: DisputeAnalysisResult = {
-        bureau: resultData?.documentMap?.is_multi_bureau ? 'Multi-Bureau' : 'Credit Report',
-        is_multi_bureau_report: resultData?.documentMap?.is_multi_bureau || false,
-        detected_bureaus: resultData?.documentMap?.detected_bureaus || [],
-        inaccurate_names: [],
-        inaccurate_addresses: [],
-        inaccurate_employers: [],
-        extra_identifier_mismatches: [],
-        derogatory_accounts: accounts.map((acc: any) => ({
-          creditor_name: acc.creditorName || acc.creditor_name || 'Unknown',
-          account_number: acc.maskedAccountNumber || acc.account_number || 'Unknown',
-          date_opened: acc.dateOpened || acc.date_opened || '',
-          derogatory_triggers: acc.derogatoryTriggers || acc.derogatory_triggers || [],
-          status_as_reported: acc.status || 'Unknown',
-          confidence: (acc.confidence >= 0.9 ? 'high' : acc.confidence >= 0.7 ? 'medium' : 'low') as "high" | "medium" | "low",
-          bureaus: acc.bureaus || [],
-        })),
-        late_payment_summary: [],
-        collections: [],
-        charge_offs: [],
-        public_records: [],
-        inquiries: (resultData?.inquiries || resultData?._inquiries || []).map((inq: any) => ({
-          creditor_name: inq.creditor_name || inq.creditorName || 'Unknown',
-          date: inq.inquiry_date || inq.date || '',
-          type: inq.type || inq.inquiry_type || 'hard',
-          bureaus: inq.bureaus || [],
-        })),
-        summary: `Extracted ${accounts.length} account(s) from ${resultData?.totalPages || 'multiple'} pages.`,
-        next_steps: [
-          "Review each account for accuracy",
-          "Select accounts to dispute",
-          "Generate dispute letters"
-        ],
-        warnings: resultData?.failedChunks?.length > 0 
-          ? [`${resultData.failedChunks.length} page chunk(s) failed to process`] 
-          : [],
-      };
-
-      // Hydrate into results state
-      setResults({ 'async-job': hydratedResult });
+      setResults({ 'async-job': canonicalResult });
       setActiveTab('async-job');
       setIsAnalyzing(false);
       setJobCompletedButEmpty(false);
       
-      console.log('[AIAnalyzer] Results hydrated successfully:', Object.keys({ 'async-job': hydratedResult }));
-      return true; // Success - show toast
+      console.log('[AIAnalyzer] Results hydrated successfully via canonical contract');
+      return true;
     } catch (err) {
       console.error('[AIAnalyzer] Failed to hydrate results:', err);
       setJobCompletedButEmpty(true);
       setIsAnalyzing(false);
-      return false; // Don't show success toast
+      return false;
     }
   }, []);
 
@@ -185,9 +146,10 @@ const AIAnalyzer = () => {
     setError(errorMessage || 'Analysis failed');
   }, []);
 
-  const handleJobPartial = useCallback((accounts: any[]) => {
-    console.log('[AIAnalyzer] Partial results:', accounts.length, 'accounts');
-    setLastJobInfo({ jobId: currentJobIdRef.current, resultCount: accounts.length });
+  const handleJobPartial = useCallback((canonicalResult: CanonicalAnalyzerResult) => {
+    const totalAccounts = canonicalResult.derogatory_accounts.length + canonicalResult.collections.length;
+    console.log('[AIAnalyzer] Partial results:', totalAccounts, 'accounts');
+    setLastJobInfo({ jobId: currentJobIdRef.current, resultCount: totalAccounts });
     setIsAnalyzing(false);
   }, []);
   
