@@ -1070,8 +1070,61 @@ const AIAnalyzer = () => {
     }
   }, [triageMode]);
 
+  /**
+   * Persist the current results state to analysis_jobs.result_data.
+   * This ensures manual bucket edits survive refresh/resume.
+   */
+  const persistCanonicalResults = useCallback(async (updatedResults: Record<string, CanonicalAnalyzerResult>) => {
+    const jobId = currentJobIdRef.current;
+    if (!jobId || !session) return;
+
+    // Merge all result sources into a single canonical object for persistence
+    const combined = createEmptyCanonicalResult();
+    for (const r of Object.values(updatedResults)) {
+      combined.derogatory_accounts.push(...r.derogatory_accounts);
+      combined.manual_review_accounts.push(...r.manual_review_accounts);
+      combined.clean_accounts.push(...r.clean_accounts);
+      combined.collections.push(...r.collections);
+      combined.charge_offs.push(...r.charge_offs);
+      combined.inquiries.push(...r.inquiries);
+      combined.public_records.push(...r.public_records);
+      combined.inaccurate_names.push(...r.inaccurate_names);
+      combined.inaccurate_addresses.push(...r.inaccurate_addresses);
+      combined.inaccurate_employers.push(...r.inaccurate_employers);
+      combined.extra_identifier_mismatches.push(...r.extra_identifier_mismatches);
+      combined.all_tradelines.push(...r.all_tradelines);
+      combined.duplicate_flags.push(...r.duplicate_flags);
+      combined.validation_messages.push(...r.validation_messages);
+      combined.warnings.push(...r.warnings);
+      if (r._contract_version) combined._contract_version = r._contract_version;
+      if (r.report_metadata) combined.report_metadata = r.report_metadata;
+      if (r.tradeline_inventory) combined.tradeline_inventory = r.tradeline_inventory;
+      if (r.validation_status && r.validation_status !== 'NOT_RUN') combined.validation_status = r.validation_status;
+    }
+
+    const { error } = await supabase
+      .from('analysis_jobs')
+      .update({ result_data: combined as any })
+      .eq('id', jobId);
+
+    console.log('[AIAnalyzer] persistCanonicalResults', {
+      jobId,
+      saved: !error,
+      derogatory_accounts: combined.derogatory_accounts.length,
+      manual_review_accounts: combined.manual_review_accounts.length,
+      clean_accounts: combined.clean_accounts.length,
+      inquiries: combined.inquiries.length,
+      inaccurate_names: combined.inaccurate_names.length,
+      inaccurate_addresses: combined.inaccurate_addresses.length,
+      inaccurate_employers: combined.inaccurate_employers.length,
+    });
+
+    return error;
+  }, [session]);
+
   // Move an account from derogatory to manual_review within canonical results
-  const moveToManualReview = (item: any) => {
+  const moveToManualReview = async (item: any) => {
+    let updatedResults: Record<string, CanonicalAnalyzerResult> = {};
     setResults(prev => {
       const updated = { ...prev };
       for (const key of Object.keys(updated)) {
@@ -1081,16 +1134,28 @@ const AIAnalyzer = () => {
           derogatory_accounts: r.derogatory_accounts.filter(a =>
             a.creditor_name !== item.creditor_name || a.account_number !== item.account_number
           ),
-          manual_review_accounts: [...r.manual_review_accounts, { ...item, _movedFrom: 'derogatory' }],
+          manual_review_accounts: [...r.manual_review_accounts, {
+            ...item,
+            _manual_override: true,
+            _manual_override_action: 'moved_to_manual_review',
+            _manual_override_at: new Date().toISOString(),
+          }],
         };
       }
+      updatedResults = updated;
       return updated;
     });
-    toast({ title: "Moved to manual review", description: `${item.creditor_name} moved to manual review.` });
+    const err = await persistCanonicalResults(updatedResults);
+    toast({
+      title: err ? "Save failed" : "Moved to manual review",
+      description: err ? `${item.creditor_name}: ${err.message}` : `${item.creditor_name} moved to manual review.`,
+      variant: err ? "destructive" : undefined,
+    });
   };
 
   // Restore from manual_review back to derogatory
-  const restoreToDerogatory = (item: any) => {
+  const restoreToDerogatory = async (item: any) => {
+    let updatedResults: Record<string, CanonicalAnalyzerResult> = {};
     setResults(prev => {
       const updated = { ...prev };
       for (const key of Object.keys(updated)) {
@@ -1100,27 +1165,53 @@ const AIAnalyzer = () => {
           manual_review_accounts: r.manual_review_accounts.filter(a =>
             a.creditor_name !== item.creditor_name || a.account_number !== item.account_number
           ),
-          derogatory_accounts: [...r.derogatory_accounts, item],
+          derogatory_accounts: [...r.derogatory_accounts, {
+            ...item,
+            _manual_override: true,
+            _manual_override_action: 'restored_to_derogatory',
+            _manual_override_at: new Date().toISOString(),
+          }],
         };
       }
+      updatedResults = updated;
       return updated;
     });
-    toast({ title: "Restored to derogatory", description: `${item.creditor_name} moved back.` });
+    const err = await persistCanonicalResults(updatedResults);
+    toast({
+      title: err ? "Save failed" : "Restored to derogatory",
+      description: err ? `${item.creditor_name}: ${err.message}` : `${item.creditor_name} moved back.`,
+      variant: err ? "destructive" : undefined,
+    });
   };
 
-  // Remove from derogatory
-  const removeFromDerogatory = (item: any) => {
+  // Remove from derogatory (move to clean)
+  const removeFromDerogatory = async (item: any) => {
+    let updatedResults: Record<string, CanonicalAnalyzerResult> = {};
     setResults(prev => {
       const updated = { ...prev };
       for (const key of Object.keys(updated)) {
         updated[key] = {
           ...updated[key],
-          derogatory_accounts: updated[key].derogatory_accounts.filter(a => a !== item),
+          derogatory_accounts: updated[key].derogatory_accounts.filter(a =>
+            a.creditor_name !== item.creditor_name || a.account_number !== item.account_number
+          ),
+          clean_accounts: [...updated[key].clean_accounts, {
+            ...item,
+            _manual_override: true,
+            _manual_override_action: 'removed_from_derogatory',
+            _manual_override_at: new Date().toISOString(),
+          }],
         };
       }
+      updatedResults = updated;
       return updated;
     });
-    toast({ title: "Removed from derogatory", description: `${item.creditor_name} removed.` });
+    const err = await persistCanonicalResults(updatedResults);
+    toast({
+      title: err ? "Save failed" : "Removed from derogatory",
+      description: err ? `${item.creditor_name}: ${err.message}` : `${item.creditor_name} removed.`,
+      variant: err ? "destructive" : undefined,
+    });
   };
 
   const renderResultContent = (result: CanonicalAnalyzerResult, showSource = false) => (
