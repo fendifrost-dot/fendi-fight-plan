@@ -317,6 +317,15 @@ AND
 - either a balance or payment status field
 then return an EMPTY result with no accounts — the block is likely a header or non-account section.
 
+## LOCKED FIELDS (DETERMINISTIC PRE-EXTRACTION)
+Some fields may already be extracted deterministically and provided in "lockedFields".
+If a field is provided in lockedFields:
+- DO NOT modify it
+- DO NOT override it
+- Use the locked value exactly as provided
+Only extract fields NOT already in lockedFields. Focus AI effort on:
+- creditor_name, account_type, derogatory_triggers, confidence, remarks, payment_grid_codes, section_header
+
 ${CANONICAL_EXTRACTION_RULES}
 
 ${CANONICAL_OUTPUT_SCHEMA}`;

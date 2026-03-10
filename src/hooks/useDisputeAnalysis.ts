@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 import { pdfToImages, extractFullTextFromPdf } from '@/lib/pdf-utils';
-import { preparePerTradelineChunks } from '@/lib/tradeline-segmenter';
+import { preparePerTradelineChunks, extractDeterministicFields } from '@/lib/tradeline-segmenter';
 import type {
   DisputeAccount,
   AnalysisResult,
