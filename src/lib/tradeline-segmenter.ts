@@ -52,9 +52,12 @@ export function splitTradelines(text: string): string[] {
 
   // Filter out blocks that are too short (likely headers, not real tradelines)
   const MIN_BLOCK_LENGTH = 50;
-  return matches
+  const result = matches
     .map(m => m.trim())
     .filter(block => block.length >= MIN_BLOCK_LENGTH);
+
+  console.log(`[segmenter] tradelines detected: ${matches.length}, after min-length filter: ${result.length}`);
+  return result;
 }
 
 /**
