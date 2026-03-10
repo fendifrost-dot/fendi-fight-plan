@@ -52,7 +52,7 @@ serve(async (req) => {
       });
     }
 
-    const { section, images, questionnaire, chunkIndex, totalChunks, reportText } = await req.json();
+    const { section, images, questionnaire, chunkIndex, totalChunks, reportText, lockedFields } = await req.json();
 
     // Validate: need either images or text
     const hasImages = images && Array.isArray(images) && images.length > 0;
@@ -72,7 +72,8 @@ serve(async (req) => {
       });
     }
 
-    console.log(`Analyzing chunk: section=${section || 'full'}, chunk=${(chunkIndex || 0) + 1}/${totalChunks || 1}, images=${hasImages ? images.length : 0}, text=${hasText ? 'yes' : 'no'}`);
+    const hasLocked = lockedFields && typeof lockedFields === 'object' && Object.keys(lockedFields).length > 0;
+    console.log(`Analyzing chunk: section=${section || 'full'}, chunk=${(chunkIndex || 0) + 1}/${totalChunks || 1}, images=${hasImages ? images.length : 0}, text=${hasText ? 'yes' : 'no'}, lockedFields=${hasLocked ? Object.keys(lockedFields).join(',') : 'none'}`);
 
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) {
@@ -96,6 +97,10 @@ Current Employer: ${questionnaire.currentEmployer}`;
       if (questionnaire.phoneNumber) contextMessage += `\nPhone: ${questionnaire.phoneNumber}`;
       if (questionnaire.email) contextMessage += `\nEmail: ${questionnaire.email}`;
       if (questionnaire.ssnLast4) contextMessage += `\nSSN Last 4: ${questionnaire.ssnLast4}`;
+    }
+
+    if (hasLocked) {
+      contextMessage += `\n\n## LOCKED FIELDS (DO NOT OVERRIDE)\nThe following fields were extracted deterministically. Use them exactly as provided:\n${JSON.stringify(lockedFields)}`;
     }
 
     if (hasText) {

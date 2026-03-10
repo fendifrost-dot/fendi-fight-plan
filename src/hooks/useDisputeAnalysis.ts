@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 import { pdfToImages, extractFullTextFromPdf } from '@/lib/pdf-utils';
-import { preparePerTradelineChunks } from '@/lib/tradeline-segmenter';
+import { preparePerTradelineChunks, extractDeterministicFields } from '@/lib/tradeline-segmenter';
 import type {
   DisputeAccount,
   AnalysisResult,
@@ -257,6 +257,13 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
 
     for (let i = 0; i < textChunks.length && !abortRef.current; i++) {
       try {
+        // Extract deterministic fields before AI
+        const lockedFields = extractDeterministicFields(textChunks[i]);
+        const hasLockedFields = Object.keys(lockedFields).length > 0;
+        if (hasLockedFields) {
+          console.log(`[analysis] chunk ${i + 1}: locked fields =`, Object.keys(lockedFields).join(', '));
+        }
+
         const response = await fetch(
           `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-chunk`,
           {
@@ -270,6 +277,7 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
               reportText: textChunks[i],
               chunkIndex: i,
               totalChunks: textChunks.length,
+              ...(hasLockedFields ? { lockedFields } : {}),
             }),
           }
         );
