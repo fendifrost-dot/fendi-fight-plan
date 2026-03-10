@@ -240,8 +240,11 @@ Include all derogatory items with maximum inclusion (dispute-safe approach).`;
       };
     }
 
+    // ── Normalization layer — runs BEFORE validation ──
+    const normalizedResult = normalizeCanonicalResult(parsedResult);
+
     // ── Deterministic post-processing via shared validator ──
-    const postProcessed = postProcessAndValidate(parsedResult, responseText || undefined);
+    const postProcessed = postProcessAndValidate(normalizedResult, responseText || undefined);
 
     // ── Enforcement: check for EXTRACTION_INCOMPLETE ──
     if (postProcessed.isError) {
