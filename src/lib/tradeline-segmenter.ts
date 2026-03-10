@@ -6,19 +6,24 @@
  * header strings from being extracted as separate accounts.
  */
 
-// Anchors that mark the start of a new tradeline block
+// Expanded anchors that mark the start of a new tradeline block
+// Covers Experian, Equifax, TransUnion, Credit Karma, and tri-merge formats
 const TRADELINE_BLOCK_ANCHORS = [
-  'CREDITOR',
   'ACCOUNT NAME',
-  'COMPANY NAME',
   'ACCOUNT NUMBER',
   'ACCOUNT #',
+  'ACCOUNT INFORMATION',
+  'ACCOUNT DETAILS',
   'ACCT NO',
   'ACCT #',
+  'CREDITOR',
+  'CREDITOR NAME',
+  'COMPANY NAME',
   'ORIGINAL CREDITOR',
   'COLLECTION AGENCY',
   'LENDER',
   'LOAN NUMBER',
+  'TRADELINE',
 ];
 
 /**
@@ -30,7 +35,7 @@ const TRADELINE_BLOCK_ANCHORS = [
 export function splitTradelines(text: string): string[] {
   if (!text || typeof text !== 'string' || text.trim().length === 0) return [];
 
-  // Build a regex pattern from anchors
+  // Build a regex pattern from anchors — escape special regex chars safely
   const anchorPattern = TRADELINE_BLOCK_ANCHORS
     .map(a => a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
     .join('|');
@@ -58,13 +63,12 @@ export function splitTradelines(text: string): string[] {
 export function isBureauHeader(text: string): boolean {
   if (!text || text.length < 10) return true;
 
-  const upper = text.toUpperCase();
-
   // Has a parenthetical code but no account data fields
   const hasParenCode = /\(\w{3,5}\)/.test(text);
-  const hasAccountFields = /(?:BALANCE|STATUS|DATE OPENED|PAYMENT|PAST DUE|HIGH CREDIT|CREDIT LIMIT)/i.test(text);
+  const hasAccountFields = /(?:ACCOUNT\s*#|ACCOUNT\s*NUMBER|BALANCE|STATUS|DATE OPENED|PAYMENT|PAST DUE|HIGH CREDIT|CREDIT LIMIT)/i.test(text);
 
-  if (hasParenCode && !hasAccountFields && text.length < 100) return true;
+  // Extended length buffer to avoid false positives on multi-line entries
+  if (hasParenCode && !hasAccountFields && text.length < 120) return true;
 
   // Pure header lines (just a name, possibly with a code)
   const lines = text.split('\n').filter(l => l.trim().length > 0);
@@ -74,8 +78,9 @@ export function isBureauHeader(text: string): boolean {
 }
 
 /**
- * Prepare text for chunked AI analysis by segmenting into tradeline blocks.
- * If segmentation yields blocks, returns them; otherwise returns the original text as a single chunk.
+ * Prepare text for per-tradeline AI analysis by segmenting into individual blocks.
+ * Each block ideally contains ONE tradeline for maximum accuracy.
+ * Falls back to size-based chunking if no anchors found.
  */
 export function prepareTextChunks(fullText: string, maxChunkSize = 8000): string[] {
   const blocks = splitTradelines(fullText);
@@ -89,14 +94,15 @@ export function prepareTextChunks(fullText: string, maxChunkSize = 8000): string
     return chunks.length > 0 ? chunks : [fullText];
   }
 
+  // Filter out bureau headers first
+  const realBlocks = blocks.filter(block => !isBureauHeader(block));
+  if (realBlocks.length === 0) return [fullText];
+
   // Group small blocks together up to maxChunkSize
   const chunks: string[] = [];
   let currentChunk = '';
 
-  for (const block of blocks) {
-    // Skip bureau headers
-    if (isBureauHeader(block)) continue;
-
+  for (const block of realBlocks) {
     if (currentChunk.length + block.length + 2 > maxChunkSize && currentChunk.length > 0) {
       chunks.push(currentChunk.trim());
       currentChunk = '';
@@ -109,4 +115,16 @@ export function prepareTextChunks(fullText: string, maxChunkSize = 8000): string
   }
 
   return chunks.length > 0 ? chunks : [fullText];
+}
+
+/**
+ * Prepare text for per-tradeline AI analysis — returns one block per tradeline.
+ * This is the highest-accuracy mode: each tradeline is parsed independently.
+ */
+export function preparePerTradelineChunks(fullText: string): string[] {
+  const blocks = splitTradelines(fullText);
+  if (blocks.length === 0) return [fullText];
+
+  // Filter headers and return individual blocks
+  return blocks.filter(block => !isBureauHeader(block));
 }

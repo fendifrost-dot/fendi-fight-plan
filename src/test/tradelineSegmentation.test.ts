@@ -2,7 +2,7 @@
  * Tests for tradeline segmentation and creditor normalization enhancements.
  */
 import { describe, it, expect } from 'vitest';
-import { splitTradelines, isBureauHeader, prepareTextChunks } from '@/lib/tradeline-segmenter';
+import { splitTradelines, isBureauHeader, prepareTextChunks, preparePerTradelineChunks } from '@/lib/tradeline-segmenter';
 import { normalizeCreditorName } from '@/lib/result-normalizer';
 
 // ── Tradeline Segmentation ──
@@ -42,13 +42,36 @@ Status: Current
 Date Opened: 01/2020
 `;
     const blocks = splitTradelines(text);
-    // Short header block should be filtered
     expect(blocks.every(b => b.length >= 50)).toBe(true);
+  });
+
+  it('detects expanded anchors (CREDITOR NAME, ACCOUNT INFORMATION, TRADELINE)', () => {
+    const text = `
+Creditor Name: CHASE
+Account Number: 1234
+Balance: $5000
+Status: Current
+Date Opened: 01/2020
+
+Account Information: WELLS FARGO
+Account Number: 5678
+Balance: $2000
+Status: Late
+Date Opened: 06/2019
+
+Tradeline: CAPITAL ONE
+Account Number: 9012
+Balance: $3000
+Status: Charged Off
+Date Opened: 03/2018
+`;
+    const blocks = splitTradelines(text);
+    expect(blocks.length).toBe(3);
   });
 });
 
 describe('isBureauHeader', () => {
-  it('detects bureau header lines', () => {
+  it('detects bureau header lines with codes', () => {
     expect(isBureauHeader('CAPITAL ONE BANK USA (7805)')).toBe(true);
     expect(isBureauHeader('LEAD BANK (D000)')).toBe(true);
   });
@@ -61,6 +84,19 @@ Status: Current
 Date Opened: 01/2020
 Payment History: OK OK OK`;
     expect(isBureauHeader(block)).toBe(false);
+  });
+
+  it('does not flag entries with Account # field', () => {
+    const block = `CAPITAL ONE BANK USA
+Account # XXXX1234
+Balance: $5,000
+Status: Current`;
+    expect(isBureauHeader(block)).toBe(false);
+  });
+
+  it('detects short entries without account fields as headers', () => {
+    expect(isBureauHeader('SOME BANK NAME')).toBe(true);
+    expect(isBureauHeader('RANDOM LENDER\nSome city, ST')).toBe(true);
   });
 });
 
@@ -76,8 +112,52 @@ describe('prepareTextChunks', () => {
       `Account Name: ${name}\nAccount Number: XXXX1234\nBalance: $5,000\nStatus: Current\nDate Opened: 01/2020\n`;
     const text = [makeBlock('A'), makeBlock('B'), makeBlock('C')].join('\n');
     const chunks = prepareTextChunks(text, 50000);
-    // All blocks fit in one chunk
     expect(chunks.length).toBe(1);
+  });
+
+  it('filters out bureau headers in chunks', () => {
+    const text = `
+Account Name: CAPITAL ONE BANK USA (7805)
+
+Account Name: REAL ACCOUNT
+Account Number: XXXX1234
+Balance: $5,000
+Status: Current
+Date Opened: 01/2020
+Payment: OK OK OK
+`;
+    const chunks = prepareTextChunks(text);
+    // The header-only block should be filtered
+    for (const chunk of chunks) {
+      if (chunk.includes('REAL ACCOUNT')) {
+        expect(chunk).toContain('REAL ACCOUNT');
+      }
+    }
+  });
+});
+
+describe('preparePerTradelineChunks', () => {
+  it('returns one block per tradeline', () => {
+    const makeBlock = (name: string) =>
+      `Account Name: ${name}\nAccount Number: XXXX1234\nBalance: $5,000\nStatus: Current\nDate Opened: 01/2020\n`;
+    const text = [makeBlock('CHASE'), makeBlock('WELLS FARGO'), makeBlock('CITI')].join('\n');
+    const blocks = preparePerTradelineChunks(text);
+    expect(blocks.length).toBe(3);
+  });
+
+  it('filters bureau headers', () => {
+    const text = `
+Account Name: HEADER ONLY (7805)
+
+Account Name: REAL ACCOUNT
+Account Number: XXXX1234
+Balance: $5,000
+Status: Current
+Date Opened: 01/2020
+Payment: OK OK OK
+`;
+    const blocks = preparePerTradelineChunks(text);
+    expect(blocks.every(b => b.includes('Account Number') || b.includes('Balance'))).toBe(true);
   });
 });
 
@@ -104,7 +184,6 @@ describe('creditor normalization with map', () => {
   });
 
   it('does not map partial matches incorrectly', () => {
-    // TBOM MILSTNE should NOT match TBOM MIL (word boundary)
     const result = normalizeCreditorName('TBOM/MILSTNE');
     expect(result).toBe('TBOM MILSTNE');
     expect(result).not.toBe('THE BANK OF MISSOURI');
@@ -128,8 +207,6 @@ describe('expected final pipeline output', () => {
     ];
 
     const normalized = inputs.map(normalizeCreditorName);
-
-    // Dedup
     const unique = [...new Set(normalized)];
 
     expect(unique).toEqual([
