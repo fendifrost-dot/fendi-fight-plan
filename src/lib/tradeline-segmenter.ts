@@ -100,6 +100,7 @@ export function prepareTextChunks(fullText: string, maxChunkSize = 8000): string
 
   // Filter out bureau headers first
   const realBlocks = blocks.filter(block => !isBureauHeader(block));
+  console.log(`[segmenter] headers filtered: ${blocks.length - realBlocks.length}`);
   if (realBlocks.length === 0) return [fullText];
 
   // Group small blocks together up to maxChunkSize
