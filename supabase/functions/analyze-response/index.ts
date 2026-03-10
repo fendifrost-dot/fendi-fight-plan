@@ -5,6 +5,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { FULL_SYSTEM_PROMPT } from "../_shared/credit-parser-prompt.ts";
 import { postProcessAndValidate } from "../_shared/parser-validator.ts";
 import { PARSER_ERROR_CODES } from "../_shared/parser-contract.ts";
+import { normalizeCanonicalResult } from "../_shared/result-normalizer.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
