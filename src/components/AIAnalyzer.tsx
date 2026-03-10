@@ -111,7 +111,18 @@ const AIAnalyzer = () => {
    */
   const handleJobComplete = useCallback((canonicalResult: CanonicalAnalyzerResult) => {
     const totalAccounts = canonicalResult.derogatory_accounts.length + canonicalResult.collections.length + canonicalResult.charge_offs.length;
-    console.log('[AIAnalyzer] handleJobComplete called with', totalAccounts, 'accounts,', canonicalResult.inquiries.length, 'inquiries,', canonicalResult.manual_review_accounts.length, 'manual_review');
+    console.log('[AIAnalyzer] handleJobComplete (reload proof)', {
+      derogatory_accounts: canonicalResult.derogatory_accounts.length,
+      manual_review_accounts: canonicalResult.manual_review_accounts.length,
+      clean_accounts: canonicalResult.clean_accounts.length,
+      inquiries: canonicalResult.inquiries.length,
+      inaccurate_names: canonicalResult.inaccurate_names.length,
+      inaccurate_addresses: canonicalResult.inaccurate_addresses.length,
+      inaccurate_employers: canonicalResult.inaccurate_employers.length,
+      has_overrides: canonicalResult.derogatory_accounts.some((a: any) => a._manual_override) ||
+        canonicalResult.manual_review_accounts.some((a: any) => a._manual_override) ||
+        canonicalResult.clean_accounts.some((a: any) => a._manual_override),
+    });
     setLastJobInfo({ jobId: currentJobIdRef.current, resultCount: totalAccounts });
     
     if (totalAccounts === 0 && canonicalResult.inquiries.length === 0) {
