@@ -9,10 +9,17 @@
  * 5. identity mismatch arrays remain intact after manual bucket edits
  * 6. canonical result shape is unchanged after save/load cycle (hydrateCanonicalResult roundtrip)
  * 7. override audit trail metadata is preserved through hydration
+ * 8. cross-bureau rows remain separate during manual edits
  */
 
 import { describe, it, expect } from 'vitest';
 import { hydrateCanonicalResult, createEmptyCanonicalResult, type CanonicalAnalyzerResult } from '@/types/disputes';
+
+// Mirror the accountMatchKey logic from AIAnalyzer
+function accountMatchKey(a: any): string {
+  const bureau = Array.isArray(a.bureaus) && a.bureaus.length > 0 ? a.bureaus[0] : (a.source || '');
+  return `${a.creditor_name}|${a.account_number}|${bureau}`;
+}
 
 // Simulate the canonical result a backend would produce
 function buildTestResult(): CanonicalAnalyzerResult {
@@ -42,13 +49,12 @@ function buildTestResult(): CanonicalAnalyzerResult {
   });
 }
 
-// Simulate what moveToManualReview does in AIAnalyzer
+// Simulate what moveToManualReview does in AIAnalyzer (with bureau-safe matching)
 function simulateMoveToManualReview(result: CanonicalAnalyzerResult, item: any): CanonicalAnalyzerResult {
+  const targetKey = accountMatchKey(item);
   return {
     ...result,
-    derogatory_accounts: result.derogatory_accounts.filter(a =>
-      a.creditor_name !== item.creditor_name || a.account_number !== item.account_number
-    ),
+    derogatory_accounts: result.derogatory_accounts.filter(a => accountMatchKey(a) !== targetKey),
     manual_review_accounts: [...result.manual_review_accounts, {
       ...item,
       _manual_override: true,
@@ -60,11 +66,10 @@ function simulateMoveToManualReview(result: CanonicalAnalyzerResult, item: any):
 
 // Simulate what removeFromDerogatory does
 function simulateRemoveFromDerogatory(result: CanonicalAnalyzerResult, item: any): CanonicalAnalyzerResult {
+  const targetKey = accountMatchKey(item);
   return {
     ...result,
-    derogatory_accounts: result.derogatory_accounts.filter(a =>
-      a.creditor_name !== item.creditor_name || a.account_number !== item.account_number
-    ),
+    derogatory_accounts: result.derogatory_accounts.filter(a => accountMatchKey(a) !== targetKey),
     clean_accounts: [...result.clean_accounts, {
       ...item,
       _manual_override: true,
@@ -76,11 +81,10 @@ function simulateRemoveFromDerogatory(result: CanonicalAnalyzerResult, item: any
 
 // Simulate what restoreToDerogatory does
 function simulateRestoreToDerogatory(result: CanonicalAnalyzerResult, item: any): CanonicalAnalyzerResult {
+  const targetKey = accountMatchKey(item);
   return {
     ...result,
-    manual_review_accounts: result.manual_review_accounts.filter(a =>
-      a.creditor_name !== item.creditor_name || a.account_number !== item.account_number
-    ),
+    manual_review_accounts: result.manual_review_accounts.filter(a => accountMatchKey(a) !== targetKey),
     derogatory_accounts: [...result.derogatory_accounts, {
       ...item,
       _manual_override: true,
@@ -109,7 +113,8 @@ describe('Manual Edit: removeFromDerogatory', () => {
   it('survives hydration roundtrip (simulates DB persist + reload)', () => {
     const result = buildTestResult();
     const edited = simulateRemoveFromDerogatory(result, result.derogatory_accounts[0]);
-    const rehydrated = hydrateCanonicalResult(edited);
+    // Simulate DB: stringify → parse → hydrate
+    const rehydrated = hydrateCanonicalResult(JSON.parse(JSON.stringify(edited)));
 
     expect(rehydrated.derogatory_accounts).toHaveLength(1);
     expect(rehydrated.clean_accounts).toHaveLength(2);
@@ -135,7 +140,7 @@ describe('Manual Edit: moveToManualReview', () => {
   it('survives hydration roundtrip', () => {
     const result = buildTestResult();
     const edited = simulateMoveToManualReview(result, result.derogatory_accounts[1]);
-    const rehydrated = hydrateCanonicalResult(edited);
+    const rehydrated = hydrateCanonicalResult(JSON.parse(JSON.stringify(edited)));
 
     expect(rehydrated.manual_review_accounts).toHaveLength(2);
     const moved = rehydrated.manual_review_accounts.find((a: any) => a.creditor_name === 'CAPITAL ONE');
@@ -160,7 +165,7 @@ describe('Manual Edit: restoreToDerogatory', () => {
   it('survives hydration roundtrip', () => {
     const result = buildTestResult();
     const edited = simulateRestoreToDerogatory(result, result.manual_review_accounts[0]);
-    const rehydrated = hydrateCanonicalResult(edited);
+    const rehydrated = hydrateCanonicalResult(JSON.parse(JSON.stringify(edited)));
 
     expect(rehydrated.derogatory_accounts).toHaveLength(3);
     const restored = rehydrated.derogatory_accounts.find((a: any) => a.creditor_name === 'SELFINC/LEAD');
@@ -200,7 +205,7 @@ describe('Non-account entities survive manual edits', () => {
   it('inquiries survive hydration roundtrip after manual edits', () => {
     const result = buildTestResult();
     const edited = simulateRemoveFromDerogatory(result, result.derogatory_accounts[0]);
-    const rehydrated = hydrateCanonicalResult(edited);
+    const rehydrated = hydrateCanonicalResult(JSON.parse(JSON.stringify(edited)));
     expect(rehydrated.inquiries).toHaveLength(2);
     expect(rehydrated.inaccurate_names).toHaveLength(1);
     expect(rehydrated.inaccurate_addresses).toHaveLength(1);
@@ -212,7 +217,7 @@ describe('Canonical shape preserved after save/load cycle', () => {
   it('all required fields present after hydration of edited result', () => {
     const result = buildTestResult();
     const edited = simulateRemoveFromDerogatory(result, result.derogatory_accounts[0]);
-    const rehydrated = hydrateCanonicalResult(edited);
+    const rehydrated = hydrateCanonicalResult(JSON.parse(JSON.stringify(edited)));
 
     // Every canonical field must exist
     expect(Array.isArray(rehydrated.derogatory_accounts)).toBe(true);
@@ -236,7 +241,6 @@ describe('Canonical shape preserved after save/load cycle', () => {
   it('override metadata survives JSON serialization roundtrip', () => {
     const result = buildTestResult();
     const edited = simulateMoveToManualReview(result, result.derogatory_accounts[0]);
-    // Simulate DB storage: JSON.stringify -> JSON.parse -> hydrateCanonicalResult
     const serialized = JSON.parse(JSON.stringify(edited));
     const rehydrated = hydrateCanonicalResult(serialized);
 
@@ -245,5 +249,50 @@ describe('Canonical shape preserved after save/load cycle', () => {
     expect(moved._manual_override).toBe(true);
     expect(moved._manual_override_action).toBe('moved_to_manual_review');
     expect(typeof moved._manual_override_at).toBe('string');
+  });
+});
+
+describe('Cross-bureau safety', () => {
+  it('same creditor/account on different bureaus remain separate rows', () => {
+    const result = hydrateCanonicalResult({
+      derogatory_accounts: [
+        { creditor_name: 'ACME', account_number: '1234', bureaus: ['experian'], derogatory_triggers: ['charged off'] },
+        { creditor_name: 'ACME', account_number: '1234', bureaus: ['equifax'], derogatory_triggers: ['charged off'] },
+      ],
+    });
+
+    expect(result.derogatory_accounts).toHaveLength(2);
+
+    // Remove only the Experian row
+    const experianItem = result.derogatory_accounts.find((a: any) => a.bureaus?.[0] === 'experian');
+    const edited = simulateRemoveFromDerogatory(result, experianItem);
+
+    // Equifax row must remain in derogatory
+    expect(edited.derogatory_accounts).toHaveLength(1);
+    expect(edited.derogatory_accounts[0].bureaus?.[0]).toBe('equifax');
+    // Experian row moved to clean
+    expect(edited.clean_accounts).toHaveLength(1);
+    expect(edited.clean_accounts[0].bureaus?.[0]).toBe('experian');
+    expect(edited.clean_accounts[0]._manual_override).toBe(true);
+  });
+
+  it('editing one bureau row does not affect the other bureau row', () => {
+    const result = hydrateCanonicalResult({
+      derogatory_accounts: [
+        { creditor_name: 'ACME', account_number: '1234', bureaus: ['experian'] },
+        { creditor_name: 'ACME', account_number: '1234', bureaus: ['equifax'] },
+        { creditor_name: 'ACME', account_number: '1234', bureaus: ['transunion'] },
+      ],
+    });
+
+    const equifaxItem = result.derogatory_accounts.find((a: any) => a.bureaus?.[0] === 'equifax');
+    const edited = simulateMoveToManualReview(result, equifaxItem);
+
+    expect(edited.derogatory_accounts).toHaveLength(2);
+    expect(edited.manual_review_accounts).toHaveLength(1);
+    expect(edited.manual_review_accounts[0].bureaus?.[0]).toBe('equifax');
+    // Experian and TransUnion untouched
+    const remainingBureaus = edited.derogatory_accounts.map((a: any) => a.bureaus?.[0]).sort();
+    expect(remainingBureaus).toEqual(['experian', 'transunion']);
   });
 });

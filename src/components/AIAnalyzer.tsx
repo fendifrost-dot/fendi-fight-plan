@@ -1082,12 +1082,24 @@ const AIAnalyzer = () => {
   }, [triageMode]);
 
   /**
+   * Build a stable match key for an account row.
+   * Uses bureau identity to prevent cross-bureau collisions.
+   */
+  const accountMatchKey = (a: any): string => {
+    const bureau = Array.isArray(a.bureaus) && a.bureaus.length > 0 ? a.bureaus[0] : (a.source || '');
+    return `${a.creditor_name}|${a.account_number}|${bureau}`;
+  };
+
+  /**
    * Persist the current results state to analysis_jobs.result_data.
    * This ensures manual bucket edits survive refresh/resume.
    */
   const persistCanonicalResults = useCallback(async (updatedResults: Record<string, CanonicalAnalyzerResult>) => {
     const jobId = currentJobIdRef.current;
-    if (!jobId || !session) return;
+    if (!jobId || !session) {
+      console.warn('[AIAnalyzer] persistCanonicalResults: no jobId or session, skipping');
+      return null;
+    }
 
     // Merge all result sources into a single canonical object for persistence
     const combined = createEmptyCanonicalResult();
@@ -1111,6 +1123,12 @@ const AIAnalyzer = () => {
       if (r.report_metadata) combined.report_metadata = r.report_metadata;
       if (r.tradeline_inventory) combined.tradeline_inventory = r.tradeline_inventory;
       if (r.validation_status && r.validation_status !== 'NOT_RUN') combined.validation_status = r.validation_status;
+      if (r.late_payment_summary) combined.late_payment_summary = r.late_payment_summary;
+      if (r.summary) combined.summary = (combined.summary ? combined.summary + '\n\n' : '') + r.summary;
+      if (r.next_steps) combined.next_steps = [...(combined.next_steps || []), ...r.next_steps];
+      if (r.bureau) combined.bureau = r.bureau;
+      if (r.is_multi_bureau_report) combined.is_multi_bureau_report = r.is_multi_bureau_report;
+      if (r.detected_bureaus) combined.detected_bureaus = r.detected_bureaus;
     }
 
     const { error } = await supabase
@@ -1135,16 +1153,15 @@ const AIAnalyzer = () => {
 
   // Move an account from derogatory to manual_review within canonical results
   const moveToManualReview = async (item: any) => {
-    let updatedResults: Record<string, CanonicalAnalyzerResult> = {};
+    const targetKey = accountMatchKey(item);
+    const updatedResults: Record<string, CanonicalAnalyzerResult> = {};
+    
     setResults(prev => {
-      const updated = { ...prev };
-      for (const key of Object.keys(updated)) {
-        const r = updated[key];
-        updated[key] = {
+      for (const key of Object.keys(prev)) {
+        const r = prev[key];
+        updatedResults[key] = {
           ...r,
-          derogatory_accounts: r.derogatory_accounts.filter(a =>
-            a.creditor_name !== item.creditor_name || a.account_number !== item.account_number
-          ),
+          derogatory_accounts: r.derogatory_accounts.filter(a => accountMatchKey(a) !== targetKey),
           manual_review_accounts: [...r.manual_review_accounts, {
             ...item,
             _manual_override: true,
@@ -1153,9 +1170,9 @@ const AIAnalyzer = () => {
           }],
         };
       }
-      updatedResults = updated;
-      return updated;
+      return { ...updatedResults };
     });
+    
     const err = await persistCanonicalResults(updatedResults);
     toast({
       title: err ? "Save failed" : "Moved to manual review",
@@ -1166,16 +1183,15 @@ const AIAnalyzer = () => {
 
   // Restore from manual_review back to derogatory
   const restoreToDerogatory = async (item: any) => {
-    let updatedResults: Record<string, CanonicalAnalyzerResult> = {};
+    const targetKey = accountMatchKey(item);
+    const updatedResults: Record<string, CanonicalAnalyzerResult> = {};
+    
     setResults(prev => {
-      const updated = { ...prev };
-      for (const key of Object.keys(updated)) {
-        const r = updated[key];
-        updated[key] = {
+      for (const key of Object.keys(prev)) {
+        const r = prev[key];
+        updatedResults[key] = {
           ...r,
-          manual_review_accounts: r.manual_review_accounts.filter(a =>
-            a.creditor_name !== item.creditor_name || a.account_number !== item.account_number
-          ),
+          manual_review_accounts: r.manual_review_accounts.filter(a => accountMatchKey(a) !== targetKey),
           derogatory_accounts: [...r.derogatory_accounts, {
             ...item,
             _manual_override: true,
@@ -1184,9 +1200,9 @@ const AIAnalyzer = () => {
           }],
         };
       }
-      updatedResults = updated;
-      return updated;
+      return { ...updatedResults };
     });
+    
     const err = await persistCanonicalResults(updatedResults);
     toast({
       title: err ? "Save failed" : "Restored to derogatory",
@@ -1195,18 +1211,18 @@ const AIAnalyzer = () => {
     });
   };
 
-  // Remove from derogatory (move to clean)
+  // Remove from derogatory (move to clean — never hard delete)
   const removeFromDerogatory = async (item: any) => {
-    let updatedResults: Record<string, CanonicalAnalyzerResult> = {};
+    const targetKey = accountMatchKey(item);
+    const updatedResults: Record<string, CanonicalAnalyzerResult> = {};
+    
     setResults(prev => {
-      const updated = { ...prev };
-      for (const key of Object.keys(updated)) {
-        updated[key] = {
-          ...updated[key],
-          derogatory_accounts: updated[key].derogatory_accounts.filter(a =>
-            a.creditor_name !== item.creditor_name || a.account_number !== item.account_number
-          ),
-          clean_accounts: [...updated[key].clean_accounts, {
+      for (const key of Object.keys(prev)) {
+        const r = prev[key];
+        updatedResults[key] = {
+          ...r,
+          derogatory_accounts: r.derogatory_accounts.filter(a => accountMatchKey(a) !== targetKey),
+          clean_accounts: [...r.clean_accounts, {
             ...item,
             _manual_override: true,
             _manual_override_action: 'removed_from_derogatory',
@@ -1214,9 +1230,9 @@ const AIAnalyzer = () => {
           }],
         };
       }
-      updatedResults = updated;
-      return updated;
+      return { ...updatedResults };
     });
+    
     const err = await persistCanonicalResults(updatedResults);
     toast({
       title: err ? "Save failed" : "Removed from derogatory",
