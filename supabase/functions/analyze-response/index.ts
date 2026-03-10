@@ -5,6 +5,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { FULL_SYSTEM_PROMPT } from "../_shared/credit-parser-prompt.ts";
 import { postProcessAndValidate } from "../_shared/parser-validator.ts";
 import { PARSER_ERROR_CODES } from "../_shared/parser-contract.ts";
+import { normalizeCanonicalResult } from "../_shared/result-normalizer.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -239,8 +240,11 @@ Include all derogatory items with maximum inclusion (dispute-safe approach).`;
       };
     }
 
+    // ── Normalization layer — runs BEFORE validation ──
+    const normalizedResult = normalizeCanonicalResult(parsedResult);
+
     // ── Deterministic post-processing via shared validator ──
-    const postProcessed = postProcessAndValidate(parsedResult, responseText || undefined);
+    const postProcessed = postProcessAndValidate(normalizedResult, responseText || undefined);
 
     // ── Enforcement: check for EXTRACTION_INCOMPLETE ──
     if (postProcessed.isError) {
