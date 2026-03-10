@@ -9,13 +9,13 @@ import { normalizeCreditorName } from '@/lib/result-normalizer';
 
 describe('splitTradelines', () => {
   it('splits text on tradeline anchors', () => {
-    // Use a single-anchor format where each tradeline starts with "Creditor:"
+    // Use "Tradeline" anchor which doesn't conflict with field-level anchors
     const text = `
-Creditor: CHASE BANK
-Account Number: XXXX1234, Balance: $5,000, Status: Current, Date Opened: 01/2020
+Tradeline: CHASE BANK
+Acct: XXXX1234, Balance: $5,000, Status: Current, Date Opened: 01/2020
 
-Creditor: WELLS FARGO
-Account Number: XXXX5678, Balance: $2,000, Status: 30 days late, Date Opened: 06/2019
+Tradeline: WELLS FARGO
+Acct: XXXX5678, Balance: $2,000, Status: 30 days late, Date Opened: 06/2019
 `;
     const blocks = splitTradelines(text);
     expect(blocks.length).toBe(2);
