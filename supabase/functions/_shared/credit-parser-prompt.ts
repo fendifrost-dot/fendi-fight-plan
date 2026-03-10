@@ -101,7 +101,20 @@ If two+ tradelines share same Account Name AND Account Number AND same bureau �
 Extract exactly as printed, preserving all masking characters.
 If not present, output "N/A".
 If unreadable, output "UNEXTRACTABLE".
-Never skip a tradeline solely because it lacks an account number.`;
+Never skip a tradeline solely because it lacks an account number.
+
+## BUREAU HEADER / LENDER CODE REJECTION
+- Do NOT extract bureau section headers as tradeline accounts.
+- Lines like "CAPITAL ONE BANK USA (7805)" or "LEAD BANK (D000)" are HEADERS, not accounts.
+- A real tradeline has structured fields: Account Number, Balance, Status, Date Opened, Payment History.
+- If a block contains ONLY a creditor name (with or without a parenthetical code) and NO structured account fields, it is a HEADER — skip it.
+- Strip parenthetical bank identifier codes like (7805), (D000), (0961) from creditor names.
+- Never invent or fabricate account numbers from header codes.
+
+## STATUS FIELD REQUIREMENT
+Every extracted account MUST include a "status" or "status_as_reported" field.
+If no status text is visible, output "UNEXTRACTABLE" — do NOT omit the field.
+Accounts missing both status fields will be rejected by schema validation.`;
 
 // ─── Canonical Output Schema ───────────────────────────────────────────────
 // This is the ONLY allowed output schema. summary/next_steps are NOT included.

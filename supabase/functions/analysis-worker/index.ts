@@ -11,7 +11,8 @@ import { validateSchema, ensureRequiredArrays } from "../_shared/parser-schema.t
 const _KB = ['experian','equifax','transunion'];
 const _CM: Record<string,string> = {very_high:'high',probable:'medium',uncertain:'low',high:'high',medium:'medium',low:'low',incomplete:'incomplete'};
 const _MM: Record<string,string> = {jan:'01',feb:'02',mar:'03',apr:'04',may:'05',jun:'06',jul:'07',aug:'08',sep:'09',oct:'10',nov:'11',dec:'12'};
-function _nCred(n:any){if(!n||typeof n!=='string')return n;return n.toUpperCase().replace(/[\/\-_]+/g,' ').replace(/[^\w\s&'.]/g,' ').replace(/\s+/g,' ').trim();}
+const _CMAP: Record<string,string> = {'CAPITAL ONE BANK USA':'CAPITAL ONE','CAPITAL ONE BANK':'CAPITAL ONE','CAP ONE BANK':'CAPITAL ONE','TBOM MIL':'THE BANK OF MISSOURI','SPARROW FINANCIAL I':'SPARROW FINANCIAL'};
+function _nCred(n:any){if(!n||typeof n!=='string')return n;let c=n.replace(/\(\w{2,6}\)/g,'').toUpperCase().replace(/[\/\-_]+/g,' ').replace(/[^\w\s&'.]/g,' ').replace(/\s+/g,' ').trim();for(const k in _CMAP){if(c===k||(c.startsWith(k)&&(c.length===k.length||c[k.length]===' '))){c=_CMAP[k];break;}}return c;}
 function _nAcct(a:any){if(!a||typeof a!=='string')return a;const t=a.trim();if(['N/A','UNEXTRACTABLE'].includes(t.toUpperCase()))return t.toUpperCase();const s=t.replace(/[\*Xx\-\s]/g,'');return s.length>=4?s.slice(-4):s.length>0?s:t;}
 function _nBal(b:any):string|null{if(b===null||b===undefined)return null;if(typeof b==='number')return String(Math.round(b));if(typeof b!=='string')return null;const t=b.trim();if(!t||t==='$0'||t==='0')return'0';const c=t.replace(/[$,\s]/g,'');const p=parseFloat(c);return isNaN(p)?t:String(Math.round(p));}
 function _nConf(c:any):string{if(!c||typeof c!=='string')return'medium';return _CM[c.toLowerCase()]||'medium';}

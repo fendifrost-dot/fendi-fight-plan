@@ -153,7 +153,12 @@ export function postProcessAndValidate(rawResult: any, reportText?: string): Pos
       acct.derogatory_triggers = classification.triggers;
       acct.confidence = deriveConfidence(acct, classification.triggers);
 
-      if (isCleanTradeline(acct)) {
+      // ── Confidence filtering: reject 'incomplete' accounts (missing critical fields) ──
+      if (acct.confidence === 'incomplete') {
+        acct._classification_note = 'Rejected: incomplete confidence (missing critical fields)';
+        acct._bucket = 'manual_review';
+        manualReview.push(acct);
+      } else if (isCleanTradeline(acct)) {
         acct._classification_note = 'Clean tradeline excluded from derogatory_accounts';
         acct._bucket = 'clean';
         cleanAccounts.push(acct);
