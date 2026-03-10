@@ -182,7 +182,7 @@ describe('Entity Arrays Not Zeroed Out', () => {
 });
 
 describe('Partial Recovery', () => {
-  it('parseCheckpointResult preserves all entity arrays', () => {
+  it('parseCheckpointResult preserves all entity arrays including identity', () => {
     const checkpoints = {
       documentMap: null,
       accounts: [{ creditor_name: 'PARTIAL', account_number: 'P001', confidence: 'high' }],
@@ -190,6 +190,10 @@ describe('Partial Recovery', () => {
       inquiries: [{ creditor_name: 'INQ', date: '2024-01-01', type: 'hard' }],
       publicRecords: [{ type: 'Judgment', filing_date: '2023-06' }],
       chargeOffs: [{ creditor_name: 'CO', account_number: 'CO1' }],
+      inaccurateNames: [{ reported_name: 'JOHN DOW', mismatch_reason: 'Misspelling' }],
+      inaccurateAddresses: [{ reported_address: '456 Old St', linked_to_derogatory: true }],
+      inaccurateEmployers: [{ reported_employer: 'Old Corp' }],
+      extraIdentifierMismatches: [{ field: 'SSN', reported_value: '***1111' }],
       processedChunks: 3,
       totalChunks: 5,
       failedChunks: [4],
@@ -202,6 +206,11 @@ describe('Partial Recovery', () => {
     expect(result!.inquiries).toHaveLength(1);
     expect(result!.public_records).toHaveLength(1);
     expect(result!.charge_offs).toHaveLength(1);
+    expect(result!.inaccurate_names).toHaveLength(1);
+    expect(result!.inaccurate_names[0].reported_name).toBe('JOHN DOW');
+    expect(result!.inaccurate_addresses).toHaveLength(1);
+    expect(result!.inaccurate_employers).toHaveLength(1);
+    expect(result!.extra_identifier_mismatches).toHaveLength(1);
   });
 
   it('returns null for empty checkpoints', () => {
