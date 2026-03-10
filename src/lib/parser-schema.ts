@@ -48,6 +48,9 @@ function validateDerogatoryAccount(account: any, index: number, entity = 'deroga
   if (!isNonEmptyString(account.account_number)) {
     violations.push({ entity, index, field: 'account_number', reason: 'Missing or empty account_number. Must be actual value, "N/A", or "UNEXTRACTABLE".', critical: true });
   }
+  if (!isNonEmptyString(account.status) && !isNonEmptyString(account.status_as_reported)) {
+    violations.push({ entity, index, field: 'status', reason: 'Missing status and status_as_reported. At least one is required.', critical: true });
+  }
   if (!isArrayOrUndefined(account.bureaus)) {
     violations.push({ entity, index, field: 'bureaus', reason: 'Must be array', critical: false });
   }
