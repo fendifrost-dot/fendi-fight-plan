@@ -664,8 +664,17 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
       extra_identifier_mismatches: allExtraIdentifierMismatches,
     };
 
+    // ── Normalization layer — runs BEFORE validation (same as analyze-response) ──
+    const normalizedResult = normalizeCanonicalResult(rawResult);
+
+    console.log("[normalizer] result normalized", {
+      derogatory_accounts: normalizedResult.derogatory_accounts?.length,
+      collections: normalizedResult.collections?.length,
+      inquiries: normalizedResult.inquiries?.length,
+    });
+
     // Run the EXACT SAME deterministic pipeline as analyze-response
-    const postProcessed = postProcessAndValidate(rawResult);
+    const postProcessed = postProcessAndValidate(normalizedResult);
 
     // Determine terminal status
     let finalStatus: string;
