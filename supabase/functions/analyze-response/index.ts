@@ -243,6 +243,12 @@ Include all derogatory items with maximum inclusion (dispute-safe approach).`;
     // ── Normalization layer — runs BEFORE validation ──
     const normalizedResult = normalizeCanonicalResult(parsedResult);
 
+    console.log("[normalizer] result normalized", {
+      derogatory_accounts: normalizedResult.derogatory_accounts?.length,
+      collections: normalizedResult.collections?.length,
+      inquiries: normalizedResult.inquiries?.length,
+    });
+
     // ── Deterministic post-processing via shared validator ──
     const postProcessed = postProcessAndValidate(normalizedResult, responseText || undefined);
 
