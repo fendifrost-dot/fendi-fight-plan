@@ -224,7 +224,7 @@ describe('normalizeCanonicalResult — roundtrip', () => {
     const normalized = normalizeCanonicalResult(input);
     const roundtripped = JSON.parse(JSON.stringify(normalized));
 
-    expect(roundtripped.derogatory_accounts[0].creditor_name).toBe('TBOM MILESTONE');
+    expect(roundtripped.derogatory_accounts[0].creditor_name).toBe('THE BANK OF MISSOURI');
     expect(roundtripped.derogatory_accounts[0].account_number).toBe('5678');
     expect(roundtripped.derogatory_accounts[0].balance).toBe('2500');
     expect(roundtripped.derogatory_accounts[0].confidence).toBe('high');
