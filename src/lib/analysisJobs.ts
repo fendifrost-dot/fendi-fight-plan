@@ -436,6 +436,10 @@ export function parseCheckpointResult(checkpoints: JobCheckpoints | null): Canon
     charge_offs: checkpoints.chargeOffs || [],
     inquiries: checkpoints.inquiries || [],
     public_records: checkpoints.publicRecords || [],
+    inaccurate_names: checkpoints.inaccurateNames || [],
+    inaccurate_addresses: checkpoints.inaccurateAddresses || [],
+    inaccurate_employers: checkpoints.inaccurateEmployers || [],
+    extra_identifier_mismatches: checkpoints.extraIdentifierMismatches || [],
   });
 }
 
