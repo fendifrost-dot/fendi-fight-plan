@@ -52,7 +52,7 @@ serve(async (req) => {
       });
     }
 
-    const { section, images, questionnaire, chunkIndex, totalChunks, reportText } = await req.json();
+    const { section, images, questionnaire, chunkIndex, totalChunks, reportText, lockedFields } = await req.json();
 
     // Validate: need either images or text
     const hasImages = images && Array.isArray(images) && images.length > 0;
