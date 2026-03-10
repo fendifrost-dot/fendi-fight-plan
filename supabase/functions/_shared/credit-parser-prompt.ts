@@ -308,7 +308,14 @@ ${CANONICAL_OUTPUT_SCHEMA}`;
 // ─── Chunk System Prompt (analyze-chunk) ───────────────────────────────────
 // DERIVED from the canonical prompt — uses the same extraction rules.
 
-export const CHUNK_SYSTEM_PROMPT = `You are a credit report parsing engine processing a CHUNK of pages from a larger report. Extract ALL data visible on these pages using strict deterministic rules.
+export const CHUNK_SYSTEM_PROMPT = `You are a credit report parsing engine processing a SINGLE TRADELINE BLOCK from a larger report. Extract ALL data visible in this block using strict deterministic rules.
+
+IMPORTANT: You are receiving ONE tradeline block at a time. Extract exactly one account from this block.
+If the block does NOT contain BOTH:
+- an account number (or masked account number like XXXX1234)
+AND
+- either a balance or payment status field
+then return an EMPTY result with no accounts — the block is likely a header or non-account section.
 
 ${CANONICAL_EXTRACTION_RULES}
 

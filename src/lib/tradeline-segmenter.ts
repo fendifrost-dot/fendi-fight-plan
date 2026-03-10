@@ -14,6 +14,7 @@ const TRADELINE_BLOCK_ANCHORS = [
   'ACCOUNT #',
   'ACCOUNT INFORMATION',
   'ACCOUNT DETAILS',
+  'ACCOUNT STATUS',
   'ACCT NO',
   'ACCT #',
   'CREDITOR',
@@ -51,9 +52,12 @@ export function splitTradelines(text: string): string[] {
 
   // Filter out blocks that are too short (likely headers, not real tradelines)
   const MIN_BLOCK_LENGTH = 50;
-  return matches
+  const result = matches
     .map(m => m.trim())
     .filter(block => block.length >= MIN_BLOCK_LENGTH);
+
+  console.log(`[segmenter] tradelines detected: ${matches.length}, after min-length filter: ${result.length}`);
+  return result;
 }
 
 /**
@@ -96,6 +100,7 @@ export function prepareTextChunks(fullText: string, maxChunkSize = 8000): string
 
   // Filter out bureau headers first
   const realBlocks = blocks.filter(block => !isBureauHeader(block));
+  console.log(`[segmenter] headers filtered: ${blocks.length - realBlocks.length}`);
   if (realBlocks.length === 0) return [fullText];
 
   // Group small blocks together up to maxChunkSize

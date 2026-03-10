@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 import { pdfToImages, extractFullTextFromPdf } from '@/lib/pdf-utils';
-import { prepareTextChunks } from '@/lib/tradeline-segmenter';
+import { preparePerTradelineChunks } from '@/lib/tradeline-segmenter';
 import type {
   DisputeAccount,
   AnalysisResult,
@@ -238,8 +238,11 @@ export function useDisputeAnalysis(): UseDisputeAnalysisReturn {
       message: 'Processing extracted text through deterministic parser...',
     });
 
-    // Use tradeline segmentation for per-block AI extraction (higher accuracy)
-    const textChunks = prepareTextChunks(fullText);
+    // Use per-tradeline segmentation — each block parsed independently (highest accuracy)
+    const tradelineBlocks = preparePerTradelineChunks(fullText);
+    // If segmentation found blocks, use one-per-request; otherwise fall back to full text
+    const textChunks = tradelineBlocks.length > 0 ? tradelineBlocks : [fullText];
+    console.log(`[analysis] per-tradeline mode: ${tradelineBlocks.length} blocks → ${textChunks.length} AI requests`);
 
     setProgress(prev => ({
       ...prev,
