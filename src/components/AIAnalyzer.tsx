@@ -1997,8 +1997,8 @@ const AIAnalyzer = () => {
 
               {/* Debug Panel - shown when job completed but results are empty */}
               {jobCompletedButEmpty && lastJobInfo && (
-                <div className="p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-lg space-y-3">
-                  <div className="flex items-center gap-2 text-yellow-600 dark:text-yellow-400">
+                <div className="p-4 bg-warning/10 border border-warning/30 rounded-lg space-y-3">
+                  <div className="flex items-center gap-2 text-warning">
                     <Bug className="w-5 h-5" />
                     <span className="font-medium">Results Loading Issue</span>
                   </div>
