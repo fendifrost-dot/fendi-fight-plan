@@ -31,6 +31,10 @@ export interface JobCheckpoints {
   inquiries?: any[];
   publicRecords?: any[];
   chargeOffs?: any[];
+  inaccurateNames?: any[];
+  inaccurateAddresses?: any[];
+  inaccurateEmployers?: any[];
+  extraIdentifierMismatches?: any[];
   processedChunks: number;
   totalChunks: number;
   failedChunks: number[];
