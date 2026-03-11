@@ -32,3 +32,6 @@ verify_jwt = false
 
 [functions.project-stats]
 verify_jwt = false
+
+[functions.control-center-api]
+verify_jwt = false
