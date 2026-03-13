@@ -15,19 +15,16 @@ Deno.serve(async (req) => {
     // ── Auth: shared secret ──
     const apiKey = req.headers.get("x-api-key");
     const expectedKey = Deno.env.get("CREDIT_COMPASS_API_KEY");
-
     if (!expectedKey) {
       console.error("CREDIT_COMPASS_API_KEY not configured");
       return json({ error: "Server misconfiguration" }, 500);
     }
-
     if (!apiKey || apiKey !== expectedKey) {
       return json({ error: "Unauthorized" }, 401);
     }
 
     // ── Route ──
     const { action, ...params } = await req.json();
-
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, serviceRoleKey);
@@ -35,18 +32,26 @@ Deno.serve(async (req) => {
     switch (action) {
       case "get_assessments":
         return await getAssessments(supabase);
-
       case "get_assessment_detail":
         return await getAssessmentDetail(supabase, params.session_id);
-
       case "create_assessment":
         return await createAssessment(supabase, params);
-
       case "get_report":
         return await getReport(supabase, params.session_id);
-
       case "generate_report":
         return await generateReport(supabase, params.session_id);
+
+      // ── Playlist / FanFuel actions ──
+      case "get_playlist_targets":
+        return await getPlaylistTargets(supabase, params);
+      case "update_pitch_status":
+        return await updatePitchStatus(supabase, params);
+      case "get_pitch_log":
+        return await getPitchLog(supabase, params);
+
+      // ── Email action ──
+      case "send_pitch_email":
+        return await sendPitchEmail(supabase, params);
 
       default:
         return json({ error: `Unknown action: ${action}` }, 400);
@@ -61,7 +66,6 @@ Deno.serve(async (req) => {
 });
 
 // ── Helpers ──
-
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -69,7 +73,7 @@ function json(data: unknown, status = 200) {
   });
 }
 
-// ── Actions ──
+// ── Existing Actions ──
 
 async function getAssessments(supabase: ReturnType<typeof createClient>) {
   const { data, error } = await supabase
@@ -117,8 +121,7 @@ async function getAssessmentDetail(
       .order("created_at", { ascending: true }),
   ]);
 
-  if (sessionResult.error)
-    return json({ error: sessionResult.error.message }, 500);
+  if (sessionResult.error) return json({ error: sessionResult.error.message }, 500);
   if (!sessionResult.data) return json({ error: "Session not found" }, 404);
 
   const session = sessionResult.data;
@@ -158,7 +161,6 @@ async function createAssessment(
   params: any
 ) {
   const { user_id, consumer_info, mode, selected_bureaus } = params;
-
   if (!user_id) return json({ error: "user_id required" }, 400);
 
   const { data, error } = await supabase
@@ -179,12 +181,7 @@ async function createAssessment(
     .single();
 
   if (error) return json({ error: error.message }, 500);
-
-  return json({
-    session_id: data.id,
-    created_at: data.created_at,
-    status: "created",
-  });
+  return json({ session_id: data.id, created_at: data.created_at, status: "created" });
 }
 
 async function getReport(
@@ -222,13 +219,8 @@ async function generateReport(
 ) {
   if (!sessionId) return json({ error: "session_id required" }, 400);
 
-  // Fetch session + accounts
   const [sessionResult, accountsResult] = await Promise.all([
-    supabase
-      .from("dispute_sessions")
-      .select("*")
-      .eq("id", sessionId)
-      .maybeSingle(),
+    supabase.from("dispute_sessions").select("*").eq("id", sessionId).maybeSingle(),
     supabase
       .from("dispute_accounts")
       .select("*")
@@ -236,29 +228,21 @@ async function generateReport(
       .eq("is_selected", true),
   ]);
 
-  if (sessionResult.error)
-    return json({ error: sessionResult.error.message }, 500);
+  if (sessionResult.error) return json({ error: sessionResult.error.message }, 500);
   if (!sessionResult.data) return json({ error: "Session not found" }, 404);
 
   const session = sessionResult.data;
   const accounts = accountsResult.data || [];
 
-  if (accounts.length === 0) {
+  if (accounts.length === 0)
     return json({ error: "No selected accounts to dispute" }, 400);
-  }
 
   const bureaus = (session.selected_bureaus as string[]) || [];
-  if (bureaus.length === 0) {
-    return json({ error: "No bureaus selected" }, 400);
-  }
+  if (bureaus.length === 0) return json({ error: "No bureaus selected" }, 400);
 
-  // Call generate-dispute-letter for each bureau
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
-
-  if (!LOVABLE_API_KEY) {
-    return json({ error: "AI service not configured" }, 500);
-  }
+  if (!LOVABLE_API_KEY) return json({ error: "AI service not configured" }, 500);
 
   const letters: Record<string, string> = {};
   const errors: string[] = [];
@@ -298,13 +282,10 @@ async function generateReport(
         errors.push(`${bureau}: ${resp.status} - ${errText}`);
       }
     } catch (e) {
-      errors.push(
-        `${bureau}: ${e instanceof Error ? e.message : String(e)}`
-      );
+      errors.push(`${bureau}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
-  // Save letters to session
   if (Object.keys(letters).length > 0) {
     await supabase
       .from("dispute_sessions")
@@ -317,5 +298,168 @@ async function generateReport(
     letters_generated: Object.keys(letters).length,
     bureaus_completed: Object.keys(letters),
     errors: errors.length > 0 ? errors : undefined,
+  });
+}
+
+// ── Playlist / FanFuel Actions ──
+
+async function getPlaylistTargets(
+  supabase: ReturnType<typeof createClient>,
+  params: any
+) {
+  const { track_name, status, limit = 50 } = params;
+
+  let query = supabase
+    .from("playlist_targets")
+    .select("*")
+    .order("overlap_score", { ascending: false })
+    .limit(limit);
+
+  if (track_name) query = query.eq("track_name", track_name);
+  if (status) query = query.eq("pitch_status", status);
+
+  const { data, error } = await query;
+  if (error) return json({ error: error.message }, 500);
+
+  return json({ targets: data || [], count: (data || []).length });
+}
+
+async function updatePitchStatus(
+  supabase: ReturnType<typeof createClient>,
+  params: any
+) {
+  const { playlist_id, status, notes } = params;
+  if (!playlist_id || !status)
+    return json({ error: "playlist_id and status required" }, 400);
+
+  const validStatuses = ["not_pitched", "pitched", "replied", "placed", "declined", "do_not_pitch"];
+  if (!validStatuses.includes(status))
+    return json({ error: `Invalid status. Must be one of: ${validStatuses.join(", ")}` }, 400);
+
+  const update: any = { pitch_status: status, updated_at: new Date().toISOString() };
+  if (notes) update.notes = notes;
+  if (status === "pitched") update.pitched_at = new Date().toISOString();
+
+  const { data, error } = await supabase
+    .from("playlist_targets")
+    .update(update)
+    .eq("playlist_id", playlist_id)
+    .select("playlist_id, playlist_name, pitch_status")
+    .single();
+
+  if (error) return json({ error: error.message }, 500);
+  return json({ updated: data });
+}
+
+async function getPitchLog(
+  supabase: ReturnType<typeof createClient>,
+  params: any
+) {
+  const { track_name, limit = 100 } = params;
+
+  let query = supabase
+    .from("pitch_log")
+    .select("*, playlist_targets(playlist_name, platform, follower_count)")
+    .order("sent_at", { ascending: false })
+    .limit(limit);
+
+  if (track_name) query = query.eq("track_name", track_name);
+
+  const { data, error } = await query;
+  if (error) return json({ error: error.message }, 500);
+
+  const all = data || [];
+  const summary = {
+    total_pitched: all.length,
+    replied: all.filter((p: any) => p.reply_received).length,
+    placed: all.filter((p: any) => p.placed).length,
+    placement_rate: all.length > 0
+      ? Math.round((all.filter((p: any) => p.placed).length / all.length) * 100) + "%"
+      : "0%",
+  };
+
+  return json({ pitches: all, summary });
+}
+
+// ── Email Action ──
+
+async function sendPitchEmail(
+  supabase: ReturnType<typeof createClient>,
+  params: any
+) {
+  const {
+    playlist_id,
+    curator_email,
+    curator_name,
+    playlist_name,
+    track_name,
+    subject,
+    body,
+  } = params;
+
+  if (!curator_email || !subject || !body || !track_name || !playlist_id) {
+    return json(
+      { error: "curator_email, subject, body, track_name, and playlist_id are required" },
+      400
+    );
+  }
+
+  const resendKey = Deno.env.get("RESEND_API_KEY");
+  const fromEmail = Deno.env.get("FROM_EMAIL") || "pitches@fendifrost.com";
+
+  if (!resendKey) {
+    return json({ error: "RESEND_API_KEY not configured" }, 500);
+  }
+
+  const emailPayload = {
+    from: `Fendi Frost <${fromEmail}>`,
+    to: [curator_email],
+    subject,
+    text: body,
+    html: body.replace(/\n/g, "<br>"),
+  };
+
+  const resendResp = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${resendKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(emailPayload),
+  });
+
+  if (!resendResp.ok) {
+    const errText = await resendResp.text();
+    console.error("Resend error:", errText);
+    return json({ error: `Email send failed: ${resendResp.status} - ${errText}` }, 500);
+  }
+
+  const resendData = await resendResp.json();
+
+  const { error: logError } = await supabase.from("pitch_log").insert({
+    playlist_id,
+    track_name,
+    curator_email,
+    subject,
+    email_body: body,
+    sent_at: new Date().toISOString(),
+    resend_message_id: resendData.id,
+  });
+
+  if (logError) {
+    console.error("Failed to log pitch:", logError.message);
+  }
+
+  await supabase
+    .from("playlist_targets")
+    .update({ pitch_status: "pitched", pitched_at: new Date().toISOString() })
+    .eq("playlist_id", playlist_id);
+
+  return json({
+    success: true,
+    message_id: resendData.id,
+    sent_to: curator_email,
+    track: track_name,
+    playlist: playlist_name || playlist_id,
   });
 }
