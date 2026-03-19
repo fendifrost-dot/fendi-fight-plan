@@ -14,9 +14,9 @@ Deno.serve(async (req) => {
   try {
     // ── Auth: shared secret ──
     const apiKey = req.headers.get("x-api-key");
-    const expectedKey = Deno.env.get("CREDIT_COMPASS_API_KEY");
+    const expectedKey = Deno.env.get("FANFUEL_HUB_KEY");
     if (!expectedKey) {
-      console.error("CREDIT_COMPASS_API_KEY not configured");
+      console.error("FANFUEL_HUB_KEY not configured");
       return json({ error: "Server misconfiguration" }, 500);
     }
     if (!apiKey || apiKey !== expectedKey) {
