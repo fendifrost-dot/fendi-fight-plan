@@ -43,26 +43,21 @@ Deno.serve(async (req) => {
     const trackId = track.id;
     const artistId = track.artists[0].id;
 
-    // Step 3: Get audio features + related artists in parallel
-    const [featuresData, relatedData] = await Promise.all([
-      spot(`https://api.spotify.com/v1/audio-features/${trackId}`),
-      spot(`https://api.spotify.com/v1/artists/${artistId}/related-artists`),
-    ]);
+    // audio-features deprecated Nov 2024 - use null
+    const audio_features = null;
 
     const features = featuresData;
     const relatedArtists = (relatedData?.artists || []).slice(0, 5);
     const relatedIds = relatedArtists.map((a: any) => a.id);
 
-    // Step 4: Get recommendations seeded by track + related artists
-    const recsUrl = new URL("https://api.spotify.com/v1/recommendations");
-    recsUrl.searchParams.set("seed_tracks", trackId);
-    if (relatedIds[0]) recsUrl.searchParams.set("seed_artists", relatedIds[0]);
-    recsUrl.searchParams.set("limit", "100");
-    if (features?.tempo) {
-      recsUrl.searchParams.set("target_tempo", String(Math.round(features.tempo)));
-      recsUrl.searchParams.set("min_tempo", String(Math.round(features.tempo * 0.88)));
-      recsUrl.searchParams.set("max_tempo", String(Math.round(features.tempo * 1.12)));
-    }
+    // recommendations deprecated Nov 2024 - use artist genres + related artists
+    const artistResp = await fetch(`https://api.spotify.com/v1/artists/${artistId}`, { headers: { Authorization: `Bearer ${spotifyToken}` } });
+    const artistData = await artistResp.json();
+    const relatedResp = await fetch(`https://api.spotify.com/v1/artists/${artistId}/related-artists`, { headers: { Authorization: `Bearer ${spotifyToken}` } });
+    const relatedData = await relatedResp.json();
+    const genres = (artistData.genres || []).slice(0, 3);
+    const relatedNames = ((relatedData.artists || []).slice(0, 4) as any[]).map((a: any) => a.name);
+    const recommendedArtists = relatedNames;
     if (features?.energy !== undefined) {
       recsUrl.searchParams.set("target_energy", String(features.energy));
       recsUrl.searchParams.set("min_energy", String(Math.max(0, features.energy - 0.2)));
