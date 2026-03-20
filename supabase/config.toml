@@ -1,1 +1,8 @@
+[functions.control-center-api]
+verify_jwt = false
 
+[functions.playlist-research]
+verify_jwt = false
+
+[functions.send-pitch-email]
+verify_jwt = false
