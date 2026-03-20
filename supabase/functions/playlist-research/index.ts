@@ -3,24 +3,43 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key, x-supabase-client-platform, x-supabase-client-runtime",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key",
 };
 
-function json(data, status) {
-  if (status === undefined) status = 200;
+const ARTIST_DNA = {
+  core_sound: ["Larry June", "Dom Kennedy", "Freddie Gibbs", "Stove God Cooks", "Boldy James"],
+  bigger_comps: ["Nipsey Hussle", "Wale", "J Cole"],
+  drill_roots: ["G Herbo", "Young Pappy"],
+  smaller_comps: ["Pirate Reem", "Joel Q"],
+};
+
+function allDna() {
+  return [...ARTIST_DNA.core_sound, ...ARTIST_DNA.bigger_comps, ...ARTIST_DNA.drill_roots, ...ARTIST_DNA.smaller_comps];
+}
+
+function jsonRes(data, status) {
   return new Response(JSON.stringify(data), {
-    status: status,
-    headers: Object.assign({}, corsHeaders, { "Content-Type": "application/json" }),
+    status: status || 200,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 }
 
-function getProvidedHubKey(req) {
-  const xApiKey = req.headers.get("x-api-key");
-  if (xApiKey) return xApiKey;
-  const apikey = req.headers.get("apikey");
-  if (apikey) return apikey;
-  const auth = req.headers.get("authorization") || "";
-  return auth.replace(/^Bearer\s+/i, "").trim();
+function getHubKey(req) {
+  return req.headers.get("x-api-key") || req.headers.get("apikey") ||
+    (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
+}
+
+function computeBot(name, followers, trackCount) {
+  let score = 0;
+  const flags = [];
+  const n = (name || "").toLowerCase();
+  if (followers > 50000 && followers % 10000 === 0) { score += 25; flags.push("round_followers"); }
+  if (["submit", "promotion", "promo", "placement", "guaranteed", "pay", "playlist push"].some(k => n.includes(k))) {
+    score += 35; flags.push("pay_to_play");
+  }
+  if ((trackCount || 999) < 3) { score += 20; flags.push("tiny_playlist"); }
+  if (followers === 0) { score += 15; flags.push("zero_followers"); }
+  return { bot_score: Math.min(100, score), bot_flags: flags };
 }
 
 Deno.serve(async (req) => {
@@ -28,142 +47,111 @@ Deno.serve(async (req) => {
   try {
     let body = {};
     try { body = await req.json(); } catch (_) {}
-    const track_name = body.track_name;
-    if (!track_name || typeof track_name !== "string") return json({ error: "track_name required" }, 400);
+    const track_name = (body.track_name || "").trim();
+    const user_vibe = (body.user_vibe || "").trim();
+    if (!track_name) return jsonRes({ error: "track_name required" }, 400);
 
-    const expectedKey = Deno.env.get("FANFUEL_HUB_KEY");
-    if (!expectedKey) return json({ error: "FANFUEL_HUB_KEY not configured" }, 500);
-    const providedKey = getProvidedHubKey(req);
-    if (!providedKey || providedKey.trim() !== expectedKey.trim()) return json({ error: "Unauthorized" }, 401);
+    const expected = Deno.env.get("FANFUEL_HUB_KEY");
+    if (!expected || getHubKey(req).trim() !== expected.trim()) return jsonRes({ error: "Unauthorized" }, 401);
 
-    const spotifyClientId = Deno.env.get("SPOTIFY_CLIENT_ID");
-    const spotifyClientSecret = Deno.env.get("SPOTIFY_CLIENT_SECRET");
-    if (!spotifyClientId || !spotifyClientSecret) return json({ error: "Spotify credentials not configured" }, 500);
+    const cid = Deno.env.get("SPOTIFY_CLIENT_ID");
+    const csec = Deno.env.get("SPOTIFY_CLIENT_SECRET");
+    if (!cid || !csec) return jsonRes({ error: "Spotify credentials not configured" }, 500);
 
-    // Step 1: Spotify token
     const tokenResp = await fetch("https://accounts.spotify.com/api/token", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Authorization: "Basic " + btoa(spotifyClientId + ":" + spotifyClientSecret),
-      },
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "Authorization": "Basic " + btoa(cid + ":" + csec) },
       body: "grant_type=client_credentials",
     });
-    if (!tokenResp.ok) {
-      const err = await tokenResp.text().catch(() => "");
-      return json({ error: "Spotify auth failed", status: tokenResp.status, detail: err.slice(0, 200) }, 502);
+    if (!tokenResp.ok) { const t = await tokenResp.text(); return jsonRes({ error: "Spotify token failed", detail: t.slice(0, 200) }, 502); }
+    const { access_token: token } = await tokenResp.json();
+    if (!token) return jsonRes({ error: "Spotify token missing" }, 502);
+    const H = { Authorization: "Bearer " + token };
+
+    const trackData = await fetch("https://api.spotify.com/v1/search?q=" + encodeURIComponent(track_name) + "&type=track&limit=3", { headers: H })
+      .then(r => r.json()).catch(() => ({}));
+    const track = trackData?.tracks?.items?.[0];
+    const artistName = track?.artists?.[0]?.name || "";
+
+    const terms = [...new Set([track_name, artistName, user_vibe, ...allDna()].filter(Boolean))].slice(0, 16);
+    const seen = new Map();
+
+    for (const term of terms) {
+      const resp = await fetch("https://api.spotify.com/v1/search?q=" + encodeURIComponent(term) + "&type=playlist&limit=10", { headers: H });
+      if (!resp.ok) continue;
+      const data = await resp.json().catch(() => ({}));
+      for (const pl of data?.playlists?.items || []) {
+        if (!pl?.id) continue;
+        const pid = "spotify:" + pl.id;
+        if (seen.has(pid)) { seen.get(pid).matched_queries.push(term); continue; }
+        const followers = pl.followers?.total ?? pl.tracks?.total ?? 0;
+        const tc = pl.tracks?.total ?? 0;
+        const { bot_score, bot_flags } = computeBot(pl.name, followers, tc);
+        seen.set(pid, {
+          playlist_id: pid, platform: "spotify", playlist_name: pl.name, name: pl.name,
+          curator_name: pl.owner?.display_name ?? null, followers, track_count: tc,
+          matched_queries: [term], bot_score, bot_flags,
+          research_context: { search_term: term, artist_dna: ARTIST_DNA, user_vibe: user_vibe || null, audio_features: null },
+        });
+      }
     }
-    const tokenJson = await tokenResp.json().catch(() => ({}));
-    const accessToken = tokenJson.access_token;
-    if (!accessToken) return json({ error: "Spotify auth failed: missing access_token" }, 502);
 
-    const spotFetch = async function(url) {
-      const r = await fetch(url, { headers: { Authorization: "Bearer " + accessToken } });
-      return r.json().catch(() => ({}));
-    };
-
-    // Step 2: Search track
-    const searchData = await spotFetch("https://api.spotify.com/v1/search?q=" + encodeURIComponent(track_name) + "&type=track&limit=3");
-    const track = searchData && searchData.tracks && searchData.tracks.items && searchData.tracks.items[0];
-    if (!track) return json({ error: "Track not found on Spotify: " + track_name }, 404);
-
-    const trackId = track.id;
-    const artist = track.artists && track.artists[0];
-    const artistId = artist && artist.id;
-    const artistName = (artist && artist.name) || track_name;
-
-    // Step 3: Artist info + related (free endpoints only)
-    let genres = [];
-    let relatedArtists = [];
-    if (artistId) {
-      const artistData = await spotFetch("https://api.spotify.com/v1/artists/" + artistId);
-      genres = (artistData && Array.isArray(artistData.genres) ? artistData.genres : []).slice(0, 5);
-      const relatedData = await spotFetch("https://api.spotify.com/v1/artists/" + artistId + "/related-artists");
-      relatedArtists = (relatedData && Array.isArray(relatedData.artists) ? relatedData.artists : []).slice(0, 3).map(function(a) { return a && a.name; }).filter(Boolean);
-    }
-
-    // Step 4: Build search terms
-    const termSet = new Set([track_name, artistName]);
-    genres.slice(0, 3).forEach(function(g) { termSet.add(g); });
-    relatedArtists.slice(0, 2).forEach(function(a) { termSet.add(a); });
-    const queryTerms = Array.from(termSet).slice(0, 6);
-
-    // Step 5: Search playlists sequentially
-    const playlistMap = new Map();
-    for (let qi = 0; qi < queryTerms.length; qi++) {
-      const query = queryTerms[qi];
-      try {
-        const plData = await spotFetch("https://api.spotify.com/v1/search?q=" + encodeURIComponent(query) + "&type=playlist&limit=8");
-        const items = (plData && plData.playlists && plData.playlists.items) || [];
-        for (let pi = 0; pi < items.length; pi++) {
-          const pl = items[pi];
-          if (!pl || !pl.id) continue;
-          const key = "spotify:" + pl.id;
-          const followerCount = (pl.followers && typeof pl.followers.total === "number") ? pl.followers.total
-            : (pl.tracks && typeof pl.tracks.total === "number") ? pl.tracks.total : 0;
-          if (!playlistMap.has(key)) {
-            playlistMap.set(key, {
-              playlist_id: key,
-              platform: "spotify",
-              playlist_name: pl.name,
-              name: pl.name,
-              curator_name: (pl.owner && pl.owner.display_name) || null,
-              followers: followerCount,
-              track_count: (pl.tracks && pl.tracks.total) || 0,
-              matched_queries: [query],
-              track_name: track_name,
-              pitch_status: "not_pitched",
-              research_context: { audio_features: null, genres: genres, related_artists: relatedArtists, search_term: query },
-            });
-          } else {
-            playlistMap.get(key).matched_queries.push(query);
-          }
+    const scId = Deno.env.get("SOUNDCLOUD_CLIENT_ID");
+    if (scId) {
+      for (const term of terms.slice(0, 6)) {
+        const resp = await fetch("https://api.soundcloud.com/playlists?q=" + encodeURIComponent(term) + "&limit=5&client_id=" + encodeURIComponent(scId));
+        if (!resp.ok) continue;
+        const list = await resp.json().catch(() => []);
+        for (const pl of (Array.isArray(list) ? list : list?.collection || [])) {
+          if (!pl?.id) continue;
+          const pid = "soundcloud:" + pl.id;
+          if (seen.has(pid)) { seen.get(pid).matched_queries.push(term); continue; }
+          const followers = pl.likes_count || 0;
+          const tc = pl.track_count || 0;
+          const { bot_score, bot_flags } = computeBot(pl.title, followers, tc);
+          seen.set(pid, {
+            playlist_id: pid, platform: "soundcloud", playlist_name: pl.title, name: pl.title,
+            curator_name: pl.user?.username ?? null, followers, track_count: tc,
+            matched_queries: [term], bot_score, bot_flags,
+            research_context: { search_term: term, artist_dna: ARTIST_DNA, user_vibe: user_vibe || null },
+          });
         }
-      } catch (_) {}
+      }
     }
 
-    // Step 6: Filter + rank
-    const results = [];
-    for (const entry of playlistMap.values()) {
-      const name = (entry.playlist_name || "").toLowerCase();
-      if (!entry.playlist_name) continue;
-      if (["submit", "promo", "placement", "pay"].some(function(k) { return name.includes(k); })) continue;
-      results.push(entry);
-    }
-    results.sort(function(a, b) { return (b.matched_queries.length - a.matched_queries.length) || (b.followers - a.followers); });
-    const top = results.slice(0, 50);
+    const rows = [...seen.values()]
+      .filter(r => r.bot_score < 70)
+      .sort((a, b) => (b.matched_queries.length - a.matched_queries.length) || (b.followers - a.followers))
+      .slice(0, 50);
 
-    // Step 7: Upsert (never crash the response)
-    const supabaseUrl = Deno.env.get("SUPABASE_URL");
-    const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    if (supabaseUrl && supabaseKey && top.length > 0) {
+    const sbUrl = Deno.env.get("SUPABASE_URL");
+    const sbKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (sbUrl && sbKey && rows.length > 0) {
       try {
-        const sb = createClient(supabaseUrl, supabaseKey);
-        const { error: uErr } = await sb.from("playlist_targets").upsert(
-          top.map(function(pl) {
-            return {
-              playlist_id: pl.playlist_id, platform: pl.platform,
-              playlist_name: pl.playlist_name, curator_name: pl.curator_name,
-              track_name: pl.track_name, followers: pl.followers,
-              pitch_status: pl.pitch_status, research_context: pl.research_context,
-            };
-          }),
+        const sb = createClient(sbUrl, sbKey);
+        await sb.from("playlist_targets").upsert(
+          rows.map(r => ({
+            playlist_id: r.playlist_id, platform: r.platform, playlist_name: r.playlist_name,
+            curator_name: r.curator_name, track_name, follower_count: r.followers,
+            track_count: r.track_count, overlap_score: r.matched_queries.length,
+            fraud_score: r.bot_score, fraud_verdict: r.bot_score >= 40 ? "suspicious" : "safe",
+            pitch_status: "not_pitched", research_context: { ...r.research_context, matched_queries: r.matched_queries, bot_flags: r.bot_flags },
+          })),
           { onConflict: "playlist_id" }
         );
-        if (uErr) console.error("Upsert error:", uErr.message);
-      } catch (uEx) { console.error("Upsert exception:", uEx); }
+      } catch (e) { console.error("upsert:", e); }
     }
 
-    return json({
-      playlists: top.map(function(p) { return { playlist_id: p.playlist_id, name: p.name || p.playlist_name, followers: p.followers, platform: p.platform }; }),
-      total: top.length,
-      track: { id: trackId, name: track.name, artist: artistName },
-    }, 200);
-
+    return jsonRes({
+      track: track ? { id: track.id, name: track.name, artist: artistName } : { name: track_name, artist: artistName },
+      artist_dna: ARTIST_DNA,
+      playlists: rows.map(r => ({ playlist_id: r.playlist_id, name: r.name, followers: r.followers, platform: r.platform, bot_score: r.bot_score, bot_flags: r.bot_flags, overlap_score: r.matched_queries.length })),
+      total: rows.length,
+    });
   } catch (e) {
     return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }), {
       status: 500,
-      headers: Object.assign({}, corsHeaders, { "Content-Type": "application/json" }),
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });
