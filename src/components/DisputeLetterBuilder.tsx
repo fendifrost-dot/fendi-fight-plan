@@ -1,5 +1,22 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
-import { FileText, Loader2, Copy, Check, AlertTriangle, Scale, Shield, HelpCircle, User, MapPin, Building2, Pencil, Eye, RotateCcw } from "lucide-react";
+import {
+  FileText,
+  Loader2,
+  Copy,
+  Check,
+  AlertTriangle,
+  Scale,
+  Shield,
+  HelpCircle,
+  User,
+  MapPin,
+  Building2,
+  Pencil,
+  Eye,
+  RotateCcw,
+  Download,
+  FileDown,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -14,6 +31,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { exportAsWord, exportAsPdf } from "@/lib/letter-export";
 
 // Storage key for persistence
 const STORAGE_KEY = "dispute_letter_builder_state";
@@ -39,7 +57,6 @@ const BUREAU_DATA = {
 
 type BureauKey = keyof typeof BUREAU_DATA;
 
-// Consumer info interface
 interface ConsumerInfo {
   fullName: string;
   addressLine1: string;
@@ -47,7 +64,6 @@ interface ConsumerInfo {
   cityStateZip: string;
 }
 
-// Survey answers interface
 interface DisputeSurvey {
   isFraudulent: boolean;
   isIdentityTheft: boolean;
@@ -63,7 +79,6 @@ interface DisputeSurvey {
   additionalFacts: string;
 }
 
-// Extracted data interface (from analysis)
 interface ExtractedData {
   fullLegalName: string;
   currentAddress: string;
@@ -74,15 +89,34 @@ interface ExtractedData {
     account_number: string;
     date_opened: string;
     derogatory_triggers: string[];
+    balance?: string;
+    past_due?: string;
     source?: string;
   }[];
   inquiries: { creditor_name: string; date: string; type: string; source?: string }[];
-  collections: { creditor_name: string; account_number: string; original_creditor: string; balance: string; source?: string }[];
-  chargeOffs: { creditor_name: string; account_number: string; date_charged_off: string; balance: string; source?: string }[];
-  publicRecords: { type: string; court_jurisdiction: string; filing_date: string; status: string; source?: string }[];
+  collections: {
+    creditor_name: string;
+    account_number: string;
+    original_creditor: string;
+    balance: string;
+    source?: string;
+  }[];
+  chargeOffs: {
+    creditor_name: string;
+    account_number: string;
+    date_charged_off: string;
+    balance: string;
+    source?: string;
+  }[];
+  publicRecords: {
+    type: string;
+    court_jurisdiction: string;
+    filing_date: string;
+    status: string;
+    source?: string;
+  }[];
 }
 
-// Persisted state interface
 interface PersistedState {
   consumerInfo: ConsumerInfo;
   selectedBureaus: BureauKey[];
@@ -100,12 +134,12 @@ const surveyQuestions = [
   {
     key: "isFraudulent" as const,
     question: "Do you assert that any of the disputed items are fraudulent?",
-    tooltip: "Fraud claims trigger heightened investigation requirements under FCRA §611.",
+    tooltip: "Fraud claims trigger heightened investigation requirements under FCRA Â§611.",
   },
   {
     key: "isIdentityTheft" as const,
     question: "Do you consider yourself a victim of identity theft?",
-    tooltip: "Identity theft triggers FCRA §605B blocking rights and additional protections.",
+    tooltip: "Identity theft triggers FCRA Â§605B blocking rights and additional protections.",
   },
   {
     key: "hasPoliceReport" as const,
@@ -120,12 +154,12 @@ const surveyQuestions = [
   {
     key: "wasDataBreach" as const,
     question: "Have you been exposed to a known data breach?",
-    tooltip: "Data breaches at financial institutions, employers, or government agencies trigger heightened duty of care.",
+    tooltip: "Data breaches trigger heightened duty of care for all accounts opened after the breach.",
   },
   {
     key: "wasReinserted" as const,
     question: "Have any disputed items been previously removed and later reinserted?",
-    tooltip: "Reinsertion requires certification and notice under FCRA §611(a)(5).",
+    tooltip: "Reinsertion requires certification and notice under FCRA Â§611(a)(5)(B).",
     hasDetails: true,
     detailsKey: "reinsertedDetails" as const,
     detailsPlaceholder: "Provide dates, bureau, and items that were reinserted...",
@@ -143,22 +177,20 @@ const surveyQuestions = [
   {
     key: "hasPersonalInfoErrors" as const,
     question: "Are there inaccuracies in your personal info (name, address, employer) that caused these accounts to be reported?",
-    tooltip: "Identifier errors undermine the accuracy of associated account data.",
+    tooltip: "Identifier errors undermine the accuracy of ALL associated account data.",
   },
   {
     key: "hasPreviousDisputes" as const,
     question: "Have you previously disputed any of these items with the bureaus?",
-    tooltip: "Prior disputes without proper investigation = FCRA violation.",
+    tooltip: "Prior disputes without proper investigation = FCRA willful noncompliance (Â§616).",
   },
 ];
 
-// Helper to load persisted state from localStorage
 const loadPersistedState = (): PersistedState | null => {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (!stored) return null;
     const parsed = JSON.parse(stored) as PersistedState;
-    // Check if data is less than 24 hours old
     if (Date.now() - parsed.timestamp > 24 * 60 * 60 * 1000) {
       localStorage.removeItem(STORAGE_KEY);
       return null;
@@ -169,8 +201,7 @@ const loadPersistedState = (): PersistedState | null => {
   }
 };
 
-// Helper to save state to localStorage
-const savePersistedState = (state: Omit<PersistedState, 'timestamp'>) => {
+const savePersistedState = (state: Omit<PersistedState, "timestamp">) => {
   try {
     const toSave: PersistedState = { ...state, timestamp: Date.now() };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
@@ -182,56 +213,43 @@ const savePersistedState = (state: Omit<PersistedState, 'timestamp'>) => {
 const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuilderProps) => {
   const { toast } = useToast();
 
-  // Parse extracted address into components if available
   const parseAddress = (addr: string) => {
-    // Try to parse "City, State ZIP" pattern from the end
-    const parts = addr.split(',').map(p => p.trim());
+    const parts = addr.split(",").map((p) => p.trim());
     if (parts.length >= 2) {
-      return {
-        line1: parts.slice(0, -1).join(', '),
-        cityStateZip: parts[parts.length - 1],
-      };
+      return { line1: parts.slice(0, -1).join(", "), cityStateZip: parts[parts.length - 1] };
     }
-    return { line1: addr, cityStateZip: '' };
+    return { line1: addr, cityStateZip: "" };
   };
 
-  const parsedAddr = parseAddress(extractedData.currentAddress || '');
+  const parsedAddr = parseAddress(extractedData.currentAddress || "");
 
-  // Build the canonical consumer info from current extractedData props.
-  // This is recomputed on every render so we always have the latest client data.
-  const currentClientInfo = useMemo<ConsumerInfo>(() => ({
-    fullName: extractedData.fullLegalName || '',
-    addressLine1: parsedAddr.line1,
-    addressLine2: '',
-    cityStateZip: parsedAddr.cityStateZip,
-  }), [extractedData.fullLegalName, parsedAddr.line1, parsedAddr.cityStateZip]);
+  const currentClientInfo = useMemo<ConsumerInfo>(
+    () => ({
+      fullName: extractedData.fullLegalName || "",
+      addressLine1: parsedAddr.line1,
+      addressLine2: "",
+      cityStateZip: parsedAddr.cityStateZip,
+    }),
+    [extractedData.fullLegalName, parsedAddr.line1, parsedAddr.cityStateZip]
+  );
 
-  // Track which client's data we last hydrated (using a ref to avoid re-render loops)
-  const lastHydratedRef = useRef<string>('');
+  const lastHydratedRef = useRef<string>("");
 
-  // Consumer info state - ALWAYS initialize from current extractedData, never localStorage
   const [consumerInfo, setConsumerInfo] = useState<ConsumerInfo>(() => {
     lastHydratedRef.current = `${extractedData.fullLegalName}|${extractedData.currentAddress}`;
     return currentClientInfo;
   });
 
-  // CRITICAL: When extractedData changes (new client analyzed), reset consumer info.
-  // Uses a ref comparison so it works even when both clients have empty identity fields
-  // (the analysis results / accounts will differ, triggering a prop change upstream).
   useEffect(() => {
     const newKey = `${extractedData.fullLegalName}|${extractedData.currentAddress}`;
     if (newKey !== lastHydratedRef.current) {
-      // New client detected - discard all prior state and hydrate fresh
       setConsumerInfo(currentClientInfo);
       lastHydratedRef.current = newKey;
-      // Clear persisted state so old client data doesn't resurface on remount
       localStorage.removeItem(STORAGE_KEY);
     }
   }, [extractedData.fullLegalName, extractedData.currentAddress, currentClientInfo]);
 
-  // Bureau selection
   const [selectedBureaus, setSelectedBureaus] = useState<BureauKey[]>([]);
-
   const [survey, setSurvey] = useState<DisputeSurvey>({
     isFraudulent: false,
     isIdentityTheft: false,
@@ -246,30 +264,24 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
     hasPreviousDisputes: false,
     additionalFacts: "",
   });
-
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedLetters, setGeneratedLetters] = useState<{ bureau: BureauKey; letter: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [exportingWord, setExportingWord] = useState<number | null>(null);
+  const [exportingPdf, setExportingPdf] = useState<number | null>(null);
 
-  // Auto-save state to localStorage on every change
   useEffect(() => {
-    savePersistedState({
-      consumerInfo,
-      selectedBureaus,
-      survey,
-      generatedLetters,
-    });
+    savePersistedState({ consumerInfo, selectedBureaus, survey, generatedLetters });
   }, [consumerInfo, selectedBureaus, survey, generatedLetters]);
 
-  // Clear persisted state
   const clearSession = useCallback(() => {
     localStorage.removeItem(STORAGE_KEY);
     setConsumerInfo({
-      fullName: extractedData.fullLegalName || '',
+      fullName: extractedData.fullLegalName || "",
       addressLine1: parsedAddr.line1,
-      addressLine2: '',
+      addressLine2: "",
       cityStateZip: parsedAddr.cityStateZip,
     });
     setSelectedBureaus([]);
@@ -290,29 +302,23 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
     setGeneratedLetters([]);
     setError(null);
     setEditingIndex(null);
-    toast({
-      title: "Session cleared",
-      description: "All inputs and generated letters have been reset.",
-    });
+    toast({ title: "Session cleared", description: "All inputs and generated letters have been reset." });
   }, [extractedData.fullLegalName, parsedAddr.line1, parsedAddr.cityStateZip, toast]);
 
   const updateConsumerInfo = <K extends keyof ConsumerInfo>(key: K, value: string) => {
-    setConsumerInfo(prev => ({ ...prev, [key]: value }));
+    setConsumerInfo((prev) => ({ ...prev, [key]: value }));
   };
 
   const toggleBureau = (bureau: BureauKey) => {
-    setSelectedBureaus(prev =>
-      prev.includes(bureau)
-        ? prev.filter(b => b !== bureau)
-        : [...prev, bureau]
+    setSelectedBureaus((prev) =>
+      prev.includes(bureau) ? prev.filter((b) => b !== bureau) : [...prev, bureau]
     );
   };
 
   const updateSurvey = <K extends keyof DisputeSurvey>(key: K, value: DisputeSurvey[K]) => {
-    setSurvey(prev => ({ ...prev, [key]: value }));
+    setSurvey((prev) => ({ ...prev, [key]: value }));
   };
 
-  // Validation: Check if all required fields are filled
   const validationErrors = useMemo(() => {
     const errors: string[] = [];
     if (!consumerInfo.fullName.trim()) errors.push("Full legal name is required");
@@ -326,56 +332,53 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
 
   const handleGenerateLetter = async () => {
     if (!canGenerate) {
-      setError(`Cannot generate letter: ${validationErrors.join(', ')}`);
+      setError(`Cannot generate letter: ${validationErrors.join(", ")}`);
       return;
     }
-
     setIsGenerating(true);
     setError(null);
     setGeneratedLetters([]);
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 120000); // 120s for multiple letters
+    const timeoutId = setTimeout(() => controller.abort(), 120000);
 
     try {
-      // Generate letters for each selected bureau
       const letterPromises = selectedBureaus.map(async (bureauKey) => {
         const bureau = BUREAU_DATA[bureauKey];
-        const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-dispute-letter`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({
-            survey,
-            extractedData,
-            consumerInfo,
-            bureau: {
-              key: bureauKey,
-              legalName: bureau.legalName,
-              address: bureau.address,
-              cityStateZip: bureau.cityStateZip,
+        const response = await fetch(
+          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-dispute-letter`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${accessToken}`,
             },
-          }),
-          signal: controller.signal,
-        });
-
+            body: JSON.stringify({
+              survey,
+              extractedData,
+              consumerInfo,
+              bureau: {
+                key: bureauKey,
+                legalName: bureau.legalName,
+                address: bureau.address,
+                cityStateZip: bureau.cityStateZip,
+              },
+            }),
+            signal: controller.signal,
+          }
+        );
         const data = await response.json();
-
         if (!response.ok) {
           throw new Error(data.error || `Failed to generate letter for ${bureau.legalName}`);
         }
-
         return { bureau: bureauKey, letter: data.letter };
       });
 
       const results = await Promise.all(letterPromises);
       setGeneratedLetters(results);
-
       toast({
-        title: `${results.length} dispute letter${results.length > 1 ? 's' : ''} generated`,
-        description: "Your letters are ready. Review and copy them.",
+        title: `${results.length} dispute letter${results.length > 1 ? "s" : ""} generated`,
+        description: "Your letters are ready. Download as Word or PDF.",
       });
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
@@ -406,7 +409,34 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
     setTimeout(() => setCopiedIndex(null), 2000);
   };
 
-  // Count disputable items
+  const handleDownloadWord = async (index: number) => {
+    const item = generatedLetters[index];
+    if (!item) return;
+    setExportingWord(index);
+    try {
+      await exportAsWord(item.letter, BUREAU_DATA[item.bureau].legalName);
+      toast({ title: "Word document downloaded", description: `${BUREAU_DATA[item.bureau].legalName} letter saved as .docx` });
+    } catch (err) {
+      toast({ title: "Download failed", description: "Could not generate Word document.", variant: "destructive" });
+    } finally {
+      setExportingWord(null);
+    }
+  };
+
+  const handleDownloadPdf = (index: number) => {
+    const item = generatedLetters[index];
+    if (!item) return;
+    setExportingPdf(index);
+    try {
+      exportAsPdf(item.letter, BUREAU_DATA[item.bureau].legalName);
+      toast({ title: "PDF downloaded", description: `${BUREAU_DATA[item.bureau].legalName} letter saved as .pdf` });
+    } catch (err) {
+      toast({ title: "Download failed", description: "Could not generate PDF.", variant: "destructive" });
+    } finally {
+      setExportingPdf(null);
+    }
+  };
+
   const totalItems =
     extractedData.inaccurateNames.length +
     extractedData.inaccurateAddresses.length +
@@ -428,8 +458,7 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
           Dispute Letter Builder
         </h3>
         <p className="text-muted-foreground max-w-2xl mx-auto">
-          Generate print-ready dispute letters for {totalItems} identified items.
-          All letters are automatically addressed with correct bureau information.
+          Generate print-ready dispute letters for {totalItems} identified items. Download as Word (.docx) or PDF.
         </p>
       </div>
 
@@ -442,7 +471,6 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
         <p className="text-sm text-muted-foreground mb-6">
           This information will appear in the letterhead. Pre-populated from your credit report.
         </p>
-
         <div className="grid gap-4">
           <div className="space-y-2">
             <Label htmlFor="fullName">Full Legal Name *</Label>
@@ -450,46 +478,41 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
               id="fullName"
               placeholder="John Michael Smith"
               value={consumerInfo.fullName}
-              onChange={(e) => updateConsumerInfo('fullName', e.target.value)}
+              onChange={(e) => updateConsumerInfo("fullName", e.target.value)}
               className="bg-muted/30"
             />
           </div>
-
           <div className="space-y-2">
             <Label htmlFor="addressLine1">Street Address *</Label>
             <Input
               id="addressLine1"
               placeholder="123 Main Street"
               value={consumerInfo.addressLine1}
-              onChange={(e) => updateConsumerInfo('addressLine1', e.target.value)}
+              onChange={(e) => updateConsumerInfo("addressLine1", e.target.value)}
               className="bg-muted/30"
             />
           </div>
-
           <div className="space-y-2">
             <Label htmlFor="addressLine2">Apartment / Suite (Optional)</Label>
             <Input
               id="addressLine2"
               placeholder="Apt 4B"
               value={consumerInfo.addressLine2}
-              onChange={(e) => updateConsumerInfo('addressLine2', e.target.value)}
+              onChange={(e) => updateConsumerInfo("addressLine2", e.target.value)}
               className="bg-muted/30"
             />
           </div>
-
           <div className="space-y-2">
             <Label htmlFor="cityStateZip">City, State ZIP *</Label>
             <Input
               id="cityStateZip"
-              placeholder="New York, NY 10001"
+              placeholder="Chicago, IL 60827"
               value={consumerInfo.cityStateZip}
-              onChange={(e) => updateConsumerInfo('cityStateZip', e.target.value)}
+              onChange={(e) => updateConsumerInfo("cityStateZip", e.target.value)}
               className="bg-muted/30"
             />
           </div>
         </div>
-
-        {/* Clear Session Button */}
         {(generatedLetters.length > 0 || selectedBureaus.length > 0) && (
           <div className="mt-6 pt-4 border-t border-border/50">
             <Button
@@ -514,7 +537,6 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
         <p className="text-sm text-muted-foreground mb-6">
           A separate letter will be generated for each bureau selected. Addresses are pre-configured.
         </p>
-
         <div className="grid gap-4">
           {(Object.keys(BUREAU_DATA) as BureauKey[]).map((key) => {
             const bureau = BUREAU_DATA[key];
@@ -554,7 +576,6 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
         <p className="text-sm text-muted-foreground mb-6">
           Your answers shape the legal arguments in your dispute letter.
         </p>
-
         <div className="space-y-6">
           <TooltipProvider>
             {surveyQuestions.map((q) => (
@@ -574,22 +595,28 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
                     </Tooltip>
                   </div>
                   <div className="flex items-center gap-3">
-                    <span className={cn(
-                      "text-sm font-medium",
-                      !survey[q.key] ? "text-muted-foreground" : "text-muted-foreground/50"
-                    )}>No</span>
+                    <span
+                      className={cn(
+                        "text-sm font-medium",
+                        !survey[q.key] ? "text-muted-foreground" : "text-muted-foreground/50"
+                      )}
+                    >
+                      No
+                    </span>
                     <Switch
                       checked={survey[q.key] as boolean}
                       onCheckedChange={(checked) => updateSurvey(q.key, checked)}
                     />
-                    <span className={cn(
-                      "text-sm font-medium",
-                      survey[q.key] ? "text-primary" : "text-muted-foreground/50"
-                    )}>Yes</span>
+                    <span
+                      className={cn(
+                        "text-sm font-medium",
+                        survey[q.key] ? "text-primary" : "text-muted-foreground/50"
+                      )}
+                    >
+                      Yes
+                    </span>
                   </div>
                 </div>
-
-                {/* Conditional details field */}
                 {q.hasDetails && survey[q.key] && (
                   <Textarea
                     placeholder={q.detailsPlaceholder}
@@ -601,8 +628,6 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
               </div>
             ))}
           </TooltipProvider>
-
-          {/* Additional facts */}
           <div className="space-y-2 pt-4 border-t border-border/50">
             <Label className="text-foreground font-medium">
               Additional Facts or Context (Optional)
@@ -632,7 +657,9 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
             <p className="text-sm text-muted-foreground">Inaccurate Addresses</p>
           </div>
           <div className="text-center p-3 bg-muted/30 rounded-lg">
-            <p className="text-2xl font-bold text-destructive">{extractedData.derogatoryAccounts.length + extractedData.collections.length + extractedData.chargeOffs.length}</p>
+            <p className="text-2xl font-bold text-destructive">
+              {extractedData.derogatoryAccounts.length + extractedData.collections.length + extractedData.chargeOffs.length}
+            </p>
             <p className="text-sm text-muted-foreground">Derogatory Accounts</p>
           </div>
           <div className="text-center p-3 bg-muted/30 rounded-lg">
@@ -649,7 +676,9 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
           <div>
             <p className="font-medium text-warning">Missing required information:</p>
             <ul className="list-disc list-inside text-sm text-warning/80 mt-1">
-              {validationErrors.map((e, i) => <li key={i}>{e}</li>)}
+              {validationErrors.map((e, i) => (
+                <li key={i}>{e}</li>
+              ))}
             </ul>
           </div>
         </div>
@@ -664,12 +693,13 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
         {isGenerating ? (
           <>
             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-            Generating {selectedBureaus.length} Letter{selectedBureaus.length > 1 ? 's' : ''}...
+            Generating {selectedBureaus.length} Letter{selectedBureaus.length > 1 ? "s" : ""}...
           </>
         ) : (
           <>
             <FileText className="w-5 h-5 mr-2" />
-            Generate {selectedBureaus.length > 0 ? selectedBureaus.length : ''} Dispute Letter{selectedBureaus.length !== 1 ? 's' : ''}
+            Generate {selectedBureaus.length > 0 ? selectedBureaus.length : ""} Dispute Letter
+            {selectedBureaus.length !== 1 ? "s" : ""}
           </>
         )}
       </Button>
@@ -686,74 +716,114 @@ const DisputeLetterBuilder = ({ extractedData, accessToken }: DisputeLetterBuild
       {generatedLetters.map((item, index) => {
         const isEditing = editingIndex === index;
         return (
-        <div key={item.bureau} className="card-elevated rounded-2xl border border-primary/30 p-6 md:p-8 animate-slide-up">
-          <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
-            <h4 className="text-xl font-serif font-semibold text-foreground flex items-center gap-2">
-              <Scale className="w-5 h-5 text-primary" />
-              {BUREAU_DATA[item.bureau].legalName}
-            </h4>
-            <div className="flex items-center gap-2">
-              <Button 
-                variant="outline" 
-                size="sm"
-                onClick={() => setEditingIndex(isEditing ? null : index)}
-              >
-                {isEditing ? <Eye className="w-4 h-4 mr-2" /> : <Pencil className="w-4 h-4 mr-2" />}
-                {isEditing ? "View" : "Edit"}
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => copyLetter(index)}>
-                {copiedIndex === index ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
-                {copiedIndex === index ? "Copied" : "Copy"}
-              </Button>
-            </div>
-          </div>
-
-          {/* PRINT-READY LETTER CONTAINER - Explicit styling to prevent theme inheritance */}
-          <div 
-            className="rounded-xl border shadow-inner print:shadow-none print:border-none print:p-0"
-            style={{ 
-              backgroundColor: '#ffffff', 
-              color: '#111111',
-              borderColor: '#e5e7eb'
-            }}
+          <div
+            key={item.bureau}
+            className="card-elevated rounded-2xl border border-primary/30 p-6 md:p-8 animate-slide-up"
           >
-            {isEditing ? (
-              <textarea
-                value={item.letter}
-                onChange={(e) => {
-                  const newLetters = [...generatedLetters];
-                  newLetters[index] = { ...item, letter: e.target.value };
-                  setGeneratedLetters(newLetters);
-                }}
-                className="w-full min-h-[600px] p-6 md:p-8 font-serif text-sm leading-relaxed resize-y focus:outline-none focus:ring-2 focus:ring-primary/30 rounded-xl"
-                style={{ 
-                  backgroundColor: '#ffffff', 
-                  color: '#111111',
-                  border: 'none'
-                }}
-              />
-            ) : (
-              <pre 
-                className="whitespace-pre-wrap font-serif text-sm leading-relaxed print:text-base p-6 md:p-8"
-                style={{ color: '#111111' }}
-              >
-                {item.letter}
-              </pre>
-            )}
-          </div>
+            {/* Letter Header */}
+            <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
+              <h4 className="text-xl font-serif font-semibold text-foreground flex items-center gap-2">
+                <Scale className="w-5 h-5 text-primary" />
+                {BUREAU_DATA[item.bureau].legalName}
+              </h4>
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Edit / View toggle */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEditingIndex(isEditing ? null : index)}
+                >
+                  {isEditing ? (
+                    <Eye className="w-4 h-4 mr-2" />
+                  ) : (
+                    <Pencil className="w-4 h-4 mr-2" />
+                  )}
+                  {isEditing ? "View" : "Edit"}
+                </Button>
 
-          <div className="mt-6 p-4 bg-primary/5 border border-primary/20 rounded-lg">
-            <div className="flex items-start gap-2">
-              <MapPin className="w-5 h-5 text-primary flex-shrink-0 mt-0.5" />
-              <div className="text-sm text-foreground">
-                <p className="font-semibold mb-1">Send via Certified Mail to:</p>
-                <p>{BUREAU_DATA[item.bureau].legalName}</p>
-                <p>{BUREAU_DATA[item.bureau].address}</p>
-                <p>{BUREAU_DATA[item.bureau].cityStateZip}</p>
+                {/* Copy */}
+                <Button variant="outline" size="sm" onClick={() => copyLetter(index)}>
+                  {copiedIndex === index ? (
+                    <Check className="w-4 h-4 mr-2" />
+                  ) : (
+                    <Copy className="w-4 h-4 mr-2" />
+                  )}
+                  {copiedIndex === index ? "Copied" : "Copy"}
+                </Button>
+
+                {/* Download Word */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleDownloadWord(index)}
+                  disabled={exportingWord === index}
+                  className="border-blue-500/50 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950"
+                >
+                  {exportingWord === index ? (
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  ) : (
+                    <Download className="w-4 h-4 mr-2" />
+                  )}
+                  Word
+                </Button>
+
+                {/* Download PDF */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleDownloadPdf(index)}
+                  disabled={exportingPdf === index}
+                  className="border-red-500/50 text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
+                >
+                  {exportingPdf === index ? (
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  ) : (
+                    <FileDown className="w-4 h-4 mr-2" />
+                  )}
+                  PDF
+                </Button>
+              </div>
+            </div>
+
+            {/* Letter Content */}
+            <div
+              className="rounded-xl border shadow-inner print:shadow-none print:border-none print:p-0"
+              style={{ backgroundColor: "#ffffff", color: "#111111", borderColor: "#e5e7eb" }}
+            >
+              {isEditing ? (
+                <textarea
+                  value={item.letter}
+                  onChange={(e) => {
+                    const newLetters = [...generatedLetters];
+                    newLetters[index] = { ...item, letter: e.target.value };
+                    setGeneratedLetters(newLetters);
+                  }}
+                  className="w-full min-h-[600px] p-6 md:p-8 font-serif text-sm leading-relaxed resize-y focus:outline-none focus:ring-2 focus:ring-primary/30 rounded-xl"
+                  style={{ backgroundColor: "#ffffff", color: "#111111", border: "none" }}
+                />
+              ) : (
+                <pre
+                  className="whitespace-pre-wrap font-serif text-sm leading-relaxed print:text-base p-6 md:p-8"
+                  style={{ color: "#111111" }}
+                >
+                  {item.letter}
+                </pre>
+              )}
+            </div>
+
+            {/* Certified Mail Address */}
+            <div className="mt-6 p-4 bg-primary/5 border border-primary/20 rounded-lg">
+              <div className="flex items-start gap-2">
+                <MapPin className="w-5 h-5 text-primary flex-shrink-0 mt-0.5" />
+                <div className="text-sm text-foreground">
+                  <p className="font-semibold mb-1">Send via Certified Mail Return Receipt to:</p>
+                  <p>{BUREAU_DATA[item.bureau].legalName}</p>
+                  <p>{BUREAU_DATA[item.bureau].address}</p>
+                  <p>{BUREAU_DATA[item.bureau].cityStateZip}</p>
+                </div>
               </div>
             </div>
           </div>
-        </div>
         );
       })}
     </div>
