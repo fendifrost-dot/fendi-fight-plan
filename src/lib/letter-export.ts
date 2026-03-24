@@ -1,39 +1,49 @@
-import { Document, Packer, Paragraph, TextRun, AlignmentType, PageBreak, TabStopType, TabStopPosition } from "docx";
+import {
+  Document,
+  Packer,
+  Paragraph,
+  TextRun,
+  AlignmentType,
+  BorderStyle,
+  HeadingLevel,
+  ShadingType,
+} from "docx";
 import { saveAs } from "file-saver";
+import jsPDF from "jspdf";
 
-/**
- * Parse a plain-text dispute letter into structured paragraphs
- * preserving spacing, bullet lists, and signature blocks.
- */
+// ---------------------------------------------------------------------------
+// Shared: parse plain-text letter into structured paragraphs
+// ---------------------------------------------------------------------------
 function parseLetterToParagraphs(text: string): Paragraph[] {
   const lines = text.split("\n");
   const paragraphs: Paragraph[] = [];
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    // Empty line → spacing paragraph
+  for (const line of lines) {
+    // Empty line â vertical spacer
     if (line.trim() === "") {
       paragraphs.push(new Paragraph({ spacing: { after: 120 } }));
       continue;
     }
 
-    // Detect bullet/numbered items
-    const bulletMatch = line.match(/^(\s*[-•]\s+)(.*)/);
-    const numberedMatch = line.match(/^(\s*\d+\.\s+)(.*)/);
-
+    // Bullet items
+    const bulletMatch = line.match(/^(\s*[-â¢]\s+)(.*)/);
     if (bulletMatch) {
       paragraphs.push(
         new Paragraph({
           spacing: { after: 60 },
           indent: { left: 360 },
           children: [
-            new TextRun({ text: "• ", font: "Times New Roman", size: 24 }),
+            new TextRun({ text: "â¢ ", font: "Times New Roman", size: 24 }),
             new TextRun({ text: bulletMatch[2], font: "Times New Roman", size: 24 }),
           ],
         })
       );
-    } else if (numberedMatch) {
+      continue;
+    }
+
+    // Numbered items
+    const numberedMatch = line.match(/^(\s*\d+\.\s+)(.*)/);
+    if (numberedMatch) {
       paragraphs.push(
         new Paragraph({
           spacing: { after: 60 },
@@ -44,55 +54,72 @@ function parseLetterToParagraphs(text: string): Paragraph[] {
           ],
         })
       );
-    } else if (line.startsWith("RE:") || line.startsWith("Re:")) {
-      // Subject line – bold
+      continue;
+    }
+
+    // Subject / RE: line â bold
+    if (/^RE:/i.test(line)) {
       paragraphs.push(
         new Paragraph({
-          spacing: { after: 200 },
+          spacing: { before: 240, after: 240 },
           children: [
             new TextRun({ text: line, bold: true, font: "Times New Roman", size: 24 }),
           ],
         })
       );
-    } else if (line === "Sincerely," || line === "Sincerely") {
-      // Signature block
+      continue;
+    }
+
+    // Signature block
+    if (line.trim() === "Sincerely," || line.trim() === "Sincerely") {
       paragraphs.push(
         new Paragraph({
-          spacing: { before: 400, after: 600 },
+          spacing: { before: 480, after: 720 },
           children: [
             new TextRun({ text: "Sincerely,", font: "Times New Roman", size: 24 }),
           ],
         })
       );
-    } else {
-      // Regular paragraph
-      const isBold = line === line.toUpperCase() && line.length > 3 && /[A-Z]/.test(line);
-      paragraphs.push(
-        new Paragraph({
-          spacing: { after: 80 },
-          children: [
-            new TextRun({
-              text: line,
-              font: "Times New Roman",
-              size: 24,
-              bold: isBold,
-            }),
-          ],
-        })
-      );
+      continue;
     }
+
+    // Section headers â all-caps lines that are clearly headers (not account numbers / state abbrevs)
+    const isHeader =
+      line === line.toUpperCase() &&
+      line.length > 6 &&
+      /[A-Z]{4,}/.test(line) &&
+      !/^\d/.test(line) &&        // not starting with a digit (account #s)
+      !line.includes("#") &&      // not containing account numbers
+      !/^[A-Z]{2}\s+\d/.test(line); // not "IL 60601" style
+
+    paragraphs.push(
+      new Paragraph({
+        spacing: { after: isHeader ? 120 : 80 },
+        children: [
+          new TextRun({
+            text: line,
+            font: "Times New Roman",
+            size: 24,
+            bold: isHeader,
+          }),
+        ],
+      })
+    );
   }
 
   return paragraphs;
 }
 
-/**
- * Export dispute letter as .docx Word document
- */
+// ---------------------------------------------------------------------------
+// Export as .docx Word document
+// ---------------------------------------------------------------------------
 export async function exportAsWord(letterText: string, bureauName: string): Promise<void> {
   const paragraphs = parseLetterToParagraphs(letterText);
 
   const doc = new Document({
+    creator: "Credit Compass â Continuum Capital Group",
+    title: `Dispute Letter â ${bureauName}`,
+    description: `FCRA Dispute Letter addressed to ${bureauName}`,
     sections: [
       {
         properties: {
@@ -111,83 +138,98 @@ export async function exportAsWord(letterText: string, bureauName: string): Prom
   });
 
   const blob = await Packer.toBlob(doc);
-  const filename = `Dispute_Letter_${bureauName}_${new Date().toISOString().slice(0, 10)}.docx`;
+  const filename = `Dispute_Letter_${bureauName.replace(/\s+/g, "_")}_${new Date()
+    .toISOString()
+    .slice(0, 10)}.docx`;
   saveAs(blob, filename);
 }
 
-/**
- * Export dispute letter as PDF using browser print
- */
+// ---------------------------------------------------------------------------
+// Export as real PDF download using jsPDF
+// ---------------------------------------------------------------------------
 export function exportAsPdf(letterText: string, bureauName: string): void {
-  const lines = letterText.split("\n");
-
-  const htmlLines = lines.map((line) => {
-    if (line.trim() === "") return "<br/>";
-
-    // Bullet items
-    const bulletMatch = line.match(/^(\s*[-•]\s+)(.*)/);
-    if (bulletMatch) {
-      return `<p style="margin:0 0 4px 24px;">• ${escapeHtml(bulletMatch[2])}</p>`;
-    }
-
-    // Numbered items
-    const numberedMatch = line.match(/^(\s*\d+\.\s+)(.*)/);
-    if (numberedMatch) {
-      return `<p style="margin:0 0 4px 24px;">${escapeHtml(line)}</p>`;
-    }
-
-    // Subject line
-    if (line.startsWith("RE:") || line.startsWith("Re:")) {
-      return `<p style="margin:0 0 8px 0;font-weight:bold;">${escapeHtml(line)}</p>`;
-    }
-
-    // Signature
-    if (line === "Sincerely," || line === "Sincerely") {
-      return `<p style="margin:24px 0 36px 0;">${escapeHtml(line)}</p>`;
-    }
-
-    return `<p style="margin:0 0 4px 0;">${escapeHtml(line)}</p>`;
+  const doc = new jsPDF({
+    orientation: "portrait",
+    unit: "pt",
+    format: "letter", // 8.5 x 11 inches
   });
 
-  const html = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Dispute Letter - ${escapeHtml(bureauName)}</title>
-      <style>
-        @media print {
-          @page { margin: 1in; }
-          body { margin: 0; }
-        }
-        body {
-          font-family: "Times New Roman", Times, serif;
-          font-size: 12pt;
-          line-height: 1.5;
-          color: #000;
-          max-width: 7.5in;
-          margin: 0 auto;
-          padding: 1in;
-        }
-      </style>
-    </head>
-    <body>
-      ${htmlLines.join("\n")}
-      <script>window.onload = function() { window.print(); }</script>
-    </body>
-    </html>
-  `;
+  const marginLeft = 72;   // 1 inch
+  const marginRight = 72;
+  const marginTop = 72;
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const usableWidth = pageWidth - marginLeft - marginRight;
+  let y = marginTop;
 
-  const printWindow = window.open("", "_blank");
-  if (printWindow) {
-    printWindow.document.write(html);
-    printWindow.document.close();
+  doc.setFont("Times-Roman");
+  doc.setFontSize(12);
+
+  const lines = letterText.split("\n");
+
+  for (const rawLine of lines) {
+    // Page break check â leave 72pt bottom margin
+    if (y > pageHeight - marginRight) {
+      doc.addPage();
+      y = marginTop;
+    }
+
+    // Blank line â small vertical gap
+    if (rawLine.trim() === "") {
+      y += 8;
+      continue;
+    }
+
+    // RE: subject line â bold
+    if (/^RE:/i.test(rawLine)) {
+      doc.setFont("Times-Bold");
+      doc.setFontSize(12);
+      const wrapped = doc.splitTextToSize(rawLine, usableWidth);
+      doc.text(wrapped, marginLeft, y);
+      y += wrapped.length * 16 + 8;
+      doc.setFont("Times-Roman");
+      continue;
+    }
+
+    // Sincerely â extra space before
+    if (rawLine.trim() === "Sincerely," || rawLine.trim() === "Sincerely") {
+      y += 32;
+      doc.setFont("Times-Roman");
+      doc.text("Sincerely,", marginLeft, y);
+      y += 48; // space for physical signature
+      continue;
+    }
+
+    // Section headers (all-caps meaningful headers)
+    const isHeader =
+      rawLine === rawLine.toUpperCase() &&
+      rawLine.length > 6 &&
+      /[A-Z]{4,}/.test(rawLine) &&
+      !/^\d/.test(rawLine) &&
+      !rawLine.includes("#") &&
+      !/^[A-Z]{2}\s+\d/.test(rawLine);
+
+    if (isHeader) {
+      doc.setFont("Times-Bold");
+    } else {
+      doc.setFont("Times-Roman");
+    }
+
+    doc.setFontSize(12);
+
+    // Bullet items â indent
+    const bulletMatch = rawLine.match(/^(\s*[-â¢]\s+)(.*)/);
+    const numberedMatch = rawLine.match(/^(\s*\d+\.\s+)(.*)/);
+    const indent = bulletMatch || numberedMatch ? marginLeft + 18 : marginLeft;
+    const lineWidth = bulletMatch || numberedMatch ? usableWidth - 18 : usableWidth;
+
+    const wrapped = doc.splitTextToSize(rawLine.trimStart(), lineWidth);
+    doc.text(wrapped, indent, y);
+    y += wrapped.length * 16 + (isHeader ? 4 : 2);
   }
-}
 
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+  const filename = `Dispute_Letter_${bureauName.replace(/\s+/g, "_")}_${new Date()
+    .toISOString()
+    .slice(0, 10)}.pdf`;
+  doc.save(filename);
 }
