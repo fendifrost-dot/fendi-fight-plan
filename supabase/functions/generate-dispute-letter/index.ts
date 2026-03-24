@@ -6,127 +6,206 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const SYSTEM_PROMPT = `You are a dispute letter generator for the Continuum Capital Group Credit Dispute System.
+// =============================================================================
+// MAXIMUM-STRENGTH SYSTEM PROMPT â Continuum Capital Group Credit Dispute Engine
+// =============================================================================
+const SYSTEM_PROMPT = `You are the dispute letter engine for Continuum Capital Group Credit Dispute System.
+You produce maximum-strength, legally-grounded FCRA dispute letters.
 
-## CRITICAL OUTPUT RULES (NON-NEGOTIABLE)
+## ABSOLUTE OUTPUT RULES (ZERO EXCEPTIONS)
+1. OUTPUT FORMAT: Plain text only. No markdown, no commentary, no preamble, no postamble.
+2. FORBIDDEN ELEMENTS â any of these WILL cause rejection:
+   - Brackets: [ ] { } < >
+   - Placeholders: "[YOUR NAME]", "[DATE]", "[INSERT]", "[ADDRESS]"
+   - Instructional text: "Enter here", "Fill in", "See attached"
+   - Markdown: **, ##, \`\`\`, *, _
+   - Notes or commentary of any kind
+3. LETTERHEAD â EXACT FORMAT REQUIRED:
+   [Consumer full legal name]
+   [Street address line 1]
+   [Street address line 2 â only if provided]
+   [City, State ZIP]
 
-1. OUTPUT FORMAT: You must output ONLY the letter text. No explanations, no commentary, no markdown formatting.
+   [Full spelled-out date, e.g., "March 24, 2026"]
 
-2. FORBIDDEN ELEMENTS (WILL CAUSE REJECTION):
-   - Brackets of any kind: [ ] { } < >
-   - Placeholders like "[YOUR NAME]", "[DATE]", "[ADDRESS]"
-   - Instructional text like "Insert here" or "Fill in"
-   - Notes or comments
-   - Markdown formatting (no **, no ##, no \`\`\`)
+   [Bureau legal name]
+   [Bureau address]
+   [Bureau city, state ZIP]
 
-3. REQUIRED LETTERHEAD FORMAT (EXACT STRUCTURE):
+   RE: Formal Dispute Under the Fair Credit Reporting Act â Â§Â§602, 607(b), 611(a), 604
 
-[Consumer's full legal name from consumerInfo]
-[Street address line 1]
-[Street address line 2 if provided]
-[City, State ZIP]
+   Dear Sir or Madam,
 
-[Current date - spelled out month, e.g., "January 7, 2026"]
-
-[Bureau legal name]
-[Bureau address]
-[Bureau city, state ZIP]
-
-RE: Formal Dispute Under the Fair Credit Reporting Act
-
-Dear Sir or Madam,
-
-[Body of letter...]
-
-Sincerely,
-
-[Consumer's full legal name]
+4. CLOSING â EXACT FORMAT:
+   Sincerely,
+   [Consumer full legal name]
 
 ---
 
-## TONE & STYLE
-- Prosecutor-style: formal, assertive, legally grounded
-- NO casual language
-- NO hedging: "may be", "possibly", "might be" are FORBIDDEN
-- Every statement is an assertion
+## TONE AND LEGAL POSTURE
+- Prosecutor-level assertiveness. Every statement is a legal assertion, not a request.
+- No hedging language: "may be", "possibly", "might", "seems", "appears" â ALL FORBIDDEN.
+- Address the bureau as a regulated entity with statutory obligations, not as a customer service desk.
+- The consumer has rights; the bureau has duties. Frame every paragraph accordingly.
 
-## LEGAL FRAMEWORK
-Cite FCRA provisions:
-- §602(a): Congressional intent for accurate credit reporting
-- §607(b): Duty to ensure maximum possible accuracy
-- §611(a): Reinvestigation requirements within 30 days
-- §605B: Identity theft blocking procedures
-- §623: Furnisher responsibilities
+---
 
-## CONDITIONAL ARGUMENTS (INCLUDE BASED ON SURVEY)
+## FULL FCRA LEGAL FRAMEWORK â CITE ALL APPLICABLE SECTIONS
 
-IF identity theft OR fraud = YES:
-- Assert identity theft protections under FCRA §605B
-- Demand blocking of disputed items
-- Assert fraudulent accounts cannot be verified as belonging to consumer
+### Primary Accuracy Duties
+- Â§602(a): Congressional mandate for fair and accurate credit reporting
+- Â§607(b): Maximum possible accuracy duty â bureau must maintain reasonable procedures
+- Â§611(a): Duty to conduct reasonable reinvestigation within 30 days of notice of dispute
+- Â§611(a)(1): Must notify furnisher of all relevant information provided by consumer
+- Â§611(a)(4): Must review and consider all relevant information submitted
+- Â§611(a)(5)(A): Must delete or modify inaccurate, incomplete, or unverifiable information
+- Â§611(a)(5)(B): REINSERTION â must have written certification from furnisher; must notify consumer in writing within 5 days
+- Â§611(a)(7): Consumer's right to demand COMPLETE METHOD OF VERIFICATION for each item
+- Â§605(a): Maximum 7-year reporting period for most adverse items
+- Â§605B: Identity theft blocking â bureau must block disputed items within 4 business days of receiving FTC Identity Theft Report
 
-IF police report OR FTC report = NO:
-- State: "I am not required by law to provide a police report or FTC report to dispute these items. The FCRA places the burden of verification on you, not on the consumer."
+### Inquiry Permissible Purpose
+- Â§604(a): Permissible purposes are LIMITED AND EXHAUSTIVE â no catchall authorization
+- Â§604(f): Duty to refrain from furnishing report without a permissible purpose
+- Inquiries without a verifiable permissible purpose are per se violations and must be deleted
+- Hard inquiries made without a firm offer of credit, application, or insurance review violate Â§604
 
-IF data breach = YES:
-- Assert third-party compromise and heightened duty of care
-- Reference accounts opened after breach exposure are presumptively fraudulent
+### Furnisher Obligations
+- Â§623(a)(1): Furnishers must report accurate information
+- Â§623(a)(2): After dispute notice, furnisher must investigate and correct
+- Â§623(b): Upon notice from CRA of dispute, furnisher has 30 days to investigate and report results
+- Â§623(b)(1)(C): Furnisher must notify CRA if investigation reveals item is inaccurate or incomplete
+- Furnisher failure to comply = bureau cannot continue to report without liability
 
-IF reinsertion = YES:
-- Demand proof of certification under §611(a)(5)(B)
-- Demand proof written notice was sent prior to reinsertion
-- Assert violation if no certification exists
+### Statutory Damages and Liability
+- Â§616: Willful noncompliance â actual damages OR statutory damages of $100â$1,000 per violation, plus punitive damages and attorney's fees
+- Â§617: Negligent noncompliance â actual damages plus attorney's fees
+- Each individual inaccurate item reported after a dispute constitutes a SEPARATE violation
+- Continued reporting of a disputed item after reinvestigation = willful noncompliance
 
-IF prior disputes = YES:
-- Assert failure of reasonable reinvestigation
-- Cite continued reporting as willful non-compliance
+---
 
-IF no creditor relationship = YES:
-- Assert accounts cannot belong to consumer absent contractual relationship
-- Demand proof of signed application or agreement
+## CONDITIONAL LEGAL ARGUMENTS (APPLY BASED ON SURVEY â DO NOT SKIP)
 
-IF belongs to another person = YES:
-- Assert mixed file error
-- Demand procedures used to prevent file commingling
+### IF identity theft OR fraud = YES
+Include ALL of the following:
+- Assert consumer is a victim of identity theft; fraudulent accounts cannot be presumed to belong to consumer
+- Under FCRA Â§605B, bureau MUST block disputed items tied to identity theft within 4 business days
+- Demand immediate blocking, not merely investigation
+- Assert consumer is not required to prove identity theft beyond the assertion â burden is on bureau/furnisher
+- Reference: FTC v. Equifax (identity theft blocking obligation is non-discretionary)
 
-IF personal info errors caused accounts = YES:
-- Assert inaccurate identifiers undermine integrity of ALL associated accounts
+### IF FTC report filed = YES
+- State the FTC Identity Theft Report number and assert Â§605B applies with immediacy
+- Demand blocking within 4 business days per statutory requirement
+- Demand written confirmation of blocking
 
-## FACT INTEGRATION (MANDATORY - INCLUDE ALL ITEMS)
+### IF FTC report NOT filed
+- State explicitly: "I am not required by law to provide a police report, FTC Identity Theft Report, or any other document to initiate a dispute. The FCRA places the burden of verification on you, not on the consumer. FCRA Â§611 requires investigation upon receipt of dispute notice alone."
 
-List EVERY item provided. Do NOT skip any item for any reason.
+### IF police report = YES
+- Reference as corroborating documentation
+- Demand heightened scrutiny per documented fraud
 
-Format for inaccurate names:
-"The following name(s) do not belong to me and must be removed: [list each name]"
+### IF data breach = YES
+- Assert that breach exposure created a presumption of fraudulent account creation
+- Demand that bureau apply heightened duty of care to all accounts opened after the breach date
+- Assert accounts opened within 18 months post-breach are presumptively fraudulent until verified otherwise
 
-Format for inaccurate addresses:
-"The following address(es) are inaccurate and must be corrected or removed: [list each address]"
+### IF reinsertion = YES
+- Assert Â§611(a)(5)(B) violation: reinserted items require written certification from furnisher
+- Demand: (1) copy of furnisher's certification; (2) proof that consumer was notified in writing within 5 days of reinsertion
+- State: absent this documentation, continued reporting of reinserted item constitutes willful noncompliance under Â§616
+- Include specific items and dates if provided
 
-Format for accounts (derogatory, collections, charge-offs):
-"I dispute the following account(s):
-- [Creditor Name], Account #[number], Date Opened: [date]
-  [Reason for dispute based on survey answers]"
+### IF prior disputes = YES
+- Assert failure of reasonable reinvestigation under Â§611(a)
+- Characterize continued reporting after prior failed investigation as willful noncompliance
+- Cite Â§616 â each month of continued inaccurate reporting after dispute = separate statutory violation
+- Demand method of verification for prior investigation (Â§611(a)(7))
 
-Format for inquiries:
-"The following unauthorized inquiry/ies must be removed:
-- [Inquirer Name], Date: [date]"
+### IF no creditor relationship = YES
+- Assert consumer has never had any contractual, financial, or transactional relationship with the listed creditor(s)
+- Demand furnisher provide: (1) signed application; (2) original agreement; (3) any document bearing consumer's wet signature
+- State: absent contractual nexus, accounts cannot lawfully be associated with consumer's file
+- Assert Â§607(b) â bureau cannot report accounts it cannot verify belong to consumer
 
-## CAUSAL CONNECTION (INCLUDE IN BODY)
-Argue:
-1. Inaccurate personal identifiers undermine associated account data
-2. Accounts under incorrect identifiers cannot be presumed accurate
-3. Inquiries tied to disputed items are likewise invalid
+### IF belongs to another person = YES
+- Assert "mixed file" â bureau has commingled another consumer's data into this file
+- This constitutes a Â§607(b) maximum accuracy violation
+- Demand immediate audit of all data sources and removal of all commingled items
+- Assert bureau's file-matching procedures are inadequate under Equifax Â§607(b) standard
 
-## REMEDY DEMANDS (REQUIRED AT END)
-Demand:
-1. Deletion or blocking of ALL disputed items
-2. Correction of personal identifying information
-3. Written confirmation of investigation results within 30 days
-4. Description of method of verification for each item
-5. Name and address of each furnisher contacted
+### IF personal info errors caused accounts = YES
+- Assert that inaccurate identifying information (names, addresses, SSN variations) constitutes a Â§607(b) maximum accuracy violation
+- Argue that accounts linked to inaccurate identifiers cannot be presumed accurate
+- Assert the causal chain: identifier errors â incorrect account associations â systemic inaccuracy
+- All accounts tied to disputed identifiers must be re-verified from scratch
 
-## CLOSING
-End with: "Sincerely," followed by the consumer's full legal name (no signature line placeholder).`;
+---
+
+## LETTER BODY STRUCTURE (REQUIRED SECTIONS IN ORDER)
+
+### Section 1: Opening Statement
+State the legal basis for the dispute. Reference Â§611(a) and Â§602(a). Assert consumer's rights clearly.
+
+### Section 2: Identity Errors (if any)
+For each inaccurate name:
+  "The name '[reported_name]' does not belong to me, is not a variation of my legal name, and must be permanently removed from my consumer file. Reason: [mismatch_reason]. Per FCRA Â§607(b), you are obligated to maintain maximum possible accuracy."
+
+For each inaccurate address:
+  "The address '[reported_address]' is not my current or former address and must be permanently removed. Addresses linked to derogatory accounts further compromise the accuracy of my file and must be deleted."
+
+### Section 3: Derogatory Accounts
+Format for each account â one paragraph per account or a clearly labeled table:
+  "I dispute the following account as inaccurate, incomplete, and/or unverifiable:
+  Creditor: [creditor_name]
+  Account Number: [account_number]
+  Date Opened: [date_opened]
+  Reported Balance: [balance]
+  Past Due: [past_due]
+  Status: [status / derogatory_triggers]
+
+  Basis for dispute: [derive from survey â fraud, no relationship, mixed file, etc.]
+
+  Demand: Delete this account or provide complete verification including the original signed credit agreement, full payment history, and name and contact information of the furnisher."
+
+### Section 4: Collections
+Format similarly to accounts above. Add:
+  "Collections must be verified with the original creditor's documentation. Chain-of-title documentation (assignment agreements) must be provided for each collection account."
+
+### Section 5: Charge-Offs
+Include charged-off date. Add:
+  "A charge-off notation does not relieve the bureau of its accuracy obligations. The account must still be reported accurately or deleted."
+
+### Section 6: Unauthorized Inquiries
+For each inquiry:
+  "[Inquirer name], [date] â This inquiry was made without my explicit written authorization. Under FCRA Â§604(a), permissible purposes are exhaustive and limited. No permissible purpose exists for this inquiry on my file. Demand: Immediate deletion."
+
+Group auto-loan inquiries from the same 14-45 day window and note:
+  "Multiple auto-loan inquiries from [date range] must be treated as a single inquiry under the FCRA rate-shopping provision. Each separate listing inflates the apparent inquiry count and is inaccurate."
+
+### Section 7: Demands
+List ALL of the following demands, numbered:
+1. Immediately delete or block ALL disputed items listed in this letter
+2. Correct all inaccurate personal identifying information (names, addresses)
+3. Provide written confirmation of your investigation results within 30 days per FCRA Â§611(a)
+4. For each disputed item investigated: provide the complete method of verification used, per Â§611(a)(7), including the name, address, and telephone number of each furnisher contacted
+5. Provide the name and address of each furnisher or data source contacted during investigation
+6. Certify in writing that no disputed item will be reinserted without (a) furnisher certification and (b) timely written notice to consumer per Â§611(a)(5)(B)
+7. Preserve all records related to this dispute and your investigation for potential litigation
+
+### Section 8: Statutory Notice
+Include this paragraph:
+  "You are hereby placed on formal notice that continued reporting of inaccurate information after receipt of this dispute constitutes willful noncompliance under FCRA Â§616, entitling me to statutory damages of $100 to $1,000 per violation, plus punitive damages and attorney's fees. Each month of continued inaccurate reporting constitutes a separate, independent violation. I am prepared to pursue all available remedies."
+
+---
+
+## ITEM COMPLETENESS (NON-NEGOTIABLE)
+- Include EVERY item provided. Skipping any item for any reason is a failure.
+- If an item has no balance listed, state "Balance: Not reported / disputed"
+- If an account status is derogatory, name it specifically: "CHARGE-OFF", "COLLECTION", "90 DAYS PAST DUE", etc.
+`;
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -144,7 +223,6 @@ serve(async (req) => {
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY");
-
     if (!supabaseUrl || !supabaseAnonKey) {
       return new Response(JSON.stringify({ error: "Service configuration error" }), {
         status: 500,
@@ -153,11 +231,10 @@ serve(async (req) => {
     }
 
     const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } }
+      global: { headers: { Authorization: authHeader } },
     });
 
     const { data: { user }, error: authError } = await supabase.auth.getUser();
-
     if (authError || !user) {
       return new Response(JSON.stringify({ error: "Invalid or expired session" }), {
         status: 401,
@@ -167,7 +244,7 @@ serve(async (req) => {
 
     const { survey, extractedData, consumerInfo, bureau } = await req.json();
 
-    // Validation: All required fields must be present
+    // Strict validation
     const missingFields: string[] = [];
     if (!consumerInfo?.fullName?.trim()) missingFields.push("Consumer full name");
     if (!consumerInfo?.addressLine1?.trim()) missingFields.push("Consumer street address");
@@ -175,16 +252,12 @@ serve(async (req) => {
     if (!bureau?.legalName) missingFields.push("Bureau legal name");
     if (!bureau?.address) missingFields.push("Bureau address");
     if (!bureau?.cityStateZip) missingFields.push("Bureau city/state/ZIP");
-
     if (missingFields.length > 0) {
-      return new Response(JSON.stringify({ 
-        error: `Missing required data: ${missingFields.join(', ')}. Cannot generate letter.` 
-      }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ error: `Missing required data: ${missingFields.join(", ")}.` }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
-
     if (!survey || !extractedData) {
       return new Response(JSON.stringify({ error: "Missing survey or extracted data" }), {
         status: 400,
@@ -200,93 +273,87 @@ serve(async (req) => {
       });
     }
 
-    // Format current date
-    const currentDate = new Date().toLocaleDateString('en-US', { 
-      month: 'long', 
-      day: 'numeric', 
-      year: 'numeric' 
+    const currentDate = new Date().toLocaleDateString("en-US", {
+      month: "long",
+      day: "numeric",
+      year: "numeric",
     });
 
-    // Build consumer address block
-    const consumerAddressLines = [
-      consumerInfo.fullName.trim(),
-      consumerInfo.addressLine1.trim(),
-      consumerInfo.addressLine2?.trim() || null,
-      consumerInfo.cityStateZip.trim(),
-    ].filter(Boolean).join('\n');
+    const userPrompt = `Generate a maximum-strength FCRA dispute letter with EXACTLY this data:
 
-    // Build bureau address block
-    const bureauAddressLines = [
-      bureau.legalName,
-      bureau.address,
-      bureau.cityStateZip,
-    ].join('\n');
-
-    const userPrompt = `Generate a dispute letter with this EXACT information:
-
-## LETTERHEAD DATA (USE EXACTLY AS PROVIDED)
+## LETTERHEAD (USE VERBATIM â NO MODIFICATIONS)
 Consumer Name: ${consumerInfo.fullName.trim()}
-Consumer Address Line 1: ${consumerInfo.addressLine1.trim()}
-${consumerInfo.addressLine2?.trim() ? `Consumer Address Line 2: ${consumerInfo.addressLine2.trim()}` : ''}
-Consumer City/State/ZIP: ${consumerInfo.cityStateZip.trim()}
-
+Street Address: ${consumerInfo.addressLine1.trim()}${consumerInfo.addressLine2?.trim() ? `\nAddress Line 2: ${consumerInfo.addressLine2.trim()}` : ""}
+City/State/ZIP: ${consumerInfo.cityStateZip.trim()}
 Date: ${currentDate}
-
 Bureau Legal Name: ${bureau.legalName}
 Bureau Address: ${bureau.address}
 Bureau City/State/ZIP: ${bureau.cityStateZip}
 
-## SURVEY RESPONSES
-- Disputed items are fraudulent: ${survey.isFraudulent ? 'YES' : 'NO'}
-- Victim of identity theft: ${survey.isIdentityTheft ? 'YES' : 'NO'}
-- Filed police report: ${survey.hasPoliceReport ? 'YES' : 'NO'}
-- Filed FTC Identity Theft Report: ${survey.hasFtcReport ? 'YES' : 'NO'}
-- Exposed to data breach: ${survey.wasDataBreach ? 'YES' : 'NO'}
-- Items previously removed then reinserted: ${survey.wasReinserted ? 'YES' : 'NO'}${survey.wasReinserted && survey.reinsertedDetails ? `\n  Reinsertion details: ${survey.reinsertedDetails}` : ''}
-- Had contractual relationship with listed creditors: ${survey.hadCreditorRelationship ? 'YES' : 'NO'}
-- Items belong to another person with similar name: ${survey.belongsToAnotherPerson ? 'YES' : 'NO'}
-- Personal info errors caused these accounts: ${survey.hasPersonalInfoErrors ? 'YES' : 'NO'}
-- Previously disputed these items: ${survey.hasPreviousDisputes ? 'YES' : 'NO'}
-${survey.additionalFacts ? `\nAdditional consumer context: ${survey.additionalFacts}` : ''}
+## SURVEY (shapes all legal arguments)
+- Disputed items are fraudulent: ${survey.isFraudulent ? "YES" : "NO"}
+- Identity theft victim: ${survey.isIdentityTheft ? "YES" : "NO"}
+- Police report filed: ${survey.hasPoliceReport ? "YES" : "NO"}
+- FTC Identity Theft Report filed: ${survey.hasFtcReport ? "YES" : "NO"}
+- Data breach exposure: ${survey.wasDataBreach ? "YES" : "NO"}
+- Items reinserted after removal: ${survey.wasReinserted ? "YES" : "NO"}${survey.wasReinserted && survey.reinsertedDetails ? `\n  Details: ${survey.reinsertedDetails}` : ""}
+- Had creditor relationship: ${survey.hadCreditorRelationship ? "YES" : "NO"}
+- Items belong to another person: ${survey.belongsToAnotherPerson ? "YES" : "NO"}
+- Personal info errors caused accounts: ${survey.hasPersonalInfoErrors ? "YES" : "NO"}
+- Prior disputes filed: ${survey.hasPreviousDisputes ? "YES" : "NO"}${survey.additionalFacts ? `\nAdditional facts: ${survey.additionalFacts}` : ""}
 
-## DISPUTED ITEMS (INCLUDE ALL IN LETTER)
+## DISPUTED ITEMS â INCLUDE ALL, SKIP NONE
 
-### INACCURATE NAMES (${extractedData.inaccurateNames?.length || 0} items)
+### INACCURATE NAMES (${extractedData.inaccurateNames?.length || 0})
 ${extractedData.inaccurateNames?.length > 0
-  ? extractedData.inaccurateNames.map((n: any, i: number) => `${i + 1}. "${n.reported_name}" - ${n.mismatch_reason}`).join('\n')
-  : 'None'}
+  ? extractedData.inaccurateNames.map((n: any, i: number) =>
+      `${i + 1}. Reported name: "${n.reported_name}" | Reason: ${n.mismatch_reason}`
+    ).join("\n")
+  : "None"}
 
-### INACCURATE ADDRESSES (${extractedData.inaccurateAddresses?.length || 0} items)
+### INACCURATE ADDRESSES (${extractedData.inaccurateAddresses?.length || 0})
 ${extractedData.inaccurateAddresses?.length > 0
-  ? extractedData.inaccurateAddresses.map((a: any, i: number) => `${i + 1}. ${a.reported_address}`).join('\n')
-  : 'None'}
+  ? extractedData.inaccurateAddresses.map((a: any, i: number) =>
+      `${i + 1}. ${a.reported_address}${a.linked_to_derogatory ? " [linked to derogatory account]" : ""}`
+    ).join("\n")
+  : "None"}
 
-### DEROGATORY ACCOUNTS (${extractedData.derogatoryAccounts?.length || 0} items)
+### DEROGATORY ACCOUNTS (${extractedData.derogatoryAccounts?.length || 0})
 ${extractedData.derogatoryAccounts?.length > 0
-  ? extractedData.derogatoryAccounts.map((a: any, i: number) => `${i + 1}. Creditor: ${a.creditor_name}, Account #: ${a.account_number}, Date Opened: ${a.date_opened}, Issues: ${a.derogatory_triggers?.join(', ') || 'Disputed'}`).join('\n')
-  : 'None'}
+  ? extractedData.derogatoryAccounts.map((a: any, i: number) =>
+      `${i + 1}. Creditor: ${a.creditor_name} | Account #: ${a.account_number} | Opened: ${a.date_opened} | Balance: ${a.balance || "N/A"} | Past Due: ${a.past_due || "N/A"} | Issues: ${a.derogatory_triggers?.join(", ") || "Disputed"}`
+    ).join("\n")
+  : "None"}
 
-### COLLECTIONS (${extractedData.collections?.length || 0} items)
+### COLLECTIONS (${extractedData.collections?.length || 0})
 ${extractedData.collections?.length > 0
-  ? extractedData.collections.map((c: any, i: number) => `${i + 1}. Creditor: ${c.creditor_name}, Account #: ${c.account_number}, Original Creditor: ${c.original_creditor || 'Unknown'}, Balance: ${c.balance}`).join('\n')
-  : 'None'}
+  ? extractedData.collections.map((c: any, i: number) =>
+      `${i + 1}. Collector: ${c.creditor_name} | Account #: ${c.account_number} | Original Creditor: ${c.original_creditor || "Unknown"} | Balance: ${c.balance}`
+    ).join("\n")
+  : "None"}
 
-### CHARGE-OFFS (${extractedData.chargeOffs?.length || 0} items)
+### CHARGE-OFFS (${extractedData.chargeOffs?.length || 0})
 ${extractedData.chargeOffs?.length > 0
-  ? extractedData.chargeOffs.map((c: any, i: number) => `${i + 1}. Creditor: ${c.creditor_name}, Account #: ${c.account_number}, Date Charged Off: ${c.date_charged_off}, Balance: ${c.balance}`).join('\n')
-  : 'None'}
+  ? extractedData.chargeOffs.map((c: any, i: number) =>
+      `${i + 1}. Creditor: ${c.creditor_name} | Account #: ${c.account_number} | Charged Off: ${c.date_charged_off} | Balance: ${c.balance}`
+    ).join("\n")
+  : "None"}
 
-### PUBLIC RECORDS (${extractedData.publicRecords?.length || 0} items)
+### PUBLIC RECORDS (${extractedData.publicRecords?.length || 0})
 ${extractedData.publicRecords?.length > 0
-  ? extractedData.publicRecords.map((p: any, i: number) => `${i + 1}. Type: ${p.type}, Court: ${p.court_jurisdiction}, Filing Date: ${p.filing_date}, Status: ${p.status}`).join('\n')
-  : 'None'}
+  ? extractedData.publicRecords.map((p: any, i: number) =>
+      `${i + 1}. Type: ${p.type} | Court: ${p.court_jurisdiction} | Filed: ${p.filing_date} | Status: ${p.status}`
+    ).join("\n")
+  : "None"}
 
-### INQUIRIES (${extractedData.inquiries?.length || 0} items)
+### INQUIRIES (${extractedData.inquiries?.length || 0})
 ${extractedData.inquiries?.length > 0
-  ? extractedData.inquiries.map((inq: any, i: number) => `${i + 1}. Inquirer: ${inq.creditor_name}, Date: ${inq.date}, Type: ${inq.type}`).join('\n')
-  : 'None'}
+  ? extractedData.inquiries.map((inq: any, i: number) =>
+      `${i + 1}. Inquirer: ${inq.creditor_name} | Date: ${inq.date} | Type: ${inq.type}`
+    ).join("\n")
+  : "None"}
 
-Generate the complete, print-ready dispute letter NOW. Output ONLY the letter text with no additional commentary.`;
+Now generate the complete, print-ready, maximum-strength dispute letter. Output ONLY the letter text.`;
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -298,8 +365,9 @@ Generate the complete, print-ready dispute letter NOW. Output ONLY the letter te
         model: "google/gemini-2.5-flash",
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userPrompt }
+          { role: "user", content: userPrompt },
         ],
+        temperature: 0.2, // Low temperature = consistent, professional output
       }),
     });
 
@@ -326,7 +394,6 @@ Generate the complete, print-ready dispute letter NOW. Output ONLY the letter te
 
     const data = await response.json();
     let letter = data.choices?.[0]?.message?.content;
-
     if (!letter) {
       return new Response(JSON.stringify({ error: "Failed to generate letter content" }), {
         status: 500,
@@ -334,15 +401,16 @@ Generate the complete, print-ready dispute letter NOW. Output ONLY the letter te
       });
     }
 
-    // Post-processing: Remove any markdown formatting that slipped through
+    // Post-process: strip any markdown that slipped through
     letter = letter
-      .replace(/^```[\s\S]*?\n/g, '')
-      .replace(/\n```$/g, '')
-      .replace(/\*\*/g, '')
-      .replace(/##\s*/g, '')
+      .replace(/^```[\s\S]*?\n/g, "")
+      .replace(/\n```$/g, "")
+      .replace(/\*\*/g, "")
+      .replace(/##\s*/g, "")
+      .replace(/^#\s+/gm, "")
       .trim();
 
-    // Validation: Check for forbidden placeholders
+    // Validate: no forbidden placeholders
     const placeholderPatterns = [
       /\[.*?\]/g,
       /\{.*?\}/g,
@@ -351,16 +419,13 @@ Generate the complete, print-ready dispute letter NOW. Output ONLY the letter te
       /\[INSERT\s+.*?\]/gi,
       /\[FILL\s+.*?\]/gi,
     ];
-
     for (const pattern of placeholderPatterns) {
       if (pattern.test(letter)) {
-        console.error("Letter contains forbidden placeholders:", letter.match(pattern));
-        return new Response(JSON.stringify({ 
-          error: "Generated letter contains placeholders. Please try again." 
-        }), {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        console.error("Letter contains placeholders:", letter.match(pattern));
+        return new Response(
+          JSON.stringify({ error: "Generated letter contains placeholders. Please try again." }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
       }
     }
 
@@ -368,7 +433,6 @@ Generate the complete, print-ready dispute letter NOW. Output ONLY the letter te
       status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
-
   } catch (error) {
     console.error("Error generating dispute letter:", error);
     return new Response(JSON.stringify({ error: "An unexpected error occurred" }), {
