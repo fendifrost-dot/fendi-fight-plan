@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Upload, FileText, Loader2, AlertCircle, Copy, Check, Sparkles, ChevronRight, AlertTriangle, LogIn, X, Plus, User, MapPin, Briefcase, Phone, Mail, Calendar, Hash, Shield, FileWarning, Edit3, Layers, Scale, RefreshCw, Bug } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -22,6 +22,9 @@ import { useAnalysisJobV2 } from "@/hooks/useAnalysisJobV2";
 import { AnalysisJobProgress } from "./AnalysisJobProgress";
 import { parseJobResult, parseCheckpointResult } from "@/lib/analysisJobs";
 import { hydrateCanonicalResult, type CanonicalAnalyzerResult, createEmptyCanonicalResult } from "@/types/disputes";
+import { CreditSummary } from "@/components/CreditSummary";
+import { SpecialtyBureauFreezeDispute } from "@/components/SpecialtyBureauFreezeDispute";
+import { buildCreditSummaryData } from "@/lib/credit-summary-map";
 
 // File mapping for multi-bureau uploads
 interface UploadedFile {
@@ -1717,6 +1720,10 @@ const AIAnalyzer = () => {
     </div>
   );
 
+  const creditSummaryData = useMemo(
+    () => buildCreditSummaryData(canonicalResult, fullLegalName, currentAddress),
+    [canonicalResult, fullLegalName, currentAddress]
+  );
   return (
     <section id="ai-tool" className="py-20 px-4 bg-card/30">
       <div className="max-w-5xl mx-auto">
@@ -2260,6 +2267,13 @@ const AIAnalyzer = () => {
         {/* Dispute Letter Builder - shows after analysis is complete */}
         {hasAnyResults && session?.access_token && (
           <div className="mt-12 pt-12 border-t border-border/50">
+
+            <CreditSummary data={creditSummaryData} />
+            <SpecialtyBureauFreezeDispute
+              accessToken={session?.access_token ?? ""}
+              consumerName={fullLegalName}
+              consumerAddress={currentAddress}
+            />
             <DisputeLetterBuilder
               extractedData={{
                 fullLegalName: fullLegalName,
