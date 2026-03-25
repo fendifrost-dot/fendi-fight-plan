@@ -1407,7 +1407,8 @@ describe('Hardened parser rules', () => {
     expect(hasActualDateOfFirstDelinquency('03/15/2021')).toBe(true);
     expect(hasActualDateOfFirstDelinquency('2021-03-15')).toBe(true);
     expect(hasActualDateOfFirstDelinquency('Sep 2024')).toBe(true);
-    expect(hasActualDateOfFirstDelinquency('2020')).toBe(true);
+    // Bare YYYY intentionally rejected — too many false positives
+    expect(hasActualDateOfFirstDelinquency('2020')).toBe(false);
 
     // NOT real dates — must return false
     expect(hasActualDateOfFirstDelinquency(null)).toBe(false);
