@@ -1278,7 +1278,7 @@ describe('Field label safeguard — block_text excluded from keyword matching', 
   });
 
   it('clean deferred student loan with label noise is excluded by isCleanTradeline', () => {
-    const { isCleanTradeline: isClean } = require('@/lib/parser-contract');
+    
     const tradeline = {
       creditor_name: 'DEPTEDNELNET',
       account_number: '5678',
@@ -1297,7 +1297,7 @@ describe('Field label safeguard — block_text excluded from keyword matching', 
 
 describe('Placeholder values never trigger', () => {
   it('isPastDueNegative returns false for placeholder values', () => {
-    const { isPastDueNegative } = require('@/lib/parser-contract');
+    
     expect(isPastDueNegative(null)).toBe(false);
     expect(isPastDueNegative('')).toBe(false);
     expect(isPastDueNegative('N/A')).toBe(false);
@@ -1308,7 +1308,7 @@ describe('Placeholder values never trigger', () => {
   });
 
   it('isPastDueNegative returns true only for actual amounts > 0', () => {
-    const { isPastDueNegative } = require('@/lib/parser-contract');
+    
     expect(isPastDueNegative('$500')).toBe(true);
     expect(isPastDueNegative('$1,234.56')).toBe(true);
   });
@@ -1367,7 +1367,7 @@ describe('Clean account exclusion regression — Tara TransUnion scenario', () =
 // ─── Hardened Parser Rules ─────────────────────────────────────────────────
 describe('Hardened parser rules', () => {
   it('"past due" keyword alone does NOT trigger negative classification', () => {
-    const { findNegativeKeywords } = require('@/lib/parser-contract');
+    
     // "Past Due Amount: $0" should NOT match
     expect(findNegativeKeywords('Past Due Amount: $0')).not.toContain('past due');
     expect(findNegativeKeywords('Past due')).not.toContain('past due');
@@ -1375,7 +1375,7 @@ describe('Hardened parser rules', () => {
   });
 
   it('isPastDueNegative is the only past-due trigger source', () => {
-    const { isPastDueNegative, classifyTradeline } = require('@/lib/parser-contract');
+    
     expect(isPastDueNegative('$0')).toBe(false);
     expect(isPastDueNegative('$0.00')).toBe(false);
     expect(isPastDueNegative(null)).toBe(false);
@@ -1395,7 +1395,7 @@ describe('Hardened parser rules', () => {
   });
 
   it('DOFD requires real date pattern, not just any digit-containing string', () => {
-    const { hasActualDateOfFirstDelinquency } = require('@/lib/parser-contract');
+    
     // Real dates
     expect(hasActualDateOfFirstDelinquency('01/2020')).toBe(true);
     expect(hasActualDateOfFirstDelinquency('03/15/2021')).toBe(true);
@@ -1416,7 +1416,7 @@ describe('Hardened parser rules', () => {
   });
 
   it('clean tradeline with weak text trigger is vetoed by isCleanTradeline', () => {
-    const { isCleanTradeline, classifyTradeline } = require('@/lib/parser-contract');
+    
     const cleanAccount = {
       creditor_name: 'DEPTEDNELNET',
       status_as_reported: 'Paid or paying as agreed',
@@ -1434,7 +1434,7 @@ describe('Hardened parser rules', () => {
   });
 
   it('UPSTA/FINWSE with historical grid codes stays derogatory despite positive status', () => {
-    const { isCleanTradeline, classifyTradeline } = require('@/lib/parser-contract');
+    
     const upsta = {
       creditor_name: 'UPSTA/FINWSE',
       status_as_reported: 'Paid or paying as agreed',
