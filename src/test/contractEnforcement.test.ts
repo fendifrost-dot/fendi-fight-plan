@@ -205,16 +205,20 @@ describe('Fixture: Scanned PDF (low confidence) end-to-end', () => {
   });
 
   it('preserves both accounts despite low confidence', () => {
-    expect(result.report.derogatory_accounts.length).toBe(2);
+    // UNEXTRACTABLE fields → deriveConfidence returns 'incomplete' → manual_review
+    const totalAccounts = result.report.derogatory_accounts.length + result.report.manual_review_accounts.length;
+    expect(totalAccounts).toBe(2);
   });
 
   it('UNEXTRACTABLE account_number accepted by schema', () => {
-    const wells = result.report.derogatory_accounts.find((a: any) => a.creditor_name === 'WELLS FARGO');
+    const allAccounts = [...result.report.derogatory_accounts, ...result.report.manual_review_accounts];
+    const wells = allAccounts.find((a: any) => a.creditor_name === 'WELLS FARGO');
     expect(wells.account_number).toBe('UNEXTRACTABLE');
   });
 
   it('UNEXTRACTABLE creditor_name account preserved', () => {
-    const unknown = result.report.derogatory_accounts.find((a: any) => a.creditor_name === 'UNEXTRACTABLE');
+    const allAccounts = [...result.report.derogatory_accounts, ...result.report.manual_review_accounts];
+    const unknown = allAccounts.find((a: any) => a.creditor_name === 'UNEXTRACTABLE');
     expect(unknown).toBeDefined();
   });
 
@@ -939,9 +943,9 @@ describe('Multi-bureau: same account across bureaus never collapsed', () => {
   it('3 bureaus reporting same account = 3 entries preserved', () => {
     const rawResult = {
       derogatory_accounts: [
-        { creditor_name: 'CHASE', account_number: '4147XXXX8888', status: 'Past Due', bureaus: ['experian'] },
-        { creditor_name: 'CHASE', account_number: '4147XXXX8888', status: 'Past Due', bureaus: ['equifax'] },
-        { creditor_name: 'CHASE', account_number: '4147XXXX8888', status: '30 days late', bureaus: ['transunion'] },
+        { creditor_name: 'CHASE', account_number: '4147XXXX8888', status: 'Late', status_as_reported: '30 days late', bureaus: ['experian'] },
+        { creditor_name: 'CHASE', account_number: '4147XXXX8888', status: 'Late', status_as_reported: '30 days late', bureaus: ['equifax'] },
+        { creditor_name: 'CHASE', account_number: '4147XXXX8888', status: 'Late', status_as_reported: '30 days late', bureaus: ['transunion'] },
       ],
       collections: [],
     };
@@ -954,8 +958,8 @@ describe('Multi-bureau: same account across bureaus never collapsed', () => {
   it('same bureau same account = flagged but NOT removed', () => {
     const rawResult = {
       derogatory_accounts: [
-        { creditor_name: 'CHASE', account_number: '4147XXXX8888', status: 'Past Due', bureaus: ['experian'] },
-        { creditor_name: 'CHASE', account_number: '4147XXXX8888', status: 'Past Due', bureaus: ['experian'] },
+        { creditor_name: 'CHASE', account_number: '4147XXXX8888', status: 'Late', status_as_reported: '30 days late', bureaus: ['experian'] },
+        { creditor_name: 'CHASE', account_number: '4147XXXX8888', status: 'Late', status_as_reported: '30 days late', bureaus: ['experian'] },
       ],
       collections: [],
     };
