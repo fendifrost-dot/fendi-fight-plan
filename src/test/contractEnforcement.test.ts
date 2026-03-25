@@ -1291,7 +1291,7 @@ describe('Field label safeguard — block_text excluded from keyword matching', 
       remarks: null,
       block_text: 'Past Due Amount: $0\nDate of First Delinquency:\nPayment Status: Current',
     };
-    expect(isClean(tradeline)).toBe(true);
+    expect(isCleanTradeline(tradeline)).toBe(true);
   });
 });
 
