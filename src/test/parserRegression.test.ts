@@ -675,7 +675,6 @@ describe('findNegativeKeywords', () => {
     expect(matches).toContain('late');
     expect(matches).toContain('late payment');
     // 'past due' removed from keywords — isPastDueNegative() handles value-aware detection
-    expect(matches).toContain('30 days past due').or; // only context-specific past due variants match
     expect(matches).toContain('charge off');
   });
 
