@@ -674,7 +674,7 @@ describe('findNegativeKeywords', () => {
     const matches = findNegativeKeywords('Account has late payment and is past due with charge off status');
     expect(matches).toContain('late');
     expect(matches).toContain('late payment');
-    expect(matches).toContain('past due');
+    // 'past due' removed from keywords — isPastDueNegative() handles value-aware detection
     expect(matches).toContain('charge off');
   });
 
