@@ -31,7 +31,7 @@ import { exportAsWord, exportAsPdf } from "@/lib/letter-export";
 // ---------------------------------------------------------------------------
 // Bureau definitions (mirrors the Supabase function)
 // ---------------------------------------------------------------------------
-const SPECIAFTY_BUREAUS = {
+const SPECIALTY_BUREAUS = {
   lexisnexis: {
     key: "lexisnexis",
     displayName: "LexisNexis",

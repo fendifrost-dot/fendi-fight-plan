@@ -22,8 +22,8 @@ import { useAnalysisJobV2 } from "@/hooks/useAnalysisJobV2";
 import { AnalysisJobProgress } from "./AnalysisJobProgress";
 import { parseJobResult, parseCheckpointResult } from "@/lib/analysisJobs";
 import { hydrateCanonicalResult, type CanonicalAnalyzerResult, createEmptyCanonicalResult } from "@/types/disputes";
-import { CreditSummary } from "@/components/CreditSummary";
-import { SpecialtyBureauFreezeDispute } from "@/components/SpecialtyBureauFreezeDispute";
+import CreditSummary from "@/components/CreditSummary";
+import SpecialtyBureauFreezeDispute from "@/components/SpecialtyBureauFreezeDispute";
 import { buildCreditSummaryData } from "@/lib/credit-summary-map";
 
 // File mapping for multi-bureau uploads
@@ -1721,8 +1721,8 @@ const AIAnalyzer = () => {
   );
 
   const creditSummaryData = useMemo(
-    () => buildCreditSummaryData(canonicalResult, fullLegalName, currentAddress),
-    [canonicalResult, fullLegalName, currentAddress]
+    () => buildCreditSummaryData(getCombinedResults(), fullLegalName, currentAddress),
+    [results, fullLegalName, currentAddress]
   );
   return (
     <section id="ai-tool" className="py-20 px-4 bg-card/30">
