@@ -595,14 +595,14 @@ describe('Masked account number preservation', () => {
 
   it('N/A placeholder accepted', () => {
     const schema = validateSchema({
-      derogatory_accounts: [{ creditor_name: 'A', account_number: 'N/A' }],
+      derogatory_accounts: [{ creditor_name: 'A', account_number: 'N/A', status: 'late' }],
     });
     expect(schema.rejectedAccounts.length).toBe(0);
   });
 
   it('UNEXTRACTABLE placeholder accepted', () => {
     const schema = validateSchema({
-      derogatory_accounts: [{ creditor_name: 'A', account_number: 'UNEXTRACTABLE' }],
+      derogatory_accounts: [{ creditor_name: 'A', account_number: 'UNEXTRACTABLE', status: 'late' }],
     });
     expect(schema.rejectedAccounts.length).toBe(0);
   });
