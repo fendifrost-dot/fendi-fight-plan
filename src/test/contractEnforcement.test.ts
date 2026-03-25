@@ -24,7 +24,10 @@ import {
   deriveConfidence,
 } from '@/lib/parser-validator';
 import { validateSchema } from '@/lib/parser-schema';
-import { detectDuplicates, classifyTradeline } from '@/lib/parser-contract';
+import {
+  detectDuplicates, classifyTradeline, isCleanTradeline,
+  isPastDueNegative, findNegativeKeywords, hasActualDateOfFirstDelinquency,
+} from '@/lib/parser-contract';
 import {
   EXPERIAN_ACR, EXPERIAN_ACR_METADATA,
   EQUIFAX_ACR, EQUIFAX_ACR_METADATA,
