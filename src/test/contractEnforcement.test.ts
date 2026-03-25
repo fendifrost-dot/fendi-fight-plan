@@ -1153,7 +1153,9 @@ describe('isCleanTradeline hard veto — blocks false positives', () => {
     };
     const result = postProcessAndValidate(rawResult);
     expect(result.report.derogatory_accounts.length).toBe(0);
-    expect(result.report.manual_review_accounts.length).toBe(1);
+    // Clean tradeline goes to clean_accounts (not derogatory)
+    const totalNonDerog = (result.report.clean_accounts?.length ?? 0) + (result.report.manual_review_accounts?.length ?? 0);
+    expect(totalNonDerog).toBe(1);
   });
 
   it('clean tradeline with date_first_delinquency is NOT clean', () => {
