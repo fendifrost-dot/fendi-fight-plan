@@ -11,6 +11,9 @@ import {
   ShieldAlert,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { exportCreditSummaryPdf } from "@/lib/credit-summary-pdf";
+import { Button } from "@/components/ui/button";
+import { Download } from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -123,9 +126,21 @@ export default function CreditSummary({ data, className }: CreditSummaryProps) {
     <div className={cn("space-y-6", className)}>
       {/* Header */}
       <div className="text-center">
-        <div className="inline-flex items-center gap-2 px-4 py-2 bg-primary/10 border border-primary/30 rounded-full mb-4">
-          <BarChart3 className="w-4 h-4 text-primary" />
-          <span className="text-sm font-medium text-primary">Credit Summary</span>
+        <div className="flex items-center justify-between mb-4">
+          <div />
+          <div className="inline-flex items-center gap-2 px-4 py-2 bg-primary/10 border border-primary/30 rounded-full">
+            <BarChart3 className="w-4 h-4 text-primary" />
+            <span className="text-sm font-medium text-primary">Credit Summary</span>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => exportCreditSummaryPdf(data)}
+            className="gap-1.5"
+          >
+            <Download className="w-3.5 h-3.5" />
+            PDF
+          </Button>
         </div>
         <h3 className="text-2xl font-serif font-bold text-foreground">
           {data.fullLegalName || "Consumer Credit Summary"}
