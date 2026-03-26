@@ -288,6 +288,16 @@ If report doesn't distinguish, extract all and note "Inquiry type not classified
 Fields: Creditor/Source, Date, Type (Hard/Soft/Promotional/Account Review), Bureau.
 CRITICAL: Do NOT merge inquiry names with tradeline names. Extract inquiry creditor names exactly as printed.
 
+### PRIVACYGUARD 3-BUREAU INQUIRY FORMAT
+PrivacyGuard reports show inquiries in a 3-column layout:
+- Column 1 = Experian, Column 2 = TransUnion, Column 3 = Equifax
+- Each inquiry entry uses "Inquiry 1", "Inquiry 2", etc. as headers
+- Fields per inquiry: Inquiry Date, Creditor Name, Creditor Address, Creditor Phone
+- A dash ("—" or "-") in any column means that bureau did NOT report the inquiry
+- Extract each bureau's data as a SEPARATE inquiry entry with the appropriate "bureaus" array
+- If the same creditor appears across multiple columns with the same date, create one inquiry with all relevant bureaus in the "bureaus" array
+- If dates differ across bureaus, create separate inquiry entries per bureau
+
 ## VALIDATION GATE (MANDATORY)
 After extraction, reconcile counts with bureau summary metrics from Pass 0.
 

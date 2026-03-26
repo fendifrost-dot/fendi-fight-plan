@@ -300,45 +300,100 @@ function normalizeConfidence(conf: string | undefined): string {
   return CONFIDENCE_MAP[conf] ?? conf;
 }
 
+/**
+ * Build a deduplication key for an account.
+ * Primary key: creditor|account_number|bureau (exact match per bureau).
+ * Cross-bureau key: creditor|date_opened|account_type (merges same account across bureaus).
+ */
+function crossBureauKey(acct: CanonicalAccount, creditor: string): string | null {
+  const dateOpened = normalizeDate(acct.date_opened as string) ?? '';
+  const accountType = ((acct.account_type as string) ?? '').toUpperCase().trim();
+  if (!dateOpened || !creditor) return null;
+  return `${creditor}|${dateOpened}|${accountType}`;
+}
+
+function mergeAccountBureaus(existing: CanonicalAccount, incoming: CanonicalAccount): void {
+  // Merge bureau arrays
+  const existBureaus = new Set(existing.bureaus ?? []);
+  for (const b of (incoming.bureaus ?? [])) {
+    existBureaus.add(b);
+  }
+  existing.bureaus = Array.from(existBureaus);
+
+  // Merge bureau_status objects if present
+  if (incoming.bureau_status && typeof incoming.bureau_status === 'object') {
+    existing.bureau_status = {
+      ...(existing.bureau_status as Record<string, unknown> ?? {}),
+      ...(incoming.bureau_status as Record<string, unknown>),
+    };
+  }
+
+  // Merge confidence (keep highest)
+  const existConf = normalizeConfidence(existing.confidence as string | undefined);
+  const newConf = normalizeConfidence(incoming.confidence as string | undefined);
+  const existRank = CONFIDENCE_RANK[existConf] ?? 1;
+  const newRank = CONFIDENCE_RANK[newConf] ?? 1;
+  existing.confidence = newRank > existRank ? newConf : existConf;
+
+  // Merge triggers
+  const existTriggers = (existing.derogatory_triggers as string[]) ?? [];
+  const newTriggers = (incoming.derogatory_triggers as string[]) ?? [];
+  existing.derogatory_triggers = [...new Set([...existTriggers, ...newTriggers])];
+}
+
 function deduplicateAccounts(
   accounts: CanonicalAccount[],
   duplicateFlags: string[]
 ): CanonicalAccount[] {
-  const seen = new Map<string, CanonicalAccount>();
+  const seenByExact = new Map<string, CanonicalAccount>();
+  const seenByCrossBureau = new Map<string, CanonicalAccount>();
 
   for (const acct of accounts) {
     const bureaus = inferBureaus(acct);
     const creditor = normalizeCreditorName(acct.creditor_name ?? '') ?? '';
     const accNum = normalizeAccountNumber(acct.account_number ?? '') ?? '';
     const bureauKey = [...bureaus].sort().join(',');
-    const key = `${creditor}|${accNum}|${bureauKey}`;
+    const exactKey = `${creditor}|${accNum}|${bureauKey}`;
 
-    if (seen.has(key)) {
-      const existing = seen.get(key)!;
-      const existConf = normalizeConfidence(existing.confidence as string | undefined);
-      const newConf = normalizeConfidence(acct.confidence as string | undefined);
-      const existRank = CONFIDENCE_RANK[existConf] ?? 1;
-      const newRank = CONFIDENCE_RANK[newConf] ?? 1;
-      existing.confidence = newRank > existRank ? newConf : existConf;
-      const existTriggers = (existing.derogatory_triggers as string[]) ?? [];
-      const newTriggers = (acct.derogatory_triggers as string[]) ?? [];
-      existing.derogatory_triggers = [...new Set([...existTriggers, ...newTriggers])];
-      duplicateFlags.push(key);
-    } else {
-      const normalized: CanonicalAccount = {
-        ...acct,
-        creditor_name: creditor,
-        account_number: normalizeAccountNumber(acct.account_number) ?? undefined,
-        balance: normalizeBalance(acct.balance as string | number) ?? undefined,
-        date_opened: normalizeDate(acct.date_opened as string) ?? undefined,
-        bureaus,
-        confidence: normalizeConfidence(acct.confidence as string | undefined),
-      };
-      seen.set(key, normalized);
+    // 1. Exact match (same creditor + account + bureau) — classic dedup
+    if (seenByExact.has(exactKey)) {
+      const existing = seenByExact.get(exactKey)!;
+      mergeAccountBureaus(existing, { ...acct, bureaus });
+      duplicateFlags.push(exactKey);
+      continue;
+    }
+
+    // 2. Cross-bureau dedup: same creditor + date_opened + account_type, different bureaus
+    const xbKey = crossBureauKey(acct, creditor);
+    if (xbKey && seenByCrossBureau.has(xbKey)) {
+      const existing = seenByCrossBureau.get(xbKey)!;
+      // Only merge if account numbers match or one is placeholder
+      const existAccNum = normalizeAccountNumber(existing.account_number as string) ?? '';
+      const isPlaceholder = (n: string) => !n || ['N/A', 'UNEXTRACTABLE', 'NONE', 'UNKNOWN', 'UNAVAILABLE'].includes(n);
+      if (existAccNum === accNum || isPlaceholder(existAccNum) || isPlaceholder(accNum)) {
+        mergeAccountBureaus(existing, { ...acct, bureaus });
+        duplicateFlags.push(`xb:${xbKey}`);
+        continue;
+      }
+    }
+
+    // New unique account
+    const normalized: CanonicalAccount = {
+      ...acct,
+      creditor_name: creditor,
+      account_number: normalizeAccountNumber(acct.account_number) ?? undefined,
+      balance: normalizeBalance(acct.balance as string | number) ?? undefined,
+      date_opened: normalizeDate(acct.date_opened as string) ?? undefined,
+      bureaus,
+      confidence: normalizeConfidence(acct.confidence as string | undefined),
+    };
+    seenByExact.set(exactKey, normalized);
+    if (xbKey) {
+      seenByCrossBureau.set(xbKey, normalized);
     }
   }
 
-  return Array.from(seen.values());
+  return Array.from(seenByExact.values());
 }
 
 export function normalizeCanonicalResult(
