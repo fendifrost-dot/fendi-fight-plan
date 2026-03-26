@@ -135,7 +135,7 @@ export default function CreditSummary({ data, className }: CreditSummaryProps) {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => exportCreditSummaryPdf(data)}
+            onClick={() => { exportCreditSummaryPdf(data); }}
             className="gap-1.5"
           >
             <Download className="w-3.5 h-3.5" />
