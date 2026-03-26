@@ -11,6 +11,9 @@ import {
   ShieldAlert,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { exportCreditSummaryPdf } from "@/lib/credit-summary-pdf";
+import { Button } from "@/components/ui/button";
+import { Download } from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // Types
