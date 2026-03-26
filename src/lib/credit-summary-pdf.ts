@@ -69,59 +69,13 @@ function fmtDollar(n: number): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Attempt to load the Continuum Capital Group logo from /lovable-uploads/.
- * Returns a base64 data URL or null if no logo is found.
+ * Returns the Continuum Capital Group logo as an inline base64 data URL.
+ * This avoids unreliable runtime fetching from /lovable-uploads/.
  */
-async function fetchLogoBase64(): Promise<string | null> {
-  try {
-    // Try known logo paths — look for continuum/logo PNGs first
-    const candidates = await discoverLogoPaths();
-    for (const path of candidates) {
-      try {
-        const resp = await fetch(path);
-        if (!resp.ok) continue;
-        const blob = await resp.blob();
-        if (!blob.type.startsWith('image/')) continue;
-        return await blobToBase64(blob);
-      } catch { continue; }
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-async function discoverLogoPaths(): Promise<string[]> {
-  const paths: string[] = [];
-  // Check if /lovable-uploads/ directory listing is available
-  try {
-    const resp = await fetch('/lovable-uploads/');
-    if (resp.ok) {
-      const html = await resp.text();
-      // Parse hrefs from directory listing
-      const hrefPattern = /href="([^"]*\.(png|jpg|jpeg|webp))"/gi;
-      let match;
-      while ((match = hrefPattern.exec(html)) !== null) {
-        const filename = match[1];
-        const lower = filename.toLowerCase();
-        if (lower.includes('continuum') || lower.includes('logo')) {
-          paths.unshift(`/lovable-uploads/${filename}`);
-        } else {
-          paths.push(`/lovable-uploads/${filename}`);
-        }
-      }
-    }
-  } catch { /* ignore */ }
-  return paths;
-}
-
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result as string);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
+function fetchLogoBase64(): Promise<string | null> {
+  // Hardcoded Continuum Capital Group logo (200x50 PNG)
+  const LOGO_BASE64 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMgAAAAyCAYAAAAZUZThAAAGvElEQVR42u2deagVVRzHP68slNzyZWTlREzSZmnm1JQjRhuBJu2Lo7SSYCBoUVAiSLSY2v5HWVBSk1K0mYoF0TbR2FDQCi1TNq6Vmr0SLczXH/O7NAx37p077973fPr7wGO2c37nnPfOd87vN3POPFAURVEURVEURVEURVEURVF6MW3NNBZ4Tmcj6W3Xb9M/gbJPC6SgKNYAZ6pYlP1KINXEUa2jB54T2K5vl8mrKD1Jn2YIo0zHTuep2KtsVSjK3sIBrRZH4DlBelvEvWo0llGUvUIg6Y5ru35bM+/0WXsqEqVXuVhZcbSqQrbrt6VdrkbLMkxrPHAncBYwANgKfAlcHEfh35LmMmAWMFp+B98BzwBPxFHYKWnWA0cBEXBCHIW7DdMaC4TAH3EUDjZMazswqEZ1jgV8sTMtjsIXitrOpEvnfQa4CfDiKJxaNF0qDcDoOAo/l3TnAO/K+a/jKBypsuiCi9Ud8UHZMgzTmgq8B5wBTAPagYnAxsrNwDCtWcArwBCSJ2vHAeuAx0QkWUzghmrlxVE4OI7CNqBf6vRZcRS2yc/aOlXOtd1iZubsK2UEUtbdycYdteKQrpZtmNZA4Alp0+w4ClfFUfhnHIWfxVF4fRyFOwzTGgLcK1lmx1H4TRyFG4BbgH+BGw3Tyj6O7gTmGKZ1cAt+/620ncdmYIphWu2GaR0DTAY2qRRKCqS7XKtao0hBkUxIuTvLc9KMT93t30+NBBuBb+XwwkyelwBDRNRsWmk7jyeBvlLmrcCBck7piovVE49eGyzzcNnuiqOwIyfNYbLdGUfhrsy1rbIdmjm/GPgZuCvjSjWDVtrO4x3gKxHHzRIjfaZSaFIMshfzq2z7irtVjS2y7WeYVt/MtfZMmgr/APcAw4AZTa5zPdu1Rs49JdJVeFwC9kMl9lLKCKQrj1rz4o0ycUjBurwPVEaOi3PSfAjsTLlklfjlSOB4OXyrSr4lwPfA1S34G9SyvU62g1PnDs1cayRdheeBbcB64DWVQRdHkJ58s120bHGrZsrddJFhWhcZptXfMK1TDdN61jCtQ+Io3AbMlSwPGaZ1oohjsfjiS+IoXFPF9m5gHk2e3FnA9suynWKY1mGGaY0EzgN2A6+WSFcpc2cche1xFA6X8pX9wMUijsIlwLniU78I/C4+93DpLMRRuBC4CthO8t7hRwmUZwE31jC/VHz3VpBn+1Gp10BgrYySlXc6n5ZIpzRIvWkipedG1ZlaYpdxr3SOlrJPjCD14oyycYiiqIulKCqQ0iOTTmBUVCA1YheNQRQViKLs0wKp95Sq0adYitJT9NmXGhN4zqkkUyfGkKy1mGm7/odybTFwvO36E+T4aP5/y/wbcJ/t+o/I+WXA+fz/1j3NfJKp8llby2zXd2rUbRTwMHA6yYzahbbrP52pxxZgge36D6byjSGZpXwKybqVWbbrfxB4jg3cbrv+FZLuCGA1MKlau7Srt3AE6cnguGjZgecMBFYAT5HMM7oOuESuHUzyAvGQwHOMVLaPJK45G5gTeE7/1Ci3K7XKcSVwmuzPzbFVq26DpG6LSV5aTgTGyvl0Pc4A7gg8Z0Aq3xvAIpL5WncDSwPPGVanyNx2KU0cQdKr+3pBgD4JeNt2/aVy/AVwm+xPBD4mmdI+BXggk7cyoa9IW+vZysuz2nb9ZXLcAUwXEQxIpeskmcC4J9OmV+R4deA5HnAl8EmBchtpl9KdQXpenNHC+GM48EPONZdkjchy2a8wTm4Aa4D7bdffUaCcPFv16hZVXKHAczrlx8nU4ydgXqoeR5NMZEzzvZyvRZl2KV0RSE+MJA2WuY5k+Ww19+YCuYN/Ia7RqLQrYrv+UNv1FxV0lfJs1aubKTeIzTIaemmXiGSy5GTgpsBzKqPlemBExtYIOf8XyZr7CgOBP8u0S+lCkN7Vjyg0QxwFy1wBPBB4zrWyf6zEId9I5+kIPCc9CpRZB3FFSVurgPmB51wj8cxBJAu80m3cA7wpaSZKG1ZKvstJpuGPA6ZKoL8dODnwHEvaOINk8qXS3SNIb5jubrt+B8k6kOnABuA54HXpwJNTAfdJ0tHLuJe1bI1LuU67MnXbnqlbSPJxiWpz0haQfJWlku9S4HaSdeP3A9fYrr/Jdv2dIoqlwC8yet6nXbq5FO74ZdempycmFo0/emodvKKUjkG666NuKg6lVwqkmkiaKZSsPRWH0usEUq3jNkMkzfgYtqL0aAxSpGPndW799wfKfimQBkYQ/Qc6yv4pkIJiqSoQFYWioCsBFUVRFEVRFEVRFEVRFEVRWsd/fowGZCfkaRsAAAAASUVORK5CYII=";
+  return Promise.resolve(LOGO_BASE64);
 }
 
 class SummaryPDF {
@@ -203,7 +157,7 @@ class SummaryPDF {
     this.doc.setFont("helvetica", "normal");
     this.doc.setFontSize(6.5);
     this.doc.setTextColor(...MID);
-    this.doc.text("Continuum Capital Group — Confidential", MARGIN_L, footerY);
+    this.doc.text("Continuum Capital Group â Confidential", MARGIN_L, footerY);
     this.doc.text(`Page ${this.pageNum}`, PAGE_W - MARGIN_R, footerY, {
       align: "right",
     });
@@ -314,7 +268,7 @@ class SummaryPDF {
       this.doc.setFont("helvetica", "bold");
       this.doc.setFontSize(16);
       this.doc.setTextColor(...scoreColor(score));
-      this.doc.text(score ? String(score) : "—", x + boxW / 2, this.y + 13, { align: "center" });
+      this.doc.text(score ? String(score) : "â", x + boxW / 2, this.y + 13, { align: "center" });
 
       // Label
       this.doc.setFontSize(6.5);
@@ -429,14 +383,14 @@ class SummaryPDF {
     // Rows
     accounts.forEach((a) => {
       const row = [
-        { text: a.creditor_name || "—", x: MARGIN_L, w: 55, color: DARK },
-        { text: a.account_number || "—", x: MARGIN_L + 56, w: 35, color: MID },
-        { text: a.balance || "—", x: MARGIN_L + 92, w: 28, align: "right" as const, color: RED },
+        { text: a.creditor_name || "â", x: MARGIN_L, w: 55, color: DARK },
+        { text: a.account_number || "â", x: MARGIN_L + 56, w: 35, color: MID },
+        { text: a.balance || "â", x: MARGIN_L + 92, w: 28, align: "right" as const, color: RED },
         ...(showPastDue
-          ? [{ text: a.past_due || "—", x: MARGIN_L + 121, w: 25, align: "right" as const, color: ORANGE }]
+          ? [{ text: a.past_due || "â", x: MARGIN_L + 121, w: 25, align: "right" as const, color: ORANGE }]
           : []),
         {
-          text: a.source || "—",
+          text: a.source || "â",
           x: MARGIN_L + (showPastDue ? 147 : 121),
           w: 27,
           align: "right" as const,
@@ -497,7 +451,7 @@ class SummaryPDF {
         this.doc.setFont("helvetica", "normal");
         this.doc.setTextColor(...MID);
         const reasonX = MARGIN_L + 3 + this.doc.getTextWidth(`"${n.reported_name}"  `);
-        this.doc.text(`— ${n.mismatch_reason}`, Math.min(reasonX, MARGIN_L + 80), this.y);
+        this.doc.text(`â ${n.mismatch_reason}`, Math.min(reasonX, MARGIN_L + 80), this.y);
         this.y += 5;
       });
       this.y += 2;
@@ -551,7 +505,7 @@ class SummaryPDF {
       this.tableRow([
         { text: inq.creditor_name, x: MARGIN_L, w: 70, color: DARK },
         { text: inq.date, x: MARGIN_L + 72, w: 40, color: MID },
-        { text: inq.source || "—", x: MARGIN_L + 113, w: 61, align: "right", color: MID },
+        { text: inq.source || "â", x: MARGIN_L + 113, w: 61, align: "right", color: MID },
       ]);
     });
 
@@ -581,7 +535,7 @@ class SummaryPDF {
         { text: pr.type, x: MARGIN_L, w: 50, color: DARK },
         { text: pr.filing_date, x: MARGIN_L + 52, w: 40, color: MID },
         { text: pr.status, x: MARGIN_L + 94, w: 40, color: DARK },
-        { text: pr.source || "—", x: MARGIN_L + 135, w: 39, align: "right", color: MID },
+        { text: pr.source || "â", x: MARGIN_L + 135, w: 39, align: "right", color: MID },
       ]);
     });
   }
