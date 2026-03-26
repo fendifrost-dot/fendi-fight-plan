@@ -24,7 +24,20 @@ const TRADELINE_BLOCK_ANCHORS = [
   'LENDER',
   'LOAN NUMBER',
   'TRADELINE',
+  'INQUIRY',
 ];
+
+/**
+ * Check if a text block looks like a credit inquiry (PrivacyGuard format).
+ * PrivacyGuard uses "Inquiry 1", "Inquiry 2" etc. with fields like
+ * Inquiry Date, Creditor Name, Creditor Phone in 3-column layout.
+ */
+export function looksLikeInquiry(block: string): boolean {
+  const hasInquiryDate = /inquiry\s*date/i.test(block);
+  const hasCreditorNameAndPhone = /creditor\s*name/i.test(block) && /creditor\s*phone/i.test(block);
+  const hasInquiryHeader = /inquiry\s+\d+/i.test(block);
+  return hasInquiryDate || (hasCreditorNameAndPhone && hasInquiryHeader);
+}
 
 /**
  * Split raw credit report text into individual tradeline blocks.
@@ -36,8 +49,13 @@ export function splitTradelines(text: string): string[] {
     .map(a => a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
     .join('|');
 
+  // Also split on PrivacyGuard-style "Inquiry 1", "Inquiry 2", etc.
+  const inquiryPattern = 'Inquiry\\s+\\d+';
+
+  const combinedAnchors = `${anchorPattern}|${inquiryPattern}`;
+
   const pattern = new RegExp(
-    `(?:^|\\n)\\s*(?:${anchorPattern})\\s*[:\\-]?\\s*[\\s\\S]*?(?=\\n\\s*(?:${anchorPattern})\\s*[:\\-]?|$)`,
+    `(?:^|\\n)\\s*(?:${combinedAnchors})\\s*[:\\-]?\\s*[\\s\\S]*?(?=\\n\\s*(?:${combinedAnchors})\\s*[:\\-]?|$)`,
     'gi'
   );
 
@@ -62,10 +80,13 @@ export function isBureauHeader(text: string): boolean {
   const hasParenCode = /\(\w{3,5}\)/.test(text);
   const hasAccountFields = /(?:ACCOUNT\s*#|ACCOUNT\s*NUMBER|BALANCE|STATUS|DATE OPENED|PAYMENT|PAST DUE|HIGH CREDIT|CREDIT LIMIT)/i.test(text);
 
+  // Don't treat inquiry blocks as headers
+  if (looksLikeInquiry(text)) return false;
+
   if (hasParenCode && !hasAccountFields && text.length < 120) return true;
 
   const lines = text.split('\n').filter(l => l.trim().length > 0);
-  if (lines.length <= 2 && !hasAccountFields) return true;
+  if (lines.length <= 2 && !hasAccountFields && !looksLikeInquiry(text)) return true;
 
   return false;
 }
@@ -94,7 +115,7 @@ export function mergeOrphanTradelineBlocks(blocks: string[]): string[] {
     const isCreditorHeader = /\b(bank|financial|credit|capital|chase|wells|discover|loan|card|synchrony|citi|barclays|amex|american\s*express)\b/i.test(block);
 
     // If this block is just a creditor name without fields, merge with next block
-    if (!hasAccountFields && isCreditorHeader && i < blocks.length - 1) {
+    if (!hasAccountFields && isCreditorHeader && !looksLikeInquiry(block) && i < blocks.length - 1) {
       merged.push(block + '\n' + blocks[i + 1]);
       i++; // skip next block since we merged it
     } else {
@@ -159,8 +180,8 @@ export function preparePerTradelineChunks(fullText: string): string[] {
   // Merge orphan creditor headers with their account data
   const merged = mergeOrphanTradelineBlocks(realBlocks);
 
-  // Final validation — only keep blocks that look like real tradelines
-  const validated = merged.filter(block => looksLikeTradeline(block));
+  // Final validation — keep blocks that look like real tradelines OR inquiries
+  const validated = merged.filter(block => looksLikeTradeline(block) || looksLikeInquiry(block));
   console.log(`[segmenter] after tradeline validation: ${validated.length} (was ${merged.length})`);
 
   return validated.length > 0 ? validated : [fullText];

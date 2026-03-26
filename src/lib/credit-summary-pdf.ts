@@ -68,17 +68,75 @@ function fmtDollar(n: number): string {
 // PDF Builder
 // ---------------------------------------------------------------------------
 
+/**
+ * Attempt to load the Continuum Capital Group logo from /lovable-uploads/.
+ * Returns a base64 data URL or null if no logo is found.
+ */
+async function fetchLogoBase64(): Promise<string | null> {
+  try {
+    // Try known logo paths — look for continuum/logo PNGs first
+    const candidates = await discoverLogoPaths();
+    for (const path of candidates) {
+      try {
+        const resp = await fetch(path);
+        if (!resp.ok) continue;
+        const blob = await resp.blob();
+        if (!blob.type.startsWith('image/')) continue;
+        return await blobToBase64(blob);
+      } catch { continue; }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function discoverLogoPaths(): Promise<string[]> {
+  const paths: string[] = [];
+  // Check if /lovable-uploads/ directory listing is available
+  try {
+    const resp = await fetch('/lovable-uploads/');
+    if (resp.ok) {
+      const html = await resp.text();
+      // Parse hrefs from directory listing
+      const hrefPattern = /href="([^"]*\.(png|jpg|jpeg|webp))"/gi;
+      let match;
+      while ((match = hrefPattern.exec(html)) !== null) {
+        const filename = match[1];
+        const lower = filename.toLowerCase();
+        if (lower.includes('continuum') || lower.includes('logo')) {
+          paths.unshift(`/lovable-uploads/${filename}`);
+        } else {
+          paths.push(`/lovable-uploads/${filename}`);
+        }
+      }
+    }
+  } catch { /* ignore */ }
+  return paths;
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
 class SummaryPDF {
   private doc: jsPDF;
   private y = MARGIN_T;
   private pageNum = 0;
   private dateStr: string;
   private consumerName: string;
+  private logoBase64: string | null = null;
 
-  constructor(consumerName: string) {
+  constructor(consumerName: string, logoBase64: string | null = null) {
     this.doc = new jsPDF({ unit: "mm", format: "a4" });
     this.dateStr = formatDate();
     this.consumerName = consumerName;
+    this.logoBase64 = logoBase64;
     this.pageNum = 1;
     this.drawHeader();
     this.drawFooter();
@@ -101,6 +159,20 @@ class SummaryPDF {
   }
 
   private drawHeader() {
+    let brandTextX = MARGIN_L;
+
+    // If logo is available, embed it
+    if (this.logoBase64) {
+      try {
+        const logoH = 8; // mm
+        const logoW = 8; // mm (will be auto-scaled)
+        this.doc.addImage(this.logoBase64, 'PNG', MARGIN_L, 3, logoW, logoH);
+        brandTextX = MARGIN_L + logoW + 2;
+      } catch {
+        // Fallback to text-only if image fails
+      }
+    }
+
     // Gold accent line
     this.doc.setDrawColor(...GOLD);
     this.doc.setLineWidth(0.6);
@@ -110,7 +182,7 @@ class SummaryPDF {
     this.doc.setFont("helvetica", "bold");
     this.doc.setFontSize(7);
     this.doc.setTextColor(...GOLD);
-    this.doc.text(BRAND, MARGIN_L, 10);
+    this.doc.text(BRAND, brandTextX, 10);
 
     // Date right
     this.doc.setFont("helvetica", "normal");
@@ -550,7 +622,8 @@ class SummaryPDF {
 // Public API
 // ---------------------------------------------------------------------------
 
-export function exportCreditSummaryPdf(data: CreditSummaryData): void {
-  const pdf = new SummaryPDF(data.fullLegalName || "Consumer");
+export async function exportCreditSummaryPdf(data: CreditSummaryData): Promise<void> {
+  const logoBase64 = await fetchLogoBase64();
+  const pdf = new SummaryPDF(data.fullLegalName || "Consumer", logoBase64);
   pdf.generate(data);
 }
