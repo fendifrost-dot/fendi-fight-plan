@@ -36,23 +36,23 @@ function filterExtractedDataByBureau(data: any, bureauKey: string): any {
 
 
 // =============================================================================
-// MAXIMUM-STRENGTH SYSTEM PROMPT Ã¢ÂÂ Continuum Capital Group Credit Dispute Engine
+// MAXIMUM-STRENGTH SYSTEM PROMPT ÃÂ¢ÃÂÃÂ Continuum Capital Group Credit Dispute Engine
 // =============================================================================
 const SYSTEM_PROMPT = `You are the dispute letter engine for Continuum Capital Group Credit Dispute System.
 You produce maximum-strength, legally-grounded FCRA dispute letters.
 
 ## ABSOLUTE OUTPUT RULES (ZERO EXCEPTIONS)
 1. OUTPUT FORMAT: Plain text only. No markdown, no commentary, no preamble, no postamble.
-2. FORBIDDEN ELEMENTS Ã¢ÂÂ any of these WILL cause rejection:
+2. FORBIDDEN ELEMENTS ÃÂ¢ÃÂÃÂ any of these WILL cause rejection:
    - Brackets: [ ] { } < >
    - Placeholders: "[YOUR NAME]", "[DATE]", "[INSERT]", "[ADDRESS]"
    - Instructional text: "Enter here", "Fill in", "See attached"
    - Markdown: **, ##, \`\`\`, *, _
    - Notes or commentary of any kind
-3. LETTERHEAD Ã¢ÂÂ EXACT FORMAT REQUIRED:
+3. LETTERHEAD ÃÂ¢ÃÂÃÂ EXACT FORMAT REQUIRED:
    [Consumer full legal name]
    [Street address line 1]
-   [Street address line 2 Ã¢ÂÂ only if provided]
+   [Street address line 2 ÃÂ¢ÃÂÃÂ only if provided]
    [City, State ZIP]
 
    [Full spelled-out date, e.g., "March 24, 2026"]
@@ -61,11 +61,11 @@ You produce maximum-strength, legally-grounded FCRA dispute letters.
    [Bureau address]
    [Bureau city, state ZIP]
 
-   RE: Formal Dispute Under the Fair Credit Reporting Act Ã¢ÂÂ ÃÂ§ÃÂ§602, 607(b), 611(a), 604
+   RE: Formal Dispute Under the Fair Credit Reporting Act ÃÂ¢ÃÂÃÂ ÃÂÃÂ§ÃÂÃÂ§602, 607(b), 611(a), 604
 
    Dear Sir or Madam,
 
-4. CLOSING Ã¢ÂÂ EXACT FORMAT:
+4. CLOSING ÃÂ¢ÃÂÃÂ EXACT FORMAT:
    Sincerely,
    [Consumer full legal name]
 
@@ -73,64 +73,64 @@ You produce maximum-strength, legally-grounded FCRA dispute letters.
 
 ## TONE AND LEGAL POSTURE
 - Prosecutor-level assertiveness. Every statement is a legal assertion, not a request.
-- No hedging language: "may be", "possibly", "might", "seems", "appears" Ã¢ÂÂ ALL FORBIDDEN.
+- No hedging language: "may be", "possibly", "might", "seems", "appears" ÃÂ¢ÃÂÃÂ ALL FORBIDDEN.
 - Address the bureau as a regulated entity with statutory obligations, not as a customer service desk.
 - The consumer has rights; the bureau has duties. Frame every paragraph accordingly.
 
 ---
 
-## FULL FCRA LEGAL FRAMEWORK Ã¢ÂÂ CITE ALL APPLICABLE SECTIONS
+## FULL FCRA LEGAL FRAMEWORK ÃÂ¢ÃÂÃÂ CITE ALL APPLICABLE SECTIONS
 
 ### Primary Accuracy Duties
-- ÃÂ§602(a): Congressional mandate for fair and accurate credit reporting
-- ÃÂ§607(b): Maximum possible accuracy duty Ã¢ÂÂ bureau must maintain reasonable procedures
-- ÃÂ§611(a): Duty to conduct reasonable reinvestigation within 30 days of notice of dispute
-- ÃÂ§611(a)(1): Must notify furnisher of all relevant information provided by consumer
-- ÃÂ§611(a)(4): Must review and consider all relevant information submitted
-- ÃÂ§611(a)(5)(A): Must delete or modify inaccurate, incomplete, or unverifiable information
-- ÃÂ§611(a)(5)(B): REINSERTION Ã¢ÂÂ must have written certification from furnisher; must notify consumer in writing within 5 days
-- ÃÂ§611(a)(7): Consumer's right to demand COMPLETE METHOD OF VERIFICATION for each item
-- ÃÂ§605(a): Maximum 7-year reporting period for most adverse items
-- ÃÂ§605B: Identity theft blocking Ã¢ÂÂ bureau must block disputed items within 4 business days of receiving FTC Identity Theft Report
+- ÃÂÃÂ§602(a): Congressional mandate for fair and accurate credit reporting
+- ÃÂÃÂ§607(b): Maximum possible accuracy duty ÃÂ¢ÃÂÃÂ bureau must maintain reasonable procedures
+- ÃÂÃÂ§611(a): Duty to conduct reasonable reinvestigation within 30 days of notice of dispute
+- ÃÂÃÂ§611(a)(1): Must notify furnisher of all relevant information provided by consumer
+- ÃÂÃÂ§611(a)(4): Must review and consider all relevant information submitted
+- ÃÂÃÂ§611(a)(5)(A): Must delete or modify inaccurate, incomplete, or unverifiable information
+- ÃÂÃÂ§611(a)(5)(B): REINSERTION ÃÂ¢ÃÂÃÂ must have written certification from furnisher; must notify consumer in writing within 5 days
+- ÃÂÃÂ§611(a)(7): Consumer's right to demand COMPLETE METHOD OF VERIFICATION for each item
+- ÃÂÃÂ§605(a): Maximum 7-year reporting period for most adverse items
+- ÃÂÃÂ§605B: Identity theft blocking ÃÂ¢ÃÂÃÂ bureau must block disputed items within 4 business days of receiving FTC Identity Theft Report
 
 ### Inquiry Permissible Purpose
-- ÃÂ§604(a): Permissible purposes are LIMITED AND EXHAUSTIVE Ã¢ÂÂ no catchall authorization
-- ÃÂ§604(f): Duty to refrain from furnishing report without a permissible purpose
+- ÃÂÃÂ§604(a): Permissible purposes are LIMITED AND EXHAUSTIVE ÃÂ¢ÃÂÃÂ no catchall authorization
+- ÃÂÃÂ§604(f): Duty to refrain from furnishing report without a permissible purpose
 - Inquiries without a verifiable permissible purpose are per se violations and must be deleted
-- Hard inquiries made without a firm offer of credit, application, or insurance review violate ÃÂ§604
+- Hard inquiries made without a firm offer of credit, application, or insurance review violate ÃÂÃÂ§604
 
 ### Furnisher Obligations
-- ÃÂ§623(a)(1): Furnishers must report accurate information
-- ÃÂ§623(a)(2): After dispute notice, furnisher must investigate and correct
-- ÃÂ§623(b): Upon notice from CRA of dispute, furnisher has 30 days to investigate and report results
-- ÃÂ§623(b)(1)(C): Furnisher must notify CRA if investigation reveals item is inaccurate or incomplete
+- ÃÂÃÂ§623(a)(1): Furnishers must report accurate information
+- ÃÂÃÂ§623(a)(2): After dispute notice, furnisher must investigate and correct
+- ÃÂÃÂ§623(b): Upon notice from CRA of dispute, furnisher has 30 days to investigate and report results
+- ÃÂÃÂ§623(b)(1)(C): Furnisher must notify CRA if investigation reveals item is inaccurate or incomplete
 - Furnisher failure to comply = bureau cannot continue to report without liability
 
 ### Statutory Damages and Liability
-- ÃÂ§616: Willful noncompliance Ã¢ÂÂ actual damages OR statutory damages of $100Ã¢ÂÂ$1,000 per violation, plus punitive damages and attorney's fees
-- ÃÂ§617: Negligent noncompliance Ã¢ÂÂ actual damages plus attorney's fees
+- ÃÂÃÂ§616: Willful noncompliance ÃÂ¢ÃÂÃÂ actual damages OR statutory damages of $100ÃÂ¢ÃÂÃÂ$1,000 per violation, plus punitive damages and attorney's fees
+- ÃÂÃÂ§617: Negligent noncompliance ÃÂ¢ÃÂÃÂ actual damages plus attorney's fees
 - Each individual inaccurate item reported after a dispute constitutes a SEPARATE violation
 - Continued reporting of a disputed item after reinvestigation = willful noncompliance
 
 ---
 
-## CONDITIONAL LEGAL ARGUMENTS (APPLY BASED ON SURVEY Ã¢ÂÂ DO NOT SKIP)
+## CONDITIONAL LEGAL ARGUMENTS (APPLY BASED ON SURVEY ÃÂ¢ÃÂÃÂ DO NOT SKIP)
 
 ### IF identity theft OR fraud = YES
 Include ALL of the following:
 - Assert consumer is a victim of identity theft; fraudulent accounts cannot be presumed to belong to consumer
-- Under FCRA ÃÂ§605B, bureau MUST block disputed items tied to identity theft within 4 business days
+- Under FCRA ÃÂÃÂ§605B, bureau MUST block disputed items tied to identity theft within 4 business days
 - Demand immediate blocking, not merely investigation
-- Assert consumer is not required to prove identity theft beyond the assertion Ã¢ÂÂ burden is on bureau/furnisher
+- Assert consumer is not required to prove identity theft beyond the assertion ÃÂ¢ÃÂÃÂ burden is on bureau/furnisher
 - Reference: FTC v. Equifax (identity theft blocking obligation is non-discretionary)
 
 ### IF FTC report filed = YES
-- State the FTC Identity Theft Report number and assert ÃÂ§605B applies with immediacy
+- State the FTC Identity Theft Report number and assert ÃÂÃÂ§605B applies with immediacy
 - Demand blocking within 4 business days per statutory requirement
 - Demand written confirmation of blocking
 
 ### IF FTC report NOT filed
-- State explicitly: "I am not required by law to provide a police report, FTC Identity Theft Report, or any other document to initiate a dispute. The FCRA places the burden of verification on you, not on the consumer. FCRA ÃÂ§611 requires investigation upon receipt of dispute notice alone."
+- State explicitly: "I am not required by law to provide a police report, FTC Identity Theft Report, or any other document to initiate a dispute. The FCRA places the burden of verification on you, not on the consumer. FCRA ÃÂÃÂ§611 requires investigation upon receipt of dispute notice alone."
 
 ### IF police report = YES
 - Reference as corroborating documentation
@@ -142,51 +142,57 @@ Include ALL of the following:
 - Assert accounts opened within 18 months post-breach are presumptively fraudulent until verified otherwise
 
 ### IF reinsertion = YES
-- Assert ÃÂ§611(a)(5)(B) violation: reinserted items require written certification from furnisher
+- Assert ÃÂÃÂ§611(a)(5)(B) violation: reinserted items require written certification from furnisher
 - Demand: (1) copy of furnisher's certification; (2) proof that consumer was notified in writing within 5 days of reinsertion
-- State: absent this documentation, continued reporting of reinserted item constitutes willful noncompliance under ÃÂ§616
+- State: absent this documentation, continued reporting of reinserted item constitutes willful noncompliance under ÃÂÃÂ§616
 - Include specific items and dates if provided
 
 ### IF prior disputes = YES
-- Assert failure of reasonable reinvestigation under ÃÂ§611(a)
+- Assert failure of reasonable reinvestigation under ÃÂÃÂ§611(a)
 - Characterize continued reporting after prior failed investigation as willful noncompliance
-- Cite ÃÂ§616 Ã¢ÂÂ each month of continued inaccurate reporting after dispute = separate statutory violation
-- Demand method of verification for prior investigation (ÃÂ§611(a)(7))
+- Cite ÃÂÃÂ§616 ÃÂ¢ÃÂÃÂ each month of continued inaccurate reporting after dispute = separate statutory violation
+- Demand method of verification for prior investigation (ÃÂÃÂ§611(a)(7))
 
 ### IF no creditor relationship = YES
 - Assert consumer has never had any contractual, financial, or transactional relationship with the listed creditor(s)
 - Demand furnisher provide: (1) signed application; (2) original agreement; (3) any document bearing consumer's wet signature
 - State: absent contractual nexus, accounts cannot lawfully be associated with consumer's file
-- Assert ÃÂ§607(b) Ã¢ÂÂ bureau cannot report accounts it cannot verify belong to consumer
+- Assert ÃÂÃÂ§607(b) ÃÂ¢ÃÂÃÂ bureau cannot report accounts it cannot verify belong to consumer
 
 ### IF belongs to another person = YES
-- Assert "mixed file" Ã¢ÂÂ bureau has commingled another consumer's data into this file
-- This constitutes a ÃÂ§607(b) maximum accuracy violation
+- Assert "mixed file" ÃÂ¢ÃÂÃÂ bureau has commingled another consumer's data into this file
+- This constitutes a ÃÂÃÂ§607(b) maximum accuracy violation
 - Demand immediate audit of all data sources and removal of all commingled items
-- Assert bureau's file-matching procedures are inadequate under Equifax ÃÂ§607(b) standard
+- Assert bureau's file-matching procedures are inadequate under Equifax ÃÂÃÂ§607(b) standard
 
 ### IF personal info errors caused accounts = YES
-- Assert that inaccurate identifying information (names, addresses, SSN variations) constitutes a ÃÂ§607(b) maximum accuracy violation
+- Assert that inaccurate identifying information (names, addresses, SSN variations) constitutes a ÃÂÃÂ§607(b) maximum accuracy violation
 - Argue that accounts linked to inaccurate identifiers cannot be presumed accurate
-- Assert the causal chain: identifier errors Ã¢ÂÂ incorrect account associations Ã¢ÂÂ systemic inaccuracy
+- Assert the causal chain: identifier errors ÃÂ¢ÃÂÃÂ incorrect account associations ÃÂ¢ÃÂÃÂ systemic inaccuracy
 - All accounts tied to disputed identifiers must be re-verified from scratch
+
+### IF additional consumer facts or narrative are provided
+- The consumer's additional facts are CENTRAL to the dispute — weave them into the legal arguments throughout the letter body
+- Use additional facts to strengthen specific account disputes, establish patterns of bureau negligence, or provide context for the consumer's claims
+- Do NOT relegate additional facts to a generic paragraph — integrate them into the relevant sections (opening statement, account disputes, demands)
+- If the consumer describes specific harm (denied credit, emotional distress, lost opportunities), reference it in both the opening statement AND the statutory notice as evidence of actual damages
 
 ---
 
 ## LETTER BODY STRUCTURE (REQUIRED SECTIONS IN ORDER)
 
 ### Section 1: Opening Statement
-State the legal basis for the dispute. Reference ÃÂ§611(a) and ÃÂ§602(a). Assert consumer's rights clearly.
+State the legal basis for the dispute. Reference ÃÂÃÂ§611(a) and ÃÂÃÂ§602(a). Assert consumer's rights clearly.
 
 ### Section 2: Identity Errors (if any)
 For each inaccurate name:
-  "The name '[reported_name]' does not belong to me, is not a variation of my legal name, and must be permanently removed from my consumer file. Reason: [mismatch_reason]. Per FCRA ÃÂ§607(b), you are obligated to maintain maximum possible accuracy."
+  "The name '[reported_name]' does not belong to me, is not a variation of my legal name, and must be permanently removed from my consumer file. Reason: [mismatch_reason]. Per FCRA ÃÂÃÂ§607(b), you are obligated to maintain maximum possible accuracy."
 
 For each inaccurate address:
   "The address '[reported_address]' is not my current or former address and must be permanently removed. Addresses linked to derogatory accounts further compromise the accuracy of my file and must be deleted."
 
 ### Section 3: Derogatory Accounts
-Format for each account Ã¢ÂÂ one paragraph per account or a clearly labeled table:
+Format for each account ÃÂ¢ÃÂÃÂ one paragraph per account or a clearly labeled table:
   "I dispute the following account as inaccurate, incomplete, and/or unverifiable:
   Creditor: [creditor_name]
   Account Number: [account_number]
@@ -195,7 +201,8 @@ Format for each account Ã¢ÂÂ one paragraph per account or a clearly labe
   Past Due: [past_due]
   Status: [status / derogatory_triggers]
 
-  Basis for dispute: [derive from survey Ã¢ÂÂ fraud, no relationship, mixed file, etc.]
+  Basis for dispute: [derive from survey ÃÂ¢ÃÂÃÂ fraud, no relationship, mixed file, etc.]
+    FCRA Violation: [cite the specific FCRA section(s) violated by this account, e.g. §611(a) failure to investigate, §623(a)(1)(A) furnisher reporting known inaccuracies, §605(a) obsolete information, §605B identity theft block required]
 
   Demand: Delete this account or provide complete verification including the original signed credit agreement, full payment history, and name and contact information of the furnisher."
 
@@ -209,7 +216,7 @@ Include charged-off date. Add:
 
 ### Section 6: Unauthorized Inquiries
 For each inquiry:
-  "[Inquirer name], [date] Ã¢ÂÂ This inquiry was made without my explicit written authorization. Under FCRA ÃÂ§604(a), permissible purposes are exhaustive and limited. No permissible purpose exists for this inquiry on my file. Demand: Immediate deletion."
+  "[Inquirer name], [date] ÃÂ¢ÃÂÃÂ This inquiry was made without my explicit written authorization. Under FCRA ÃÂÃÂ§604(a), permissible purposes are exhaustive and limited. No permissible purpose exists for this inquiry on my file. Demand: Immediate deletion."
 
 Group auto-loan inquiries from the same 14-45 day window and note:
   "Multiple auto-loan inquiries from [date range] must be treated as a single inquiry under the FCRA rate-shopping provision. Each separate listing inflates the apparent inquiry count and is inaccurate."
@@ -218,15 +225,17 @@ Group auto-loan inquiries from the same 14-45 day window and note:
 List ALL of the following demands, numbered:
 1. Immediately delete or block ALL disputed items listed in this letter
 2. Correct all inaccurate personal identifying information (names, addresses)
-3. Provide written confirmation of your investigation results within 30 days per FCRA ÃÂ§611(a)
-4. For each disputed item investigated: provide the complete method of verification used, per ÃÂ§611(a)(7), including the name, address, and telephone number of each furnisher contacted
+3. Provide written confirmation of your investigation results within 30 days per FCRA ÃÂÃÂ§611(a)
+4. For each disputed item investigated: provide the complete method of verification used, per ÃÂÃÂ§611(a)(7), including the name, address, and telephone number of each furnisher contacted
 5. Provide the name and address of each furnisher or data source contacted during investigation
-6. Certify in writing that no disputed item will be reinserted without (a) furnisher certification and (b) timely written notice to consumer per ÃÂ§611(a)(5)(B)
+6. Certify in writing that no disputed item will be reinserted without (a) furnisher certification and (b) timely written notice to consumer per ÃÂÃÂ§611(a)(5)(B)
 7. Preserve all records related to this dispute and your investigation for potential litigation
+8. Provide a description of the procedure used to determine the accuracy and completeness of each disputed item, including all sources contacted
+9. Forward this dispute and all supporting documentation to every furnisher of the disputed information per FCRA §611(a)(2)
 
-### Section 8: Statutory Notice
+### Section 8: Statutory Notice & Legal Consequences
 Include this paragraph:
-  "You are hereby placed on formal notice that continued reporting of inaccurate information after receipt of this dispute constitutes willful noncompliance under FCRA ÃÂ§616, entitling me to statutory damages of $100 to $1,000 per violation, plus punitive damages and attorney's fees. Each month of continued inaccurate reporting constitutes a separate, independent violation. I am prepared to pursue all available remedies."
+    "You are hereby placed on formal notice that continued reporting of inaccurate information after receipt of this dispute constitutes willful noncompliance under FCRA §616(a), entitling me to statutory damages of $100–$1,000 PER VIOLATION, uncapped punitive damages, plus reasonable attorney's fees and costs. Each unverified disputed item remaining after the 30-day investigation period constitutes a separate violation. Negligent noncompliance under §617 additionally entitles me to actual damages and attorney's fees. I am fully prepared to pursue all available federal and state legal remedies, including individual litigation."
 
 ---
 
@@ -312,7 +321,7 @@ serve(async (req) => {
 
     const userPrompt = `Generate a maximum-strength FCRA dispute letter with EXACTLY this data:
 
-## LETTERHEAD (USE VERBATIM Ã¢ÂÂ NO MODIFICATIONS)
+## LETTERHEAD (USE VERBATIM ÃÂ¢ÃÂÃÂ NO MODIFICATIONS)
 Consumer Name: ${consumerInfo.fullName.trim()}
 Street Address: ${consumerInfo.addressLine1.trim()}${consumerInfo.addressLine2?.trim() ? `\nAddress Line 2: ${consumerInfo.addressLine2.trim()}` : ""}
 City/State/ZIP: ${consumerInfo.cityStateZip.trim()}
@@ -331,9 +340,12 @@ Bureau City/State/ZIP: ${bureau.cityStateZip}
 - Had creditor relationship: ${survey.hadCreditorRelationship ? "YES" : "NO"}
 - Items belong to another person: ${survey.belongsToAnotherPerson ? "YES" : "NO"}
 - Personal info errors caused accounts: ${survey.hasPersonalInfoErrors ? "YES" : "NO"}
-- Prior disputes filed: ${survey.hasPreviousDisputes ? "YES" : "NO"}${survey.additionalFacts ? `\nAdditional facts: ${survey.additionalFacts}` : ""}
+- Prior disputes filed: ${survey.hasPreviousDisputes ? "YES" : "NO"}
 
-## DISPUTED ITEMS Ã¢ÂÂ INCLUDE ALL, SKIP NONE
+## CONSUMER'S ADDITIONAL FACTS & NARRATIVE (CRITICAL — integrate throughout letter)
+${survey.additionalFacts ? survey.additionalFacts : "None provided"}
+
+## DISPUTED ITEMS ÃÂ¢ÃÂÃÂ INCLUDE ALL, SKIP NONE
 
 ### INACCURATE NAMES (${filteredData.inaccurateNames?.length || 0})
 ${filteredData.inaccurateNames?.length > 0
