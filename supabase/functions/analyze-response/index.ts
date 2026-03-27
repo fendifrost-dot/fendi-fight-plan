@@ -1,12 +1,12 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-// ── Imports from shared contract (single source of truth) ──
+// ââ Imports from shared contract (single source of truth) ââ
 import { FULL_SYSTEM_PROMPT } from "../_shared/credit-parser-prompt.ts";
 import { postProcessAndValidate } from "../_shared/parser-validator.ts";
 import { PARSER_ERROR_CODES } from "../_shared/parser-contract.ts";
-// ── Inline normalizer (bundler cannot resolve new _shared files) ──
-// Canonical source: src/lib/result-normalizer.ts — keep in sync
+// ââ Inline normalizer (bundler cannot resolve new _shared files) ââ
+// Canonical source: src/lib/result-normalizer.ts â keep in sync
 const _KB = ['experian','equifax','transunion'];
 const _CM: Record<string,string> = {very_high:'high',probable:'medium',uncertain:'low',high:'high',medium:'medium',low:'low',incomplete:'incomplete'};
 const _MM: Record<string,string> = {jan:'01',feb:'02',mar:'03',apr:'04',may:'05',jun:'06',jul:'07',aug:'08',sep:'09',oct:'10',nov:'11',dec:'12'};
@@ -22,6 +22,29 @@ function _dk(t:any){const cr=_nCred(t.creditor_name)||'';const ac=_nAcct(t.accou
 function _dedup(tls:any[]):{deduped:any[];flags:any[]}{if(!Array.isArray(tls)||tls.length===0)return{deduped:tls||[],flags:[]};const seen=new Map<string,{item:any;index:number}>();const flags:any[]=[];const deduped:any[]=[];for(let i=0;i<tls.length;i++){const t=tls[i];const key=_dk(t);const ex=seen.get(key);if(ex){const cr:Record<string,number>={high:3,medium:2,low:1,incomplete:0};if((cr[t.confidence]??1)>(cr[ex.item.confidence]??1))ex.item.confidence=t.confidence;if(Array.isArray(t.derogatory_triggers)){const s=new Set(ex.item.derogatory_triggers||[]);for(const trig of t.derogatory_triggers)s.add(trig);ex.item.derogatory_triggers=[...s];}const ef=flags.find((f:any)=>f.creditor_name===(_nCred(t.creditor_name)||'')&&f.account_number===(_nAcct(t.account_number)||'')&&f.bureau===(Array.isArray(t.bureaus)?t.bureaus[0]:'unknown'));if(ef)ef.indices.push(i);else flags.push({creditor_name:_nCred(t.creditor_name)||'',account_number:_nAcct(t.account_number)||'',bureau:Array.isArray(t.bureaus)?t.bureaus[0]:'unknown',indices:[ex.index,i]});console.log(`[normalizer] NORMALIZER_DUPLICATE_MERGED: ${key}`);}else{seen.set(key,{item:t,index:i});deduped.push(t);}}return{deduped,flags};}
 function normalizeCanonicalResult(result:any):any{if(!result||typeof result!=='object')return result;const r={...result};let msk=0,bal=0;const arrs=['derogatory_accounts','manual_review_accounts','clean_accounts','all_tradelines','charge_offs'];for(const k of arrs){if(Array.isArray(r[k])){r[k]=r[k].map((t:any)=>{const b=t.account_number;const n=_nTL(t);if(b!==n.account_number)msk++;return n;});}}if(Array.isArray(r.collections)){r.collections=r.collections.map((c:any)=>{const n={...c};n.collection_agency=_nCred(c.collection_agency);n.creditor_name=_nCred(c.creditor_name);n.original_creditor=_nCred(c.original_creditor);n.account_number=_nAcct(c.account_number);if(n.balance!==undefined){const b=n.balance;n.balance=_nBal(n.balance);if(b!==n.balance)bal++;}n.confidence=_nConf(c.confidence);for(const f of['date_opened','date_reported']){if(n[f])n[f]=_nDate(n[f]);}_nBureau(n);return n;});}if(Array.isArray(r.inquiries)){r.inquiries=r.inquiries.map((q:any)=>({...q,creditor_name:_nCred(q.creditor_name),date:_nDate(q.date)}));}if(Array.isArray(r.public_records)){r.public_records=r.public_records.map((p:any)=>({...p,date_filed:_nDate(p.date_filed),date_resolved:_nDate(p.date_resolved)}));}const af:any[]=[];for(const k of arrs){if(Array.isArray(r[k])&&r[k].length>0){const{deduped,flags}=_dedup(r[k]);r[k]=deduped;af.push(...flags);}}if(af.length>0){const ex=Array.isArray(r.duplicate_flags)?r.duplicate_flags:[];r.duplicate_flags=[...ex,...af];}if(msk>0)console.log(`[normalizer] NORMALIZER_ACCOUNT_MASK_REMOVED: ${msk}`);if(bal>0)console.log(`[normalizer] NORMALIZER_BALANCE_NORMALIZED: ${bal}`);if(af.length>0)console.log(`[normalizer] NORMALIZER_DUPLICATE_MERGED: ${af.length} groups`);return r;}
 
+// --- Post-AI safety filter: remove accounts the AI incorrectly classified as derogatory ---
+const _POS_STATUS = /\b(paid|pays|current|never late|on time|good standing|terminated|account closed|closed|transferred|paying as agreed|account paid|pays as agreed|ok|account in good standing)\b/i;
+const _NEG_STATUS = /\b(charge[d\s-]*off|collection|collections|delinquen|default|repossess|foreclose|bankrupt|judgment|written?\s+off|settled|profit and loss|unpaid|garnish|adverse|past due|deferred|120 days|150 days|seriously past due|bad debt|placed for collection)\b/i;
+const _NEG_TRIGGER = /\b(late|charge[d\s-]*off|collection|delinquen|default|repossess|foreclose|bankrupt|judgment|written?\s+off|settled|profit.and.loss|unpaid|past.due|adverse|bad debt|placed for collection|30.day|60.day|90.day|120.day|150.day)\b/i;
+function filterNonDerogatoryAccounts(accounts:any[]):any[]{
+  if(!Array.isArray(accounts)||accounts.length===0)return accounts;
+  return accounts.filter((acct:any)=>{
+    const triggers=acct.derogatory_triggers||[];
+    const hasRealTrigger=Array.isArray(triggers)&&triggers.length>0&&triggers.some((t:string)=>_NEG_TRIGGER.test(t||""));
+    if(hasRealTrigger)return true;
+    const status=((acct.status_as_reported||"")+" "+(acct.status||"")).toLowerCase();
+    const hasNegativeStatus=_NEG_STATUS.test(status);
+    if(hasNegativeStatus)return true;
+    const balStr=(acct.balance||"").toString().replace(/[\$,\s]/g,"");
+    const bal=parseFloat(balStr);
+    const hasPositiveStatus=_POS_STATUS.test(status);
+    if(hasPositiveStatus&&!hasNegativeStatus)return false;
+    if((isNaN(bal)||bal===0)&&!hasNegativeStatus&&triggers.length===0)return false;
+    return true;
+  });
+}
+
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -33,7 +56,7 @@ const MAX_TEXT_LENGTH = 500000;
 const VALID_BUREAUS = ["experian", "equifax", "transunion"] as const;
 const MULTI_BUREAU_SENTINEL = "multi-bureau";
 
-/** Contract version — must match worker and frontend */
+/** Contract version â must match worker and frontend */
 const CONTRACT_VERSION = 'v2-canonical';
 
 const rateLimitStore = new Map<string, { count: number; resetTime: number }>();
@@ -167,7 +190,7 @@ serve(async (req) => {
     contextMessage += `\n\n## INSTRUCTIONS
 Apply the Deterministic Two-Pass extraction method:
 1. PASS 0: Extract report metadata (bureau names, summary counts).
-2. PASS 1: Build complete tradeline inventory — detect every account block using structural anchors.
+2. PASS 1: Build complete tradeline inventory â detect every account block using structural anchors.
 3. PASS 2: Filter for negative items using whole-word boundary matching of all negative indicators.
 4. VALIDATION GATE: Reconcile extracted counts against bureau summary metrics.
 5. DUPLICATE DETECTION: Flag potential duplicates without merging.
@@ -255,7 +278,7 @@ Include all derogatory items with maximum inclusion (dispute-safe approach).`;
       };
     }
 
-    // ── Normalization layer — runs BEFORE validation ──
+    // ââ Normalization layer â runs BEFORE validation ââ
     const normalizedResult = normalizeCanonicalResult(parsedResult);
 
     console.log("[normalizer] result normalized", {
@@ -264,10 +287,11 @@ Include all derogatory items with maximum inclusion (dispute-safe approach).`;
       inquiries: normalizedResult.inquiries?.length,
     });
 
-    // ── Deterministic post-processing via shared validator ──
+    // ââ Deterministic post-processing via shared validator ââ
     const postProcessed = postProcessAndValidate(normalizedResult, responseText || undefined);
+    if(postProcessed&&postProcessed.derogatory_accounts){postProcessed.derogatory_accounts=filterNonDerogatoryAccounts(postProcessed.derogatory_accounts);}
 
-    // ── Enforcement: check for EXTRACTION_INCOMPLETE ──
+    // ââ Enforcement: check for EXTRACTION_INCOMPLETE ââ
     if (postProcessed.isError) {
       console.error(`[analyze-response] ${PARSER_ERROR_CODES.EXTRACTION_INCOMPLETE}: ${postProcessed.errorMessage}`);
       postProcessed.report._extraction_error = PARSER_ERROR_CODES.EXTRACTION_INCOMPLETE;
@@ -279,7 +303,7 @@ Include all derogatory items with maximum inclusion (dispute-safe approach).`;
         postProcessed.schema.violations.slice(0, 5).map(v => `${v.entity}[${v.index}].${v.field}: ${v.reason}`));
     }
 
-    // ── CANONICAL RESULT — same shape as analysis-worker output ──
+    // ââ CANONICAL RESULT â same shape as analysis-worker output ââ
     const result: any = {
       // Three-bucket accounts (deterministic)
       derogatory_accounts: postProcessed.report.derogatory_accounts || [],
