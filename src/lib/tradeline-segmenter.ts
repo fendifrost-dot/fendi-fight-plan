@@ -275,6 +275,21 @@ function prepareTextChunks(fullText: string, maxChunkSize: number = 3000): strin
   return chunks;
 }
 
+/**
+ * Returns one validated tradeline/inquiry block per chunk.
+ * Used by the text-first dispute analyzer path for highest-precision parsing.
+ */
+function preparePerTradelineChunks(fullText: string): string[] {
+  const blocks = splitTradelines(fullText)
+    .filter((block) => !isBureauHeader(block));
+
+  const mergedBlocks = mergeOrphanTradelineBlocks(blocks);
+
+  return mergedBlocks.filter(
+    (block) => looksLikeTradeline(block) || looksLikeInquiry(block)
+  );
+}
+
 export {
   TRADELINE_BLOCK_ANCHORS,
   splitTradelines,
@@ -284,4 +299,5 @@ export {
   mergeOrphanTradelineBlocks,
   extractDeterministicFields,
   prepareTextChunks,
+  preparePerTradelineChunks,
 };
