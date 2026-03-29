@@ -6,3 +6,15 @@ verify_jwt = false
 
 [functions.send-pitch-email]
 verify_jwt = false
+
+[functions.execute-pitch]
+verify_jwt = false
+
+[functions.playlist-batch]
+verify_jwt = false
+
+[functions.pitch-status]
+verify_jwt = false
+
+[functions.update-pitch-status]
+verify_jwt = false
