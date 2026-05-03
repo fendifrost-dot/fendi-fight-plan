@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { FileSearch, Scale, Shield, Zap } from "lucide-react";
+import { ClipboardList, FileSearch, Scale, Zap } from "lucide-react";
 import AutomationBadge from "@/components/AutomationBadge";
 
 const AppNavigation = () => {
@@ -46,6 +46,21 @@ const AppNavigation = () => {
               <Scale className="w-4 h-4" />
               <span className="hidden sm:inline">Dispute & Response Engine</span>
               <span className="sm:hidden">Disputes</span>
+            </NavLink>
+
+            <NavLink
+              to="/intake"
+              className={({ isActive }) =>
+                `flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
+                  isActive
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                }`
+              }
+            >
+              <ClipboardList className="w-4 h-4" />
+              <span className="hidden sm:inline">Intake</span>
+              <span className="sm:hidden">Intake</span>
             </NavLink>
 
             <div className="hidden sm:block ml-2">

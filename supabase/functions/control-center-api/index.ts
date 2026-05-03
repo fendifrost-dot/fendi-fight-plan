@@ -53,6 +53,54 @@ Deno.serve(async (req) => {
       case "send_pitch_email":
         return await sendPitchEmail(supabase, params);
 
+      // ── Credit Compass intake / payments (Hub → Edge proxy) ──
+      case "intake_create_canonical":
+        return await proxyCompassJson("intake-create-canonical", {
+          operatorUserId: params.operator_user_id,
+          canonical: params.canonical,
+        });
+      case "intake_ingest_bureau_pdfs":
+        return await proxyIntakeMultipart(params);
+      case "intake_score_file":
+        return await proxyCompassJson("intake-score-file", {
+          operatorUserId: params.operator_user_id,
+          clientId: params.client_id,
+          record: params.record,
+        });
+      case "intake_approve_pricing":
+        return await proxyCompassJson("intake-approve-pricing", {
+          operatorUserId: params.operator_user_id,
+          clientId: params.client_id,
+          quotedFee: params.quoted_fee,
+          discount: params.discount,
+          payment: params.payment,
+          overrideReason: params.override_reason,
+        });
+      case "intake_generate_summary":
+        return await proxyCompassJson("intake-generate-summary", {
+          operatorUserId: params.operator_user_id,
+          clientId: params.client_id,
+        });
+      case "payments_record":
+        return await proxyCompassJson("payments-record", {
+          operatorUserId: params.operator_user_id,
+          clientId: params.client_id,
+          amount: params.amount,
+          method: params.method,
+          date: params.date,
+          reference: params.reference,
+        });
+      case "payments_status":
+        return await proxyCompassGet(
+          "payments-status",
+          params.client_id,
+          params.operator_user_id,
+        );
+      case "payments_mark_late":
+        return await proxyCompassJson("payments-mark-late", {
+          graceDays: params.grace_days,
+        });
+
       default:
         return json({ error: `Unknown action: ${action}` }, 400);
     }
@@ -71,6 +119,91 @@ function json(data: unknown, status = 200) {
     status,
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
+}
+
+async function proxyCompassJson(path: string, body: Record<string, unknown>) {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const hubKey = Deno.env.get("FANFUEL_HUB_KEY");
+  if (!supabaseUrl || !hubKey) {
+    return json({ error: "Compass proxy misconfiguration" }, 500);
+  }
+  const resp = await fetch(`${supabaseUrl}/functions/v1/${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": hubKey,
+    },
+    body: JSON.stringify(body),
+  });
+  let data: unknown;
+  try {
+    data = await resp.json();
+  } catch {
+    data = { error: await resp.text() };
+  }
+  return json(data, resp.status);
+}
+
+async function proxyCompassGet(
+  path: string,
+  clientId: string,
+  operatorUserId: string,
+) {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const hubKey = Deno.env.get("FANFUEL_HUB_KEY");
+  if (!supabaseUrl || !hubKey) {
+    return json({ error: "Compass proxy misconfiguration" }, 500);
+  }
+  if (!clientId || !operatorUserId) {
+    return json({ error: "client_id and operator_user_id required" }, 400);
+  }
+  const q = new URLSearchParams({ clientId, operatorUserId });
+  const resp = await fetch(`${supabaseUrl}/functions/v1/${path}?${q}`, {
+    method: "GET",
+    headers: { "x-api-key": hubKey },
+  });
+  let data: unknown;
+  try {
+    data = await resp.json();
+  } catch {
+    data = { error: await resp.text() };
+  }
+  return json(data, resp.status);
+}
+
+async function proxyIntakeMultipart(params: any) {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const hubKey = Deno.env.get("FANFUEL_HUB_KEY");
+  if (!supabaseUrl || !hubKey) {
+    return json({ error: "Compass proxy misconfiguration" }, 500);
+  }
+  const clientId = params.client_id;
+  const operatorUserId = params.operator_user_id;
+  if (!clientId || !operatorUserId) {
+    return json({ error: "client_id and operator_user_id required" }, 400);
+  }
+  const fd = new FormData();
+  fd.set("clientId", clientId);
+  fd.set("operatorUserId", operatorUserId);
+  for (const b of ["equifax", "experian", "transunion"] as const) {
+    const b64 = params[`${b}_pdf_base64`];
+    if (typeof b64 === "string" && b64.length > 0) {
+      const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      fd.set(b, new File([bin], `${b}.pdf`, { type: "application/pdf" }));
+    }
+  }
+  const resp = await fetch(`${supabaseUrl}/functions/v1/intake-ingest-bureau-pdfs`, {
+    method: "POST",
+    headers: { "x-api-key": hubKey },
+    body: fd,
+  });
+  let data: unknown;
+  try {
+    data = await resp.json();
+  } catch {
+    data = { error: await resp.text() };
+  }
+  return json(data, resp.status);
 }
 
 // ── Existing Actions ──

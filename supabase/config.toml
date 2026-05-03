@@ -18,3 +18,27 @@ verify_jwt = false
 
 [functions.update-pitch-status]
 verify_jwt = false
+
+[functions.intake-create-canonical]
+verify_jwt = false
+
+[functions.intake-ingest-bureau-pdfs]
+verify_jwt = false
+
+[functions.intake-score-file]
+verify_jwt = false
+
+[functions.intake-approve-pricing]
+verify_jwt = false
+
+[functions.intake-generate-summary]
+verify_jwt = false
+
+[functions.payments-record]
+verify_jwt = false
+
+[functions.payments-status]
+verify_jwt = false
+
+[functions.payments-mark-late]
+verify_jwt = false
