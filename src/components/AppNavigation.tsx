@@ -1,8 +1,10 @@
 import { NavLink } from "react-router-dom";
 import { ClipboardList, FileSearch, Scale, Zap } from "lucide-react";
 import AutomationBadge from "@/components/AutomationBadge";
+import { useStaffRole } from "@/hooks/useStaffRole";
 
 const AppNavigation = () => {
+  const { isStaff } = useStaffRole();
   return (
     <nav className="w-full border-b border-border bg-card/80 backdrop-blur-sm sticky top-0 z-50">
       <div className="container mx-auto px-4">
@@ -48,6 +50,7 @@ const AppNavigation = () => {
               <span className="sm:hidden">Disputes</span>
             </NavLink>
 
+            {isStaff && (
             <NavLink
               to="/intake"
               className={({ isActive }) =>
@@ -62,6 +65,7 @@ const AppNavigation = () => {
               <span className="hidden sm:inline">Intake</span>
               <span className="sm:hidden">Intake</span>
             </NavLink>
+            )}
 
             <div className="hidden sm:block ml-2">
               <AutomationBadge />
