@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { corsFor } from "../_shared/staff-cors.ts";
 
 // ── Imports from shared contract (single source of truth) ──
 import { CHUNK_SYSTEM_PROMPT } from "../_shared/credit-parser-prompt.ts";
@@ -7,14 +8,10 @@ import { postProcessChunkResult } from "../_shared/parser-validator.ts";
 import { PARSER_ERROR_CODES } from "../_shared/parser-contract.ts";
 import { validateSchema, ensureRequiredArrays } from "../_shared/parser-schema.ts";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
-
 const MAX_IMAGES_PER_CHUNK = 3;
 
 serve(async (req) => {
+  const corsHeaders = corsFor(req);
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
