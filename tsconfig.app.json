@@ -19,6 +19,9 @@
     "paths": {
       "@/*": [
         "./src/*"
+      ],
+      "@cc-intake/*": [
+        "./supabase/functions/_shared/*"
       ]
     },
     "skipLibCheck": true,
