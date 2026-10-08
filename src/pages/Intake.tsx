@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import { useStaffRole } from "@/hooks/useStaffRole";
 import AppNavigation from "@/components/AppNavigation";
 
 const FN = (name: string) =>
@@ -13,6 +14,7 @@ const FN = (name: string) =>
 
 export default function Intake() {
   const { toast } = useToast();
+  const access = useStaffRole();
   const [session, setSession] = useState<unknown>(null);
   const [clients, setClients] = useState<{ id: string; status: string; created_at: string }[]>([]);
   const [clientId, setClientId] = useState("");
@@ -60,8 +62,9 @@ export default function Intake() {
   }, [headers]);
 
   useEffect(() => {
+    if (!access.isStaff) return;
     void loadClients();
-  }, [loadClients]);
+  }, [access.isStaff, loadClients]);
 
   const onCreateCanonical = async () => {
     setBusy(true);
@@ -216,6 +219,26 @@ export default function Intake() {
       setBusy(false);
     }
   };
+
+  if (!access.ready || !access.isStaff) {
+    return (
+      <div className="min-h-screen bg-background">
+        <AppNavigation />
+        <main className="container max-w-3xl py-8">
+          <Card>
+            <CardHeader>
+              <CardTitle>{access.ready ? "Intake is for staff" : "Checking access"}</CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground">
+              {access.ready
+                ? "Fee quotes and client intake stay on the staff side. The analyzer is still available from the home page for your own file."
+                : "Confirming whether this login is staff."}
+            </CardContent>
+          </Card>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">

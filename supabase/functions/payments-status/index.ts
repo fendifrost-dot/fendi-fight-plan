@@ -1,17 +1,19 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { corsHeaders, json, requireOperator } from "../_shared/intake-auth.ts";
+import { corsFor, json as jsonWithCors, requireOperator } from "../_shared/intake-auth.ts";
 import type { IntakeClientRecord } from "../_shared/intake-types.ts";
 import { recomputeDerivedFields } from "../_shared/intake-record-helpers.ts";
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+  const cors = corsFor(req);
+  const json = (data: unknown, status = 200) => jsonWithCors(data, status, cors);
+  if (req.method === "OPTIONS") return new Response(null, { headers: cors });
   if (req.method !== "GET") return json({ error: "Method not allowed" }, 405);
 
   const url = new URL(req.url);
   const clientId = url.searchParams.get("clientId");
   const hubOp = url.searchParams.get("operatorUserId");
   const auth = await requireOperator(req, hubOp ? { operatorUserId: hubOp } : undefined);
-  if (!auth.ok) return new Response(auth.response.body, { status: auth.response.status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  if (!auth.ok) return new Response(auth.response.body, { status: auth.response.status, headers: { ...cors, "Content-Type": "application/json" } });
 
   if (!clientId) return json({ error: "clientId query param required" }, 400);
 

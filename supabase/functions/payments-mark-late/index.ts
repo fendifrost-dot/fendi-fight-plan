@@ -1,5 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { corsHeaders, json } from "../_shared/intake-auth.ts";
+import { corsFor, json as jsonWithCors, requireHubWrite } from "../_shared/intake-auth.ts";
 import type { IntakeClientRecord } from "../_shared/intake-types.ts";
 import { mergeRecordJson, recomputeDerivedFields } from "../_shared/intake-record-helpers.ts";
 
@@ -10,13 +10,17 @@ function daysBetween(a: string, b: string): number {
 }
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+  const cors = corsFor(req);
+  const json = (data: unknown, status = 200) => jsonWithCors(data, status, cors);
+  if (req.method === "OPTIONS") return new Response(null, { headers: cors });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
-  const apiKey = req.headers.get("x-api-key");
-  const expectedKey = Deno.env.get("FANFUEL_HUB_KEY");
-  if (!expectedKey || apiKey !== expectedKey) {
-    return json({ error: "Unauthorized" }, 401);
+  const hub = await requireHubWrite(req, "payments-mark-late");
+  if (!hub.ok) {
+    return new Response(hub.response.body, {
+      status: hub.response.status,
+      headers: { ...cors, "Content-Type": "application/json" },
+    });
   }
 
   let graceDays = 5;
