@@ -1,11 +1,13 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { corsHeaders, json, requireOperator } from "../_shared/intake-auth.ts";
+import { corsFor, json as jsonWithCors, requireOperator } from "../_shared/intake-auth.ts";
 import type { IntakeClientRecord } from "../_shared/intake-types.ts";
 import { computeFileProfile, computePricingRecommendation } from "../_shared/intake-score-pricing.ts";
 import { mergeRecordJson, recomputeDerivedFields } from "../_shared/intake-record-helpers.ts";
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+  const cors = corsFor(req);
+  const json = (data: unknown, status = 200) => jsonWithCors(data, status, cors);
+  if (req.method === "OPTIONS") return new Response(null, { headers: cors });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   const body = await req.json().catch(() => ({})) as {
@@ -16,7 +18,7 @@ Deno.serve(async (req) => {
   };
 
   const auth = await requireOperator(req, body);
-  if (!auth.ok) return new Response(auth.response.body, { status: auth.response.status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  if (!auth.ok) return new Response(auth.response.body, { status: auth.response.status, headers: { ...cors, "Content-Type": "application/json" } });
 
   let rec: IntakeClientRecord | null = body.record ?? null;
 

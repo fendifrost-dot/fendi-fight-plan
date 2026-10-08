@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { corsFor, timingSafeEqual } from "../_shared/staff-cors.ts";
 
 // ── Imports from shared contract (single source of truth) ──
 import { WORKER_SYSTEM_PROMPT, WORKER_ACCOUNTS_PROMPT } from "../_shared/credit-parser-prompt.ts";
@@ -28,11 +29,6 @@ const PARSER_CONTRACT_VERSION = "v2-canonical";
 
 // Build fingerprint
 console.log("ANALYSIS_WORKER_BUILD", { version: "contract_enforced_v2_canonical", model: "google/gemini-3-flash-preview", wallClockThresholdMs: 100000, aiTimeoutMs: 30000, maxRetries: 0, sharedContract: true, merging: false, contractVersion: PARSER_CONTRACT_VERSION });
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
 
 const MAX_IMAGES_PER_CHUNK = 3;
 const AI_TIMEOUT_MS = 30000;
@@ -328,6 +324,7 @@ async function selfChain(supabaseUrl: string, serviceKey: string, jobId: string,
 }
 
 serve(async (req) => {
+  const corsHeaders = corsFor(req);
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
@@ -353,6 +350,19 @@ serve(async (req) => {
     const { data: job, error: fetchError } = await client.from("analysis_jobs").select("*").eq("id", jobId).maybeSingle();
     if (fetchError || !job) {
       return new Response(JSON.stringify({ error: "Job not found" }), { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    const bearer = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+    const serviceCall = timingSafeEqual(bearer, supabaseServiceKey);
+    if (!serviceCall) {
+      const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+      const userClient = createClient(supabaseUrl, anonKey, {
+        global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } },
+      });
+      const { data: userData, error: userErr } = await userClient.auth.getUser();
+      if (userErr || !userData.user || userData.user.id !== job.user_id) {
+        return new Response(JSON.stringify({ error: "Job not found" }), { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
     }
 
     if (job.status === "DONE" || job.status === "FAILED" || job.status === "PARTIAL") {

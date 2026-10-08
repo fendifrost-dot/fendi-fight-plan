@@ -1,12 +1,14 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { corsHeaders, json, requireOperator } from "../_shared/intake-auth.ts";
+import { corsFor, json as jsonWithCors, requireOperator } from "../_shared/intake-auth.ts";
 import type { IntakeClientRecord } from "../_shared/intake-types.ts";
 import { extractPdfText } from "../_shared/intake-pdf-text.ts";
 import { parseBureauReportText } from "../_shared/intake-bureau-parse.ts";
 import { mergeRecordJson, recomputeDerivedFields } from "../_shared/intake-record-helpers.ts";
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+  const cors = corsFor(req);
+  const json = (data: unknown, status = 200) => jsonWithCors(data, status, cors);
+  if (req.method === "OPTIONS") return new Response(null, { headers: cors });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   const url = Deno.env.get("SUPABASE_URL")!;
@@ -22,7 +24,7 @@ Deno.serve(async (req) => {
 
   const hubOp = String(form.get("operatorUserId") ?? "");
   const auth = await requireOperator(req, hubOp ? { operatorUserId: hubOp } : undefined);
-  if (!auth.ok) return new Response(auth.response.body, { status: auth.response.status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  if (!auth.ok) return new Response(auth.response.body, { status: auth.response.status, headers: { ...cors, "Content-Type": "application/json" } });
 
   const clientId = String(form.get("clientId") ?? "");
   if (!clientId) return json({ error: "clientId required" }, 400);

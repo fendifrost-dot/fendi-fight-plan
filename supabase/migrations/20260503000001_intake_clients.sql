@@ -21,11 +21,9 @@ CREATE TRIGGER intake_clients_set_updated_at
 
 ALTER TABLE public.intake_clients ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Operators manage own intake clients"
-  ON public.intake_clients
-  FOR ALL
-  USING (auth.uid() = intake_operator_id)
-  WITH CHECK (auth.uid() = intake_operator_id);
+-- Row access is staff-only. See 20261008021000_staff_intake_lock.sql.
+-- No permissive policy is created here. With RLS on and no policy, the table
+-- stays closed until that migration adds the staff policy.
 
 COMMENT ON TABLE public.intake_clients IS 'Credit Compass new-client intake: single JSON record per directive IntakeClientRecord';
 
@@ -40,35 +38,5 @@ VALUES (
 )
 ON CONFLICT (id) DO NOTHING;
 
-DROP POLICY IF EXISTS "Intake artifacts read own prefix" ON storage.objects;
-DROP POLICY IF EXISTS "Intake artifacts write own prefix" ON storage.objects;
-DROP POLICY IF EXISTS "Intake artifacts update own prefix" ON storage.objects;
-DROP POLICY IF EXISTS "Intake artifacts delete own prefix" ON storage.objects;
-
-CREATE POLICY "Intake artifacts read own prefix"
-  ON storage.objects FOR SELECT
-  USING (
-    bucket_id = 'intake-artifacts'
-    AND (storage.foldername(name))[1] = auth.uid()::text
-  );
-
-CREATE POLICY "Intake artifacts write own prefix"
-  ON storage.objects FOR INSERT
-  WITH CHECK (
-    bucket_id = 'intake-artifacts'
-    AND (storage.foldername(name))[1] = auth.uid()::text
-  );
-
-CREATE POLICY "Intake artifacts update own prefix"
-  ON storage.objects FOR UPDATE
-  USING (
-    bucket_id = 'intake-artifacts'
-    AND (storage.foldername(name))[1] = auth.uid()::text
-  );
-
-CREATE POLICY "Intake artifacts delete own prefix"
-  ON storage.objects FOR DELETE
-  USING (
-    bucket_id = 'intake-artifacts'
-    AND (storage.foldername(name))[1] = auth.uid()::text
-  );
+-- Storage policies are staff-only and are created in
+-- 20261008021000_staff_intake_lock.sql.

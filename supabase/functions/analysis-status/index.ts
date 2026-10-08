@@ -1,12 +1,9 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+import { corsFor } from "../_shared/staff-cors.ts";
 
 serve(async (req) => {
+  const corsHeaders = corsFor(req);
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
@@ -49,6 +46,7 @@ serve(async (req) => {
       .from("analysis_jobs")
       .select("id, status, step, progress, error_code, error_message, error_stage, error_meta, checkpoints, result_data, created_at, updated_at, last_heartbeat_at, started_at, completed_at, stale_after_seconds, attempt_count, max_attempts, input_data")
       .eq("id", jobId)
+      .eq("user_id", user.id)
       .maybeSingle();
 
     if (fetchError) {
