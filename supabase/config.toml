@@ -42,3 +42,15 @@ verify_jwt = false
 
 [functions.payments-mark-late]
 verify_jwt = false
+
+# compass-mcp authenticates an enrolled agent secret (Bearer), not a Supabase
+# JWT. verify_jwt stays false ON PURPOSE — the platform check would reject every
+# agent call. The handler rejects a missing secret, any session JWT, and
+# FANFUEL_HUB_KEY. Do not point this function at the hub key.
+[functions.compass-mcp]
+verify_jwt = false
+
+# Enrollment is a staff session. The platform requires a JWT; the function
+# then requires the staff role on top of it.
+[functions.compass-mcp-enroll]
+verify_jwt = true
