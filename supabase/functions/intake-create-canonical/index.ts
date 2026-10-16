@@ -24,16 +24,30 @@ Deno.serve(async (req) => {
   if (!auth.ok) return new Response(auth.response.body, { status: auth.response.status, headers: { ...cors, "Content-Type": "application/json" } });
 
   const c = body.canonical;
-  if (!c?.legalName?.trim() || !c.dob || !c.currentAddress?.line1 || !c.phone || !c.email) {
-    return json({ error: "Missing required canonical fields" }, 400);
+  // Agents and staff may open a file with only a legal name; missing contact
+  // fields are filled with pending placeholders so the rest of intake can run.
+  if (!c?.legalName?.trim()) {
+    return json({ error: "legal_name is required" }, 400);
   }
 
   const parts = parseCanonicalNameParts(c.legalName);
+  const addr = c.currentAddress ?? { line1: "", city: "", state: "", zip: "" };
   const canonical: IntakeCanonical = {
     ...c,
+    legalName: c.legalName.trim(),
     legalNameFirst: c.legalNameFirst || parts.first,
     legalNameMiddle: c.legalNameMiddle ?? parts.middle,
     legalNameLast: c.legalNameLast || parts.last,
+    dob: c.dob?.trim() || "1900-01-01",
+    currentAddress: {
+      line1: addr.line1?.trim() || "Address pending",
+      line2: addr.line2,
+      city: addr.city?.trim() || "Pending",
+      state: (addr.state?.trim() || "XX").toUpperCase().slice(0, 2),
+      zip: addr.zip?.trim() || "00000",
+    },
+    phone: c.phone?.trim() || "0000000000",
+    email: (c.email?.trim() || "pending@example.invalid").toLowerCase(),
   };
 
   const serviceUrl = Deno.env.get("SUPABASE_URL")!;

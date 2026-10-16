@@ -24,7 +24,7 @@ function extraOrigins(): string[] {
 
 export function corsFor(
   req: Request,
-  allowHeaders = "authorization, x-client-info, apikey, content-type, x-api-key",
+  allowHeaders = "authorization, x-client-info, apikey, content-type, x-api-key, x-operator-user-id",
 ): Record<string, string> {
   const headers: Record<string, string> = {
     "Access-Control-Allow-Headers": allowHeaders,

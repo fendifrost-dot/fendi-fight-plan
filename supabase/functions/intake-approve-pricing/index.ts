@@ -50,7 +50,7 @@ Deno.serve(async (req) => {
     .maybeSingle();
 
   if (fetchErr) return json({ error: fetchErr.message }, 500);
-  if (!row || row.intake_operator_id !== auth.userId) return json({ error: "Not found" }, 404);
+  if (!row) return json({ error: "Not found" }, 404);
 
   let rec = recomputeDerivedFields(row.record as unknown as IntakeClientRecord);
   const tier = rec.pricingRecommendation.tier;

@@ -27,7 +27,7 @@ Deno.serve(async (req) => {
     .maybeSingle();
 
   if (error) return json({ error: error.message }, 500);
-  if (!row || row.intake_operator_id !== auth.userId) return json({ error: "Not found" }, 404);
+  if (!row) return json({ error: "Not found" }, 404);
 
   const rec = recomputeDerivedFields(row.record as unknown as IntakeClientRecord);
   const plan = rec.paymentPlan;

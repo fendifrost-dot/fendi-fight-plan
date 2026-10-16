@@ -25,7 +25,7 @@ const CLIENT_ID = "11111111-2222-4333-8444-555555555555";
 const SESSION_ID = "66666666-7777-4888-9999-aaaaaaaaaaaa";
 
 interface HubCall {
-  kind: "hub" | "intake" | "payments";
+  kind: "hub" | "intake" | "payments" | "session" | "sessionGet";
   target: string;
   body: Record<string, unknown>;
 }
@@ -64,6 +64,14 @@ function fakeStore(state: FakeState): CompassMcpStore {
     async intake(path, body) {
       state.calls.push({ kind: "intake", target: path, body });
       return state.hubReply ?? okReply({ clientId: CLIENT_ID, record: { status: "intake" } });
+    },
+    async session(path, body, operatorUserId) {
+      state.calls.push({ kind: "session", target: path, body: { ...body, operatorUserId } });
+      return state.hubReply ?? okReply({ ok: true, path });
+    },
+    async sessionGet(path, query, operatorUserId) {
+      state.calls.push({ kind: "sessionGet", target: path, body: { ...query, operatorUserId } });
+      return state.hubReply ?? okReply({ jobId: query.jobId, status: "QUEUED" });
     },
     async paymentsStatus(clientId, operatorUserId) {
       state.calls.push({ kind: "payments", target: "payments-status", body: { clientId, operatorUserId } });
@@ -198,6 +206,53 @@ describe("intake tools act as the enrolling staff member", () => {
     expect(state.audits[0].subjectId).toBe(CLIENT_ID);
   });
 
+  it("create_intake_client accepts legal_name alone with pending placeholders", async () => {
+    const state: FakeState = { agent: await agentWith(["intake.create"]), audits: [], calls: [] };
+    const res = await rpc(fakeStore(state), "tools/call", {
+      name: "create_intake_client",
+      arguments: { legal_name: "New Client" },
+    });
+    expect(res.json.result?.isError).toBe(false);
+    const canonical = state.calls[0].body.canonical as Record<string, unknown>;
+    expect(canonical.legalName).toBe("New Client");
+    expect(canonical.email).toBe("pending@example.invalid");
+    expect((canonical.currentAddress as Record<string, unknown>).line1).toBe("Address pending");
+  });
+
+  it("session tools call hub-mode edge functions as the enrolling staff member", async () => {
+    const jobId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    const state: FakeState = {
+      agent: await agentWith(["analysis.start", "analysis.read", "letters.dispute", "ai.ask"]),
+      audits: [],
+      calls: [],
+      hubReply: okReply({ jobId, status: "QUEUED" }),
+    };
+    const store = fakeStore(state);
+    await rpc(store, "tools/call", {
+      name: "start_analysis",
+      arguments: { storage_paths: [`${STAFF_ID}/reports/page-1.png`], session_id: SESSION_ID },
+    });
+    await rpc(store, "tools/call", { name: "get_analysis_status", arguments: { job_id: jobId } });
+    await rpc(store, "tools/call", {
+      name: "generate_dispute_letter",
+      arguments: {
+        survey: { goals: [] },
+        extracted_data: { accounts: [] },
+        consumer_info: { fullName: "A" },
+        bureau: { key: "experian" },
+      },
+    });
+    await rpc(store, "tools/call", { name: "ask_compass_ai", arguments: { prompt: "summarize this file" } });
+    expect(state.calls.map((c) => c.kind)).toEqual(["session", "sessionGet", "session", "session"]);
+    expect(state.calls[0]).toMatchObject({
+      target: "analysis-start",
+      body: { operatorUserId: STAFF_ID, sessionId: SESSION_ID },
+    });
+    expect(state.calls[1]).toMatchObject({ target: "analysis-status", body: { jobId, operatorUserId: STAFF_ID } });
+    expect(state.calls[2].target).toBe("generate-dispute-letter");
+    expect(state.calls[3].target).toBe("google-ai-handler");
+  });
+
   it("refuses when the agent has no enrolling staff member", async () => {
     const state: FakeState = { agent: await agentWith(["intake.list"], null), audits: [], calls: [] };
     const res = await rpc(fakeStore(state), "tools/call", { name: "list_intake_clients", arguments: {} });
@@ -234,7 +289,7 @@ describe("intake tools act as the enrolling staff member", () => {
     expect(state.calls[1]).toMatchObject({ kind: "payments", body: { clientId: CLIENT_ID, operatorUserId: STAFF_ID } });
   });
 
-  it("list and get intake clients are scoped to the operator and summarized", async () => {
+  it("list and get intake clients are summarized for staff agents", async () => {
     const state: FakeState = { agent: await agentWith(["intake.list", "intake.read"]), audits: [], calls: [], intakeRows: [intakeRow] };
     const store = fakeStore(state);
     const listed = await rpc(store, "tools/call", { name: "list_intake_clients", arguments: { status: "approved" } });
@@ -303,7 +358,8 @@ describe("validation", () => {
     email: "a@b.c",
   };
 
-  it("requires every canonical field the intake function requires", () => {
+  it("requires legal_name and validates optional fields when present", () => {
+    expect(parseCreateIntakeArgs({ legal_name: "Only Name" }).ok).toBe(true);
     expect(bad({ ...base, dob: "1990-02-30" })).toBe("dob must be YYYY-MM-DD");
     expect(bad({ ...base, zip: "ABC" })).toBe("zip must be 5 digits or ZIP+4");
     expect(bad({ ...base, state: "Ill" })).toBe("state is too long");

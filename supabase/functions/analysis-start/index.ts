@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsFor } from "../_shared/staff-cors.ts";
+import { hubDenied, hubUser, resolveHubCaller } from "../_shared/hub-caller.ts";
 
 serve(async (req) => {
   const corsHeaders = corsFor(req);
@@ -9,8 +10,10 @@ serve(async (req) => {
   }
 
   try {
+    const hub = await resolveHubCaller(req);
+    if (hub && hub.ok === false) return hubDenied(hub, corsHeaders);
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
+    if (!authHeader && !hub) {
       return new Response(JSON.stringify({ error: { code: "STORAGE_401", message: "Authentication required", stage: "START" } }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -22,10 +25,10 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
     const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } },
+      global: { headers: { Authorization: authHeader ?? "" } },
     });
 
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const { data: { user }, error: authError } = hub ? hubUser(hub) : await supabase.auth.getUser();
     if (authError || !user) {
       return new Response(JSON.stringify({ error: { code: "STORAGE_401", message: "Invalid session", stage: "START" } }), {
         status: 401,
