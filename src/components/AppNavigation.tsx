@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { ClipboardList, FileSearch, Scale, Zap } from "lucide-react";
+import { ClipboardList, FileSearch, Scale, Settings as SettingsIcon, Zap } from "lucide-react";
 import AutomationBadge from "@/components/AutomationBadge";
 import { useStaffRole } from "@/hooks/useStaffRole";
 
@@ -64,6 +64,23 @@ const AppNavigation = () => {
               <ClipboardList className="w-4 h-4" />
               <span className="hidden sm:inline">Intake</span>
               <span className="sm:hidden">Intake</span>
+            </NavLink>
+            )}
+
+            {isStaff && (
+            <NavLink
+              to="/settings"
+              className={({ isActive }) =>
+                `flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
+                  isActive
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                }`
+              }
+            >
+              <SettingsIcon className="w-4 h-4" />
+              <span className="hidden sm:inline">Settings</span>
+              <span className="sm:hidden">Settings</span>
             </NavLink>
             )}
 
