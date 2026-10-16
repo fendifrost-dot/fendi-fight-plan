@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsFor } from "../_shared/staff-cors.ts";
+import { hubDenied, hubUser, resolveHubCaller } from "../_shared/hub-caller.ts";
 
 serve(async (req) => {
   const corsHeaders = corsFor(req);
@@ -9,8 +10,10 @@ serve(async (req) => {
   }
 
   try {
+    const hub = await resolveHubCaller(req);
+    if (hub && hub.ok === false) return hubDenied(hub, corsHeaders);
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
+    if (!authHeader && !hub) {
       return new Response(JSON.stringify({ error: { code: "STORAGE_401", message: "Authentication required", stage: "STATUS" } }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -21,10 +24,15 @@ serve(async (req) => {
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 
     const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } },
+      global: { headers: { Authorization: authHeader ?? "" } },
     });
+    // Hub callers have no session for row security, so read with the service role;
+    // the user_id filter below still scopes the job to the operator.
+    const jobsClient = hub
+      ? createClient(supabaseUrl, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!)
+      : supabase;
 
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const { data: { user }, error: authError } = hub ? hubUser(hub) : await supabase.auth.getUser();
     if (authError || !user) {
       return new Response(JSON.stringify({ error: { code: "STORAGE_401", message: "Invalid session", stage: "STATUS" } }), {
         status: 401,
@@ -42,7 +50,7 @@ serve(async (req) => {
       });
     }
 
-    const { data: job, error: fetchError } = await supabase
+    const { data: job, error: fetchError } = await jobsClient
       .from("analysis_jobs")
       .select("id, status, step, progress, error_code, error_message, error_stage, error_meta, checkpoints, result_data, created_at, updated_at, last_heartbeat_at, started_at, completed_at, stale_after_seconds, attempt_count, max_attempts, input_data")
       .eq("id", jobId)
