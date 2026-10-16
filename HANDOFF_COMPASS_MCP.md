@@ -55,11 +55,12 @@ that user's prefix), delete, email, card charges, SQL.
 
 | Thing | State |
 |---|---|
-| Code | ✅ on `main` once PR merges (see PR link in the session summary) |
-| Local validation | ✅ `npx vitest run` all files pass incl. the 14 new; `npx tsc -p tsconfig.app.json --noEmit` clean; eslint clean on every new/changed file |
-| Migration on the live DB | see the live-state section the session appends below |
-| Edge functions `compass-mcp`, `compass-mcp-enroll` deployed | see below |
-| Frontend published (Settings page) | see below |
+| Code | ✅ PR #4 merged 2026-10-16, merge commit `7514c28`. Lovable then added `19d30ec` (its preview-auth plumbing and a regenerated `types.ts` that now carries the two new tables; none of this work) |
+| Local validation | ✅ `npx vitest run src/test/compassMcp.test.ts` 14/14; full suite 394 pass with 4 pre-existing failures in `tradelineSegmentation.test.ts` that this change does not touch; `npx tsc -p tsconfig.app.json --noEmit` clean; eslint clean on every new/changed file |
+| Migration on the live DB | ✅ applied 2026-10-16 through Lovable and re-read: both tables exist, RLS enabled and forced, service_role granted, scopes CHECK lists all 13 scopes, 0 agents, 0 audit rows |
+| Lovable synced `main` | ✅ `compass-mcp/index.ts` read back from Lovable at `main` matches the repo |
+| Edge functions `compass-mcp`, `compass-mcp-enroll` deployed | ✅ Lovable deployed both 2026-10-16 06:45 UTC and probed them: `compass-mcp` without a secret returned 401 `"Unauthorized: missing secret"` (a string only the new handler emits); `compass-mcp-enroll` without a session returned 401. Not re-probed from the authoring session, whose proxy cannot reach `supabase.co` |
+| Frontend published (Settings page) | ⚠️ Publish requested through Lovable (deployment `7201982b…`, `pending` when requested). Not independently verified; open `/settings` as staff and look for "Agent access" |
 | Agents enrolled | ❌ none. Enrollment is a staff action in Settings → Agent access; the secret is shown once in the browser and never in chat |
 
 ## Hard rules
