@@ -1,9 +1,10 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { hubDenied, hubUser, resolveHubCaller } from "../_shared/hub-caller.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-api-key, x-operator-user-id",
 };
 
 // Bureau-specific account filtering
@@ -251,8 +252,10 @@ serve(async (req) => {
   }
 
   try {
+    const hub = await resolveHubCaller(req);
+    if (hub && hub.ok === false) return hubDenied(hub, corsHeaders);
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
+    if (!authHeader && !hub) {
       return new Response(JSON.stringify({ error: "Authentication required" }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -269,10 +272,10 @@ serve(async (req) => {
     }
 
     const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } },
+      global: { headers: { Authorization: authHeader ?? "" } },
     });
 
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const { data: { user }, error: authError } = hub ? hubUser(hub) : await supabase.auth.getUser();
     if (authError || !user) {
       return new Response(JSON.stringify({ error: "Invalid or expired session" }), {
         status: 401,

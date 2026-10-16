@@ -35,7 +35,7 @@ Deno.serve(async (req) => {
     .maybeSingle();
 
   if (fetchErr) return json({ error: fetchErr.message }, 500);
-  if (!row || row.intake_operator_id !== auth.userId) {
+  if (!row) {
     return json({ error: "Not found" }, 404);
   }
 

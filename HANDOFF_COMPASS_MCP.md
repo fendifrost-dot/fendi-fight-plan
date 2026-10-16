@@ -1,23 +1,15 @@
 # Handoff — Credit Compass MCP
 
-Written 2026-10-16. Repo `fendifrost-dot/fendi-fight-plan` (Credit Compass).
+Written 2026-10-16; expanded same day for full staff tool authority.
+Repo `fendifrost-dot/fendi-fight-plan` (Credit Compass).
 Lovable project **Credit Compass** `bfe3ffa4-da7d-42ae-ab36-7b020e50ac3c`,
 workspace `A89kW78EdcdagG7TLXiw`. Supabase (Lovable Cloud) `imjnqwcrgpqrouiiazam`.
 
 ## What this is
 
-Credit Compass had no MCP server. Agents could only reach it through the Control
-Center hub key, which carries no agent identity and no scopes. This adds a server
-modeled on the Credit Guardian MCP (fairway-fixer-18): staff enroll an agent in
-Settings → Agent access, the secret is shown once and stored as a hash, every call
-writes an audit row first, and tools are gated by scope.
-
-The tools do not re-implement Compass logic. Each one calls the project's own
-hub-authenticated edge function (`control-center-api`, `intake-*`, `payments-*`)
-with the enrolling staff member as the operator, so existing validation, the staff
-role check, and `hub_operator_audit` rows all still apply. Everything an agent
-creates is attributed to that staff member (`dispute_sessions.user_id`,
-`intake_clients.intake_operator_id`).
+Credit Compass MCP lets enrolled agents act as the staff member who enrolled them.
+Every call writes `mcp_audit_log` first, then calls the project's own edge functions
+(hub key + operator) so staff checks and `hub_operator_audit` still apply.
 
 | Scope | Tool | Calls |
 |---|---|---|
@@ -26,72 +18,83 @@ creates is attributed to that staff member (`dispute_sessions.user_id`,
 | `reports.read` | `get_report` | `get_report` |
 | `assessments.create` | `create_assessment` | `create_assessment` as the staff user |
 | `reports.generate` | `generate_report` | `generate_report` |
-| `intake.list` | `list_intake_clients` | direct read, operator-scoped, summarized |
-| `intake.read` | `get_intake_client` | direct read, operator-scoped, full record |
-| `intake.create` | `create_intake_client` | `intake-create-canonical` |
+| `intake.list` | `list_intake_clients` | direct read, all intake clients, summarized |
+| `intake.read` | `get_intake_client` | direct read, full record |
+| `intake.create` | `create_intake_client` | `intake-create-canonical` (**legal_name only** required) |
 | `intake.score` | `score_intake_client` | `intake-score-file` |
 | `intake.approve_pricing` | `approve_pricing` | `intake-approve-pricing` |
 | `intake.summary` | `generate_intake_summary` | `intake-generate-summary` |
 | `payments.read` | `get_payment_status` | `payments-status` |
 | `payments.record` | `record_payment` | `payments-record` |
+| `payments.mark_late` | `mark_late_payments` | `payments-mark-late` |
+| `analysis.start` | `start_analysis` | `analysis-start` (hub mode) |
+| `analysis.read` | `get_analysis_status` | `analysis-status` (hub mode) |
+| `analysis.chunk` | `analyze_chunk` | `analyze-chunk` (hub mode) |
+| `analysis.response` | `analyze_response` | `analyze-response` (hub mode) |
+| `documents.classify` | `classify_documents` | `classify-documents` (hub mode) |
+| `documents.map` | `map_document` | `map-document` (hub mode) |
+| `letters.dispute` | `generate_dispute_letter` | `generate-dispute-letter` (hub mode) |
+| `letters.specialty_freeze` | `generate_specialty_freeze_letter` | `generate-specialty-freeze-letter` (hub mode) |
+| `ai.ask` | `ask_compass_ai` | `google-ai-handler` (hub mode) |
 
-Not available to agents: bureau PDF ingestion (upload from the app), starting the
-report analyzer (`analysis-start` needs a staff session and storage paths under
-that user's prefix), delete, email, card charges, SQL.
+Still not available to agents: delete, email / pitch send, card charges, SQL.
+Bureau PDF binary upload remains multipart from the app (`intake-ingest-bureau-pdfs`);
+`start_analysis` needs storage paths already under the enrolling staff prefix.
+
+## Hub mode for session-only functions
+
+`supabase/functions/_shared/hub-caller.ts`: a request with `x-api-key` must present
+`FANFUEL_HUB_KEY` and name a staff operator in `x-operator-user-id`. Without
+`x-api-key`, the existing browser session path is unchanged.
+
+Wired into: `analysis-start`, `analysis-status`, `analyze-chunk`, `analyze-response`,
+`classify-documents`, `generate-dispute-letter`, `generate-specialty-freeze-letter`,
+`google-ai-handler`, `map-document`.
+
+Intake mutate tools no longer require `intake_operator_id === operator`; any staff
+operator (including an enrolled agent) may act on any intake client. Creates are
+still attributed to the enrolling staff member.
 
 ## Files
 
 | | |
 |---|---|
-| Migration | `supabase/migrations/20261016120000_compass_mcp_agents.sql` (mcp_agents, mcp_audit_log) |
-| Server | `supabase/functions/_shared/compassMcp.ts` (no Deno imports; vitest imports it) |
+| Migrations | `20261016120000_compass_mcp_agents.sql`, `20261016180000_compass_mcp_full_scopes.sql` |
+| Server | `supabase/functions/_shared/compassMcp.ts` |
 | Store | `supabase/functions/_shared/compassMcpSupabase.ts` |
-| Functions | `supabase/functions/compass-mcp/index.ts` (verify_jwt=false), `supabase/functions/compass-mcp-enroll/index.ts` (verify_jwt=true, staff role) |
-| Config | `supabase/config.toml` |
-| UI | `src/pages/Settings.tsx` at `/settings` (staff only), `src/components/settings/AgentAccessCard.tsx`, nav link |
-| Tests | `src/test/compassMcp.test.ts` (14) |
+| Hub caller | `supabase/functions/_shared/hub-caller.ts` |
+| Functions | `compass-mcp`, `compass-mcp-enroll`, plus session functions above |
+| UI | `src/pages/Settings.tsx`, `src/components/settings/AgentAccessCard.tsx` |
+| Tests | `src/test/compassMcp.test.ts` |
 
-## Status
+## Deploy (Lovable only)
 
-| Thing | State |
-|---|---|
-| Code | ✅ PR #4 merged 2026-10-16, merge commit `7514c28`. Lovable then added `19d30ec` (its preview-auth plumbing and a regenerated `types.ts` that now carries the two new tables; none of this work) |
-| Local validation | ✅ `npx vitest run src/test/compassMcp.test.ts` 14/14; full suite 394 pass with 4 pre-existing failures in `tradelineSegmentation.test.ts` that this change does not touch; `npx tsc -p tsconfig.app.json --noEmit` clean; eslint clean on every new/changed file |
-| Migration on the live DB | ✅ applied 2026-10-16 through Lovable and re-read: both tables exist, RLS enabled and forced, service_role granted, scopes CHECK lists all 13 scopes, 0 agents, 0 audit rows |
-| Lovable synced `main` | ✅ `compass-mcp/index.ts` read back from Lovable at `main` matches the repo |
-| Edge functions `compass-mcp`, `compass-mcp-enroll` deployed | ✅ Lovable deployed both 2026-10-16 06:45 UTC and probed them: `compass-mcp` without a secret returned 401 `"Unauthorized: missing secret"` (a string only the new handler emits); `compass-mcp-enroll` without a session returned 401. Not re-probed from the authoring session, whose proxy cannot reach `supabase.co` |
-| Frontend published (Settings page) | ⚠️ Publish requested through Lovable (deployment `7201982b…`, `pending` when requested). Not independently verified; open `/settings` as staff and look for "Agent access" |
-| Agents enrolled | ❌ none. Enrollment is a staff action in Settings → Agent access; the secret is shown once in the browser and never in chat |
+1. Apply `20261016180000_compass_mcp_full_scopes.sql` in the **Lovable SQL editor**.
+2. Redeploy edge functions (Publish ≠ redeploy):
+   - `compass-mcp`, `compass-mcp-enroll`
+   - `analysis-start`, `analysis-status`, `analyze-chunk`, `analyze-response`
+   - `classify-documents`, `map-document`
+   - `generate-dispute-letter`, `generate-specialty-freeze-letter`, `google-ai-handler`
+   - `intake-create-canonical`, `intake-score-file`, `intake-approve-pricing`,
+     `intake-generate-summary`, `intake-ingest-bureau-pdfs`
+   - `payments-status`, `payments-record`, `payments-mark-late`
+3. **Publish** the frontend so Settings shows the expanded scope checkboxes.
+4. Re-enroll agents (or enroll with Read + Write) so they receive the new scopes.
+   Existing agents keep their old scope arrays until re-enrolled or updated.
 
 ## Hard rules
 
 * ❌ No `supabase` CLI (403 = false wall). ❌ No supabase.com dashboard.
-* ❌ Do not edit the migration to make it run; an error means the live DB differs.
+* ❌ Do not edit an already-applied migration to make it run.
 * ❌ Never paste an agent secret or FANFUEL_HUB_KEY into chat, a doc, or a commit.
 * ✅ SQL → Lovable SQL editor or Lovable MCP `query_database`. Functions →
   Lovable → Edge Functions → redeploy. Frontend → Lovable → Publish.
-  **Publish ≠ edge redeploy.**
 
 ## Verify
 
-1. **Migration:** `select to_regclass('public.mcp_agents'), to_regclass('public.mcp_audit_log');`
-   Both non-null.
-2. **Function deployed:** `POST https://imjnqwcrgpqrouiiazam.supabase.co/functions/v1/compass-mcp`
-   with `{"jsonrpc":"2.0","id":1,"method":"ping"}` and no Authorization header.
-   Expected `401` with `"Unauthorized: missing secret"`. `404` = not deployed.
-3. **Enrollment UI:** signed in as staff, `/settings` shows "Agent access" with 13
-   scope checkboxes. Enroll `claude` with Read and write, copy the secret into the
-   MCP client config as `Authorization: Bearer <secret>` against the URL above.
-4. **From that client:** `tools/list` returns **13 tools**. `list_intake_clients`
-   returns `{"clients":[]}` (the live table had 0 rows on 2026-10-16).
-   `select tool, success, error from public.mcp_audit_log order by created_at desc limit 5;`
-   shows those calls.
-
-## Noted, not built
-
-* A `start_analysis` tool. `analysis-start` validates storage paths under the
-  caller's own prefix and needs a session JWT. Supporting it from an agent means
-  either a hub-mode branch in `analysis-start` (like `requireOperator`) or an
-  agent-uploadable storage path convention. Decide before building.
-* Linking a Compass intake client to its Credit Guardian client row. The two
-  databases share no id today.
+1. Migration: scopes CHECK on `mcp_agents` includes `analysis.start` and `ai.ask`.
+2. `POST …/compass-mcp` with `{"jsonrpc":"2.0","id":1,"method":"ping"}` and no
+   Authorization → `401` `"Unauthorized: missing secret"`.
+3. Enrolled agent with write scopes: `tools/list` returns **23 tools**.
+4. `create_intake_client` with only `{ "legal_name": "Test Client" }` succeeds.
+5. `mcp_audit_log` shows those calls.

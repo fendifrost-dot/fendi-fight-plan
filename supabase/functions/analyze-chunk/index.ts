@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsFor } from "../_shared/staff-cors.ts";
+import { hubDenied, hubUser, resolveHubCaller } from "../_shared/hub-caller.ts";
 
 // ── Imports from shared contract (single source of truth) ──
 import { CHUNK_SYSTEM_PROMPT } from "../_shared/credit-parser-prompt.ts";
@@ -18,8 +19,10 @@ serve(async (req) => {
 
   try {
     // Authentication
+    const hub = await resolveHubCaller(req);
+    if (hub && hub.ok === false) return hubDenied(hub, corsHeaders);
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
+    if (!authHeader && !hub) {
       return new Response(JSON.stringify({ error: "Authentication required" }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -37,10 +40,10 @@ serve(async (req) => {
     }
 
     const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } }
+      global: { headers: { Authorization: authHeader ?? "" } }
     });
 
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const { data: { user }, error: authError } = hub ? hubUser(hub) : await supabase.auth.getUser();
     
     if (authError || !user) {
       return new Response(JSON.stringify({ error: "Invalid session" }), {

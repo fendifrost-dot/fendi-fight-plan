@@ -142,6 +142,35 @@ export function createCompassMcpStore(supabase: SupabaseClient): CompassMcpStore
       return readHub(resp);
     },
 
+    async session(path, body, operatorUserId) {
+      const base = hubBase();
+      if (!base) return MISCONFIGURED;
+      const resp = await fetch(`${base.url}/functions/v1/${path}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": base.key,
+          "x-operator-user-id": operatorUserId,
+        },
+        body: JSON.stringify(body),
+      });
+      return readHub(resp);
+    },
+
+    async sessionGet(path, query, operatorUserId) {
+      const base = hubBase();
+      if (!base) return MISCONFIGURED;
+      const qs = new URLSearchParams(query);
+      const resp = await fetch(`${base.url}/functions/v1/${path}?${qs}`, {
+        method: "GET",
+        headers: {
+          "x-api-key": base.key,
+          "x-operator-user-id": operatorUserId,
+        },
+      });
+      return readHub(resp);
+    },
+
     async paymentsStatus(clientId, operatorUserId) {
       const base = hubBase();
       if (!base) return MISCONFIGURED;
@@ -153,23 +182,22 @@ export function createCompassMcpStore(supabase: SupabaseClient): CompassMcpStore
       return readHub(resp);
     },
 
-    async listIntakeClients(operatorUserId, limit) {
+    async listIntakeClients(_operatorUserId, limit) {
+      // Staff-attributed agents may list every intake client (not only their own).
       const { data, error } = await supabase
         .from("intake_clients")
         .select("id, status, created_at, updated_at, record")
-        .eq("intake_operator_id", operatorUserId)
         .order("created_at", { ascending: false })
         .limit(limit);
       if (error) return dbFail(error);
       return { data: (data ?? []).map((row) => asIntakeRow(asRecord(row))) };
     },
 
-    async getIntakeClient(operatorUserId, clientId) {
+    async getIntakeClient(_operatorUserId, clientId) {
       const { data, error } = await supabase
         .from("intake_clients")
         .select("id, status, created_at, updated_at, record")
         .eq("id", clientId)
-        .eq("intake_operator_id", operatorUserId)
         .maybeSingle();
       if (error) return dbFail(error);
       if (!data) return { notFound: true };

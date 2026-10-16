@@ -17,7 +17,7 @@
  */
 
 export const SERVER_NAME = "credit-compass";
-export const SERVER_VERSION = "1.0.0";
+export const SERVER_VERSION = "1.1.0";
 
 export const SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"] as const;
 export const LATEST_PROTOCOL_VERSION = "2025-06-18";
@@ -29,6 +29,7 @@ export const READ_SCOPES = [
   "intake.list",
   "intake.read",
   "payments.read",
+  "analysis.read",
 ] as const;
 
 export const WRITE_SCOPES = [
@@ -39,6 +40,15 @@ export const WRITE_SCOPES = [
   "intake.approve_pricing",
   "intake.summary",
   "payments.record",
+  "payments.mark_late",
+  "analysis.start",
+  "analysis.chunk",
+  "analysis.response",
+  "documents.classify",
+  "documents.map",
+  "letters.dispute",
+  "letters.specialty_freeze",
+  "ai.ask",
 ] as const;
 
 export const ALL_SCOPES = [...READ_SCOPES, ...WRITE_SCOPES] as const;
@@ -119,6 +129,10 @@ export interface CompassMcpStore {
   hub(action: string, params: Record<string, unknown>): Promise<HubResult>;
   /** intake-* / payments-record with the hub key; operatorUserId is set by the caller. */
   intake(path: string, body: Record<string, unknown>): Promise<HubResult>;
+  /** Session-only edge functions via hub mode (x-api-key + x-operator-user-id). */
+  session(path: string, body: Record<string, unknown>, operatorUserId: string): Promise<HubResult>;
+  /** Session-only GET (analysis-status) via hub mode. */
+  sessionGet(path: string, query: Record<string, string>, operatorUserId: string): Promise<HubResult>;
   /** payments-status (GET) with the hub key. */
   paymentsStatus(clientId: string, operatorUserId: string): Promise<HubResult>;
   listIntakeClients(operatorUserId: string, limit: number): Promise<{ data: IntakeClientRow[] } | { error: string }>;
@@ -279,12 +293,12 @@ const TOOLS: ToolDef[] = [
     name: "create_intake_client",
     scope: "intake.create",
     description:
-      "Start a new intake client from canonical identity. legal_name, dob, address_line1, city, state, zip, phone, and email are required. " +
-      "The record is owned by the staff member who enrolled this agent. Bureau PDFs are ingested from the app afterwards.",
+      "Start a new intake client. Only legal_name is required; dob, address, phone, and email may be omitted and are filled with pending placeholders. " +
+      "The record is attributed to the staff member who enrolled this agent. Bureau PDFs can be ingested from the app afterwards.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
-      required: ["legal_name", "dob", "address_line1", "city", "state", "zip", "phone", "email"],
+      required: ["legal_name"],
       properties: {
         legal_name: { type: "string" },
         dob: dateSchema,
@@ -372,6 +386,159 @@ const TOOLS: ToolDef[] = [
         method: { type: "string" },
         date: dateSchema,
         reference: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "mark_late_payments",
+    scope: "payments.mark_late",
+    description: "Mark overdue intake payment plans as late. Optional grace_days (default 5). Does not charge anyone.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { grace_days: { type: "integer", minimum: 0 } },
+    },
+  },
+  {
+    name: "start_analysis",
+    scope: "analysis.start",
+    description:
+      "Queue a report analysis job. storage_paths must already exist under the enrolling staff member's storage prefix (`{staff_user_id}/...`). " +
+      "Returns a job_id; poll with get_analysis_status.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["storage_paths"],
+      properties: {
+        storage_paths: { type: "array", items: { type: "string" }, minItems: 1 },
+        session_id: uuidSchema,
+        questionnaire: { type: "object" },
+        report_type: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "get_analysis_status",
+    scope: "analysis.read",
+    description: "Poll an analysis job started with start_analysis.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["job_id"],
+      properties: { job_id: uuidSchema },
+    },
+  },
+  {
+    name: "analyze_chunk",
+    scope: "analysis.chunk",
+    description:
+      "Run one chunk of credit-report extraction (text and/or page images). Prefer report_text when available. Does not persist a job.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        report_text: { type: "string" },
+        images: { type: "array", items: { type: "string" }, description: "data URLs or https image URLs" },
+        section: { type: "string" },
+        chunk_index: { type: "integer", minimum: 0 },
+        total_chunks: { type: "integer", minimum: 1 },
+        questionnaire: { type: "object" },
+        locked_fields: { type: "object" },
+      },
+    },
+  },
+  {
+    name: "analyze_response",
+    scope: "analysis.response",
+    description: "Analyze a bureau response (text and/or images) against the dispute questionnaire. Sync path; may take a while.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        response_text: { type: "string" },
+        response_images: { type: "array", items: { type: "string" } },
+        bureau: { type: "string", enum: [...BUREAUS, "multi-bureau"] },
+        questionnaire: { type: "object" },
+        has_identity_docs: { type: "boolean" },
+      },
+    },
+  },
+  {
+    name: "classify_documents",
+    scope: "documents.classify",
+    description: "Classify dispute documents / bureau response text into structured dispute info.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["documents"],
+      properties: {
+        documents: { type: "array", items: { type: "object" } },
+        bureau_response_text: { type: "string" },
+        prior_letter_text: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "map_document",
+    scope: "documents.map",
+    description: "Map credit-report page images into section boundaries (personal_info, accounts, inquiries, etc.).",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["images"],
+      properties: { images: { type: "array", items: { type: "string" }, minItems: 1 } },
+    },
+  },
+  {
+    name: "generate_dispute_letter",
+    scope: "letters.dispute",
+    description:
+      "Generate one FCRA dispute letter for a bureau from survey + extracted data + consumer info. Does not mail anything.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["survey", "extracted_data", "consumer_info", "bureau"],
+      properties: {
+        survey: { type: "object" },
+        extracted_data: { type: "object" },
+        consumer_info: { type: "object" },
+        bureau: { type: "object" },
+      },
+    },
+  },
+  {
+    name: "generate_specialty_freeze_letter",
+    scope: "letters.specialty_freeze",
+    description:
+      "Generate a specialty-bureau freeze/dispute letter (lexisnexis, innovis, corelogic, sagestream). Does not mail anything.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["bureau_key", "consumer_info"],
+      properties: {
+        bureau_key: { type: "string", enum: ["lexisnexis", "innovis", "corelogic", "sagestream"] },
+        consumer_info: { type: "object" },
+        is_identity_theft: { type: "boolean" },
+        has_ftc_report: { type: "boolean" },
+        ftc_report_number: { type: "string" },
+        disputed_items: { type: "array", items: { type: "object" } },
+        additional_facts: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "ask_compass_ai",
+    scope: "ai.ask",
+    description: "Ask Credit Compass AI (credit context routes to Lovable AI; marketing to Vertex). Staff-attributed via hub mode.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        prompt: { type: "string" },
+        messages: { type: "array", items: { type: "object" } },
+        context: { type: "string", enum: ["credit", "marketing"] },
+        model_id: { type: "string" },
+        extracted_data: { type: "object" },
       },
     },
   },
@@ -556,7 +723,7 @@ function requireAmount(value: unknown, field: string): number | { error: string 
 }
 
 function subjectIdOf(args: Record<string, unknown>): string | null {
-  for (const key of ["client_id", "session_id"]) {
+  for (const key of ["client_id", "session_id", "job_id"]) {
     const id = args[key];
     if (typeof id === "string" && UUID_RE.test(id)) return id;
   }
@@ -633,25 +800,46 @@ export function parseCreateIntakeArgs(
 
   const legalName = requireText(args.legal_name, "legal_name", 200);
   if (typeof legalName !== "string") return { ok: false, error: legalName.error };
-  const dob = requireDate(args.dob, "dob");
-  if (typeof dob !== "string") return { ok: false, error: dob.error };
-  const line1 = requireText(args.address_line1, "address_line1", 200);
-  if (typeof line1 !== "string") return { ok: false, error: line1.error };
+
+  let dob: string | undefined;
+  if (args.dob != null) {
+    const parsed = requireDate(args.dob, "dob");
+    if (typeof parsed !== "string") return { ok: false, error: parsed.error };
+    dob = parsed;
+  }
+
+  const line1 = optionalText(args.address_line1, "address_line1", 200);
+  if (line1 && typeof line1 === "object") return { ok: false, error: line1.error };
   const line2 = optionalText(args.address_line2, "address_line2", 200);
   if (line2 && typeof line2 === "object") return { ok: false, error: line2.error };
-  const city = requireText(args.city, "city", 100);
-  if (typeof city !== "string") return { ok: false, error: city.error };
-  const state = requireText(args.state, "state", 2);
-  if (typeof state !== "string") return { ok: false, error: state.error };
-  if (!/^[A-Za-z]{2}$/.test(state)) return { ok: false, error: "state must be two letters" };
-  const zip = requireText(args.zip, "zip", 10);
-  if (typeof zip !== "string") return { ok: false, error: zip.error };
-  if (!/^\d{5}(-\d{4})?$/.test(zip)) return { ok: false, error: "zip must be 5 digits or ZIP+4" };
-  const phone = requireText(args.phone, "phone", 40);
-  if (typeof phone !== "string") return { ok: false, error: phone.error };
-  const email = requireText(args.email, "email", 320);
-  if (typeof email !== "string") return { ok: false, error: email.error };
-  if (!email.includes("@")) return { ok: false, error: "email must contain @" };
+  const city = optionalText(args.city, "city", 100);
+  if (city && typeof city === "object") return { ok: false, error: city.error };
+
+  let state: string | undefined;
+  if (args.state != null) {
+    const parsed = requireText(args.state, "state", 2);
+    if (typeof parsed !== "string") return { ok: false, error: parsed.error };
+    if (!/^[A-Za-z]{2}$/.test(parsed)) return { ok: false, error: "state must be two letters" };
+    state = parsed.toUpperCase();
+  }
+
+  let zip: string | undefined;
+  if (args.zip != null) {
+    const parsed = requireText(args.zip, "zip", 10);
+    if (typeof parsed !== "string") return { ok: false, error: parsed.error };
+    if (!/^\d{5}(-\d{4})?$/.test(parsed)) return { ok: false, error: "zip must be 5 digits or ZIP+4" };
+    zip = parsed;
+  }
+
+  const phone = optionalText(args.phone, "phone", 40);
+  if (phone && typeof phone === "object") return { ok: false, error: phone.error };
+  let email: string | undefined;
+  if (args.email != null) {
+    const parsed = requireText(args.email, "email", 320);
+    if (typeof parsed !== "string") return { ok: false, error: parsed.error };
+    if (!parsed.includes("@")) return { ok: false, error: "email must contain @" };
+    email = parsed.toLowerCase();
+  }
   const employer = optionalText(args.employer, "employer", 200);
   if (employer && typeof employer === "object") return { ok: false, error: employer.error };
   const referredBy = optionalText(args.referred_by, "referred_by", 200);
@@ -659,10 +847,16 @@ export function parseCreateIntakeArgs(
 
   const canonical: Record<string, unknown> = {
     legalName,
-    dob,
-    currentAddress: { line1, line2: typeof line2 === "string" ? line2 : undefined, city, state: state.toUpperCase(), zip },
-    phone,
-    email: email.toLowerCase(),
+    dob: dob ?? "1900-01-01",
+    currentAddress: {
+      line1: typeof line1 === "string" ? line1 : "Address pending",
+      line2: typeof line2 === "string" ? line2 : undefined,
+      city: typeof city === "string" ? city : "Pending",
+      state: state ?? "XX",
+      zip: zip ?? "00000",
+    },
+    phone: typeof phone === "string" ? phone : "0000000000",
+    email: email ?? "pending@example.invalid",
   };
   if (typeof employer === "string") canonical.employer = employer;
   if (typeof referredBy === "string") canonical.referredBy = referredBy;
@@ -722,8 +916,14 @@ async function executeTool(
   args: Record<string, unknown>,
 ): Promise<ToolOutcome> {
   const operator = agent.createdBy && UUID_RE.test(agent.createdBy) ? agent.createdBy : null;
-  const needsOperator = name !== "list_assessments" && name !== "get_assessment" && name !== "get_report" && name !== "generate_report";
-  if (needsOperator && !operator) {
+  const noOperatorOk = new Set([
+    "list_assessments",
+    "get_assessment",
+    "get_report",
+    "generate_report",
+    "mark_late_payments",
+  ]);
+  if (!noOperatorOk.has(name) && !operator) {
     return { ok: false, error: "this agent has no enrolling staff member to act as; re-enroll it in Settings" };
   }
 
@@ -956,6 +1156,249 @@ async function executeTool(
     return { ok: true, subjectId: clientId, value: { client_id: clientId, payment_plan: body.paymentPlan ?? null } };
   }
 
+  if (name === "mark_late_payments") {
+    const extra = unknownField(args, ["grace_days"]);
+    if (extra) return { ok: false, error: `unknown field: ${extra}` };
+    let graceDays: number | undefined;
+    if (args.grace_days != null) {
+      if (typeof args.grace_days !== "number" || !Number.isInteger(args.grace_days) || args.grace_days < 0) {
+        return { ok: false, error: "grace_days must be a non-negative integer" };
+      }
+      graceDays = args.grace_days;
+    }
+    return fromHub(await store.intake("payments-mark-late", graceDays == null ? {} : { graceDays }));
+  }
+
+  if (name === "start_analysis") {
+    const extra = unknownField(args, ["storage_paths", "session_id", "questionnaire", "report_type"]);
+    if (extra) return { ok: false, error: `unknown field: ${extra}` };
+    if (!Array.isArray(args.storage_paths) || args.storage_paths.length === 0) {
+      return { ok: false, error: "storage_paths must be a non-empty list" };
+    }
+    const storagePaths: string[] = [];
+    for (const path of args.storage_paths) {
+      if (typeof path !== "string" || path.trim() === "") return { ok: false, error: "storage_paths must be strings" };
+      storagePaths.push(path);
+    }
+    let sessionId: string | undefined;
+    if (args.session_id != null) {
+      const parsed = requireUuid(args.session_id, "session_id");
+      if (typeof parsed !== "string") return { ok: false, error: parsed.error };
+      sessionId = parsed;
+    }
+    if (args.questionnaire != null && !isRecord(args.questionnaire)) {
+      return { ok: false, error: "questionnaire must be an object" };
+    }
+    const reportType = optionalText(args.report_type, "report_type", 80);
+    if (reportType && typeof reportType === "object") return { ok: false, error: reportType.error };
+    const result = fromHub(
+      await store.session(
+        "analysis-start",
+        {
+          storagePaths,
+          sessionId,
+          questionnaire: isRecord(args.questionnaire) ? args.questionnaire : {},
+          reportType: typeof reportType === "string" ? reportType : undefined,
+        },
+        operator!,
+      ),
+      sessionId,
+    );
+    if (result.ok !== true) return result;
+    const body = isRecord(result.value) ? result.value : {};
+    const jobId = typeof body.jobId === "string" ? body.jobId : undefined;
+    return { ok: true, subjectId: sessionId ?? jobId, value: body };
+  }
+
+  if (name === "get_analysis_status") {
+    const extra = unknownField(args, ["job_id"]);
+    if (extra) return { ok: false, error: `unknown field: ${extra}` };
+    const jobId = requireUuid(args.job_id, "job_id");
+    if (typeof jobId !== "string") return { ok: false, error: jobId.error };
+    return fromHub(await store.sessionGet("analysis-status", { jobId }, operator!), jobId);
+  }
+
+  if (name === "analyze_chunk") {
+    const extra = unknownField(args, [
+      "report_text",
+      "images",
+      "section",
+      "chunk_index",
+      "total_chunks",
+      "questionnaire",
+      "locked_fields",
+    ]);
+    if (extra) return { ok: false, error: `unknown field: ${extra}` };
+    const reportText = optionalText(args.report_text, "report_text", 500000);
+    if (reportText && typeof reportText === "object") return { ok: false, error: reportText.error };
+    if (args.images != null && !Array.isArray(args.images)) return { ok: false, error: "images must be a list" };
+    if (args.questionnaire != null && !isRecord(args.questionnaire)) return { ok: false, error: "questionnaire must be an object" };
+    if (args.locked_fields != null && !isRecord(args.locked_fields)) return { ok: false, error: "locked_fields must be an object" };
+    const section = optionalText(args.section, "section", 80);
+    if (section && typeof section === "object") return { ok: false, error: section.error };
+    return fromHub(
+      await store.session(
+        "analyze-chunk",
+        {
+          reportText: typeof reportText === "string" ? reportText : undefined,
+          images: Array.isArray(args.images) ? args.images : undefined,
+          section: typeof section === "string" ? section : undefined,
+          chunkIndex: typeof args.chunk_index === "number" ? args.chunk_index : undefined,
+          totalChunks: typeof args.total_chunks === "number" ? args.total_chunks : undefined,
+          questionnaire: isRecord(args.questionnaire) ? args.questionnaire : undefined,
+          lockedFields: isRecord(args.locked_fields) ? args.locked_fields : undefined,
+        },
+        operator!,
+      ),
+    );
+  }
+
+  if (name === "analyze_response") {
+    const extra = unknownField(args, [
+      "response_text",
+      "response_images",
+      "bureau",
+      "questionnaire",
+      "has_identity_docs",
+    ]);
+    if (extra) return { ok: false, error: `unknown field: ${extra}` };
+    const responseText = optionalText(args.response_text, "response_text", 500000);
+    if (responseText && typeof responseText === "object") return { ok: false, error: responseText.error };
+    if (args.response_images != null && !Array.isArray(args.response_images)) {
+      return { ok: false, error: "response_images must be a list" };
+    }
+    if (args.questionnaire != null && !isRecord(args.questionnaire)) return { ok: false, error: "questionnaire must be an object" };
+    return fromHub(
+      await store.session(
+        "analyze-response",
+        {
+          responseText: typeof responseText === "string" ? responseText : undefined,
+          responseImages: Array.isArray(args.response_images) ? args.response_images : undefined,
+          bureau: typeof args.bureau === "string" ? args.bureau : undefined,
+          questionnaire: isRecord(args.questionnaire) ? args.questionnaire : undefined,
+          hasIdentityDocs: args.has_identity_docs === true,
+        },
+        operator!,
+      ),
+    );
+  }
+
+  if (name === "classify_documents") {
+    const extra = unknownField(args, ["documents", "bureau_response_text", "prior_letter_text"]);
+    if (extra) return { ok: false, error: `unknown field: ${extra}` };
+    if (!Array.isArray(args.documents)) return { ok: false, error: "documents must be a list" };
+    const bureauResponseText = optionalText(args.bureau_response_text, "bureau_response_text", 200000);
+    if (bureauResponseText && typeof bureauResponseText === "object") return { ok: false, error: bureauResponseText.error };
+    const priorLetterText = optionalText(args.prior_letter_text, "prior_letter_text", 200000);
+    if (priorLetterText && typeof priorLetterText === "object") return { ok: false, error: priorLetterText.error };
+    return fromHub(
+      await store.session(
+        "classify-documents",
+        {
+          documents: args.documents,
+          bureauResponseText: typeof bureauResponseText === "string" ? bureauResponseText : undefined,
+          priorLetterText: typeof priorLetterText === "string" ? priorLetterText : undefined,
+        },
+        operator!,
+      ),
+    );
+  }
+
+  if (name === "map_document") {
+    const extra = unknownField(args, ["images"]);
+    if (extra) return { ok: false, error: `unknown field: ${extra}` };
+    if (!Array.isArray(args.images) || args.images.length === 0) return { ok: false, error: "images must be a non-empty list" };
+    return fromHub(await store.session("map-document", { images: args.images }, operator!));
+  }
+
+  if (name === "generate_dispute_letter") {
+    const extra = unknownField(args, ["survey", "extracted_data", "consumer_info", "bureau"]);
+    if (extra) return { ok: false, error: `unknown field: ${extra}` };
+    for (const key of ["survey", "extracted_data", "consumer_info", "bureau"] as const) {
+      if (!isRecord(args[key])) return { ok: false, error: `${key} must be an object` };
+    }
+    return fromHub(
+      await store.session(
+        "generate-dispute-letter",
+        {
+          survey: args.survey,
+          extractedData: args.extracted_data,
+          consumerInfo: args.consumer_info,
+          bureau: args.bureau,
+        },
+        operator!,
+      ),
+    );
+  }
+
+  if (name === "generate_specialty_freeze_letter") {
+    const extra = unknownField(args, [
+      "bureau_key",
+      "consumer_info",
+      "is_identity_theft",
+      "has_ftc_report",
+      "ftc_report_number",
+      "disputed_items",
+      "additional_facts",
+    ]);
+    if (extra) return { ok: false, error: `unknown field: ${extra}` };
+    const bureauKey = requireText(args.bureau_key, "bureau_key", 40);
+    if (typeof bureauKey !== "string") return { ok: false, error: bureauKey.error };
+    if (!isRecord(args.consumer_info)) return { ok: false, error: "consumer_info must be an object" };
+    const ftc = optionalText(args.ftc_report_number, "ftc_report_number", 80);
+    if (ftc && typeof ftc === "object") return { ok: false, error: ftc.error };
+    const facts = optionalText(args.additional_facts, "additional_facts", 5000);
+    if (facts && typeof facts === "object") return { ok: false, error: facts.error };
+    if (args.disputed_items != null && !Array.isArray(args.disputed_items)) {
+      return { ok: false, error: "disputed_items must be a list" };
+    }
+    return fromHub(
+      await store.session(
+        "generate-specialty-freeze-letter",
+        {
+          bureauKey,
+          consumerInfo: args.consumer_info,
+          isIdentityTheft: args.is_identity_theft === true,
+          hasFtcReport: args.has_ftc_report === true,
+          ftcReportNumber: typeof ftc === "string" ? ftc : undefined,
+          disputedItems: Array.isArray(args.disputed_items) ? args.disputed_items : undefined,
+          additionalFacts: typeof facts === "string" ? facts : undefined,
+        },
+        operator!,
+      ),
+    );
+  }
+
+  if (name === "ask_compass_ai") {
+    const extra = unknownField(args, ["prompt", "messages", "context", "model_id", "extracted_data"]);
+    if (extra) return { ok: false, error: `unknown field: ${extra}` };
+    const prompt = optionalText(args.prompt, "prompt", 100000);
+    if (prompt && typeof prompt === "object") return { ok: false, error: prompt.error };
+    if (args.messages != null && !Array.isArray(args.messages)) return { ok: false, error: "messages must be a list" };
+    if (prompt == null && args.messages == null) return { ok: false, error: "prompt or messages is required" };
+    if (args.context != null && args.context !== "credit" && args.context !== "marketing") {
+      return { ok: false, error: "context must be credit or marketing" };
+    }
+    const modelId = optionalText(args.model_id, "model_id", 120);
+    if (modelId && typeof modelId === "object") return { ok: false, error: modelId.error };
+    if (args.extracted_data != null && !isRecord(args.extracted_data)) {
+      return { ok: false, error: "extracted_data must be an object" };
+    }
+    return fromHub(
+      await store.session(
+        "google-ai-handler",
+        {
+          prompt: typeof prompt === "string" ? prompt : undefined,
+          messages: Array.isArray(args.messages) ? args.messages : undefined,
+          context: typeof args.context === "string" ? args.context : undefined,
+          modelId: typeof modelId === "string" ? modelId : undefined,
+          extractedData: isRecord(args.extracted_data) ? args.extracted_data : undefined,
+        },
+        operator!,
+      ),
+    );
+  }
+
   return { ok: false, error: "unknown tool" };
 }
 
@@ -1001,7 +1444,8 @@ async function handleMessage(
           capabilities: { tools: { listChanged: false } },
           serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
           instructions:
-            "Credit Compass staff file: assessments, intake clients, pricing, and payment plans. Every call is audited. " +
+            "Credit Compass staff file: assessments, intake, report analysis, document tools, letter generation, pricing, and payments. " +
+            "Agents may create clients with only a legal name and may use every staff workflow tool. Every call is audited. " +
             "This server cannot delete anything, send mail, charge a card, or run SQL.",
         },
       };
