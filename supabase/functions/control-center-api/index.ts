@@ -1,4 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+// deno-lint-ignore no-explicit-any
+type AnyClient = any;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -208,7 +210,7 @@ async function proxyIntakeMultipart(params: any) {
 
 // ── Existing Actions ──
 
-async function getAssessments(supabase: ReturnType<typeof createClient>) {
+async function getAssessments(supabase: AnyClient) {
   const { data, error } = await supabase
     .from("dispute_sessions")
     .select(
@@ -236,7 +238,7 @@ async function getAssessments(supabase: ReturnType<typeof createClient>) {
 }
 
 async function getAssessmentDetail(
-  supabase: ReturnType<typeof createClient>,
+  supabase: AnyClient,
   sessionId: string
 ) {
   if (!sessionId) return json({ error: "session_id required" }, 400);
@@ -290,7 +292,7 @@ async function getAssessmentDetail(
 }
 
 async function createAssessment(
-  supabase: ReturnType<typeof createClient>,
+  supabase: AnyClient,
   params: any
 ) {
   const { user_id, consumer_info, mode, selected_bureaus } = params;
@@ -318,7 +320,7 @@ async function createAssessment(
 }
 
 async function getReport(
-  supabase: ReturnType<typeof createClient>,
+  supabase: AnyClient,
   sessionId: string
 ) {
   if (!sessionId) return json({ error: "session_id required" }, 400);
@@ -347,7 +349,7 @@ async function getReport(
 }
 
 async function generateReport(
-  supabase: ReturnType<typeof createClient>,
+  supabase: AnyClient,
   sessionId: string
 ) {
   if (!sessionId) return json({ error: "session_id required" }, 400);
@@ -437,7 +439,7 @@ async function generateReport(
 // ── Playlist / FanFuel Actions ──
 
 async function getPlaylistTargets(
-  supabase: ReturnType<typeof createClient>,
+  supabase: AnyClient,
   params: any
 ) {
   const { track_name, status, limit = 50 } = params;
@@ -458,7 +460,7 @@ async function getPlaylistTargets(
 }
 
 async function updatePitchStatus(
-  supabase: ReturnType<typeof createClient>,
+  supabase: AnyClient,
   params: any
 ) {
   const { playlist_id, status, notes } = params;
@@ -485,7 +487,7 @@ async function updatePitchStatus(
 }
 
 async function getPitchLog(
-  supabase: ReturnType<typeof createClient>,
+  supabase: AnyClient,
   params: any
 ) {
   const { track_name, limit = 100 } = params;
@@ -517,7 +519,7 @@ async function getPitchLog(
 // ── Email Action ──
 
 async function sendPitchEmail(
-  supabase: ReturnType<typeof createClient>,
+  supabase: AnyClient,
   params: any
 ) {
   const {
