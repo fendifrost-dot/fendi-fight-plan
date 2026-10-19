@@ -125,20 +125,22 @@ function decodeImage(encoded: string): { bytes: Uint8Array; mime: "image/jpeg" |
 }
 
 async function uploadObject(
-  admin: ReturnType<typeof createClient>,
+  // deno-lint-ignore no-explicit-any
+  admin: any,
   path: string,
   body: Uint8Array | string,
   contentType: string,
 ): Promise<{ error: string } | null> {
   const payload = typeof body === "string" ? new TextEncoder().encode(body) : body;
-  const file = new Blob([payload], { type: contentType });
+  const file = new Blob([payload as BlobPart], { type: contentType });
   const { error } = await admin.storage.from(BUCKET).upload(path, file, { contentType, upsert: false });
   if (error) return { error: error.message };
   return null;
 }
 
 async function saveIntakeExtract(
-  admin: ReturnType<typeof createClient>,
+  // deno-lint-ignore no-explicit-any
+  admin: any,
   clientId: string,
   bureau: ParsedBureauUpload["bureau"],
   text: string,

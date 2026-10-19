@@ -292,7 +292,8 @@ Include all derogatory items with maximum inclusion (dispute-safe approach).`;
 
     // ââ Deterministic post-processing via shared validator ââ
     const postProcessed = postProcessAndValidate(normalizedResult, responseText || undefined);
-    if(postProcessed&&postProcessed.derogatory_accounts){postProcessed.derogatory_accounts=filterNonDerogatoryAccounts(postProcessed.derogatory_accounts);}
+    const pp = postProcessed as unknown as { derogatory_accounts?: unknown[] };
+    if (pp && pp.derogatory_accounts) { pp.derogatory_accounts = filterNonDerogatoryAccounts(pp.derogatory_accounts as never); }
 
     // ââ Enforcement: check for EXTRACTION_INCOMPLETE ââ
     if (postProcessed.isError) {
