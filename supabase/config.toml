@@ -50,6 +50,12 @@ verify_jwt = false
 [functions.compass-mcp]
 verify_jwt = false
 
+# analysis-upload authenticates hub mode (x-api-key + x-operator-user-id), the
+# same way analysis-start does when compass-mcp calls it. The platform JWT
+# check would reject that call. The function itself rejects a missing hub key.
+[functions.analysis-upload]
+verify_jwt = false
+
 # Enrollment is a staff session. The platform requires a JWT; the function
 # then requires the staff role on top of it.
 [functions.compass-mcp-enroll]

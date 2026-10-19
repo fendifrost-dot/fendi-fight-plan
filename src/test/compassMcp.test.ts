@@ -246,7 +246,7 @@ describe("intake tools act as the enrolling staff member", () => {
     expect(state.calls.map((c) => c.kind)).toEqual(["session", "sessionGet", "session", "session"]);
     expect(state.calls[0]).toMatchObject({
       target: "analysis-start",
-      body: { operatorUserId: STAFF_ID, sessionId: SESSION_ID },
+      body: { operatorUserId: STAFF_ID, sessionId: SESSION_ID, inputMode: "images", source: "agent_upload" },
     });
     expect(state.calls[1]).toMatchObject({ target: "analysis-status", body: { jobId, operatorUserId: STAFF_ID } });
     expect(state.calls[2].target).toBe("generate-dispute-letter");
@@ -305,6 +305,140 @@ describe("intake tools act as the enrolling staff member", () => {
 
     const filtered = await rpc(store, "tools/call", { name: "list_intake_clients", arguments: { status: "engaged" } });
     expect(toolText(filtered.json.result).clients).toEqual([]);
+  });
+});
+
+describe("bureau report upload", () => {
+  const reportText = "Account CAPITAL ONE balance $1200 status charge off ".repeat(40);
+
+  it("lists the upload tool for an agent with reports.upload", async () => {
+    const store = fakeStore({ agent: await agentWith(ALL_SCOPES), audits: [], calls: [] });
+    const listed = await rpc(store, "tools/list", {});
+    const names = (listed.json.result?.tools as Array<{ name: string }>).map((tool) => tool.name);
+    expect(names).toContain("upload_bureau_report");
+    expect(names).toHaveLength(ALL_SCOPES.length);
+  });
+
+  it("stores the report through analysis-upload and returns the queued job", async () => {
+    const jobId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    const state: FakeState = {
+      agent: await agentWith(["reports.upload"]),
+      audits: [],
+      calls: [],
+      hubReply: okReply({
+        job_id: jobId,
+        status: "QUEUED",
+        queued: true,
+        bureau: "experian",
+        input_mode: "text",
+        page_count: 36,
+        text_chars: reportText.length,
+        storage_paths: [`${STAFF_ID}/upload/chunk-001.txt`],
+        source_pdf_path: `${STAFF_ID}/bureau-reports/upload/source.pdf`,
+        source_pdf_stored: true,
+        session_id: SESSION_ID,
+        client_id: null,
+        upload_id: "upload",
+        intake_saved: false,
+      }),
+    };
+    const res = await rpc(fakeStore(state), "tools/call", {
+      name: "upload_bureau_report",
+      arguments: { bureau: "experian", session_id: SESSION_ID, report_text: reportText, filename: "experian.pdf" },
+    });
+    expect(res.json.result?.isError).toBe(false);
+    expect(toolText(res.json.result)).toMatchObject({
+      job_id: jobId,
+      status: "QUEUED",
+      queued: true,
+      input_mode: "text",
+      session_id: SESSION_ID,
+      bureau: "experian",
+    });
+    expect(state.calls[0]).toMatchObject({
+      kind: "session",
+      target: "analysis-upload",
+      body: { operatorUserId: STAFF_ID, bureau: "experian", session_id: SESSION_ID, queue: true },
+    });
+    expect(String(state.calls[0].body.report_text)).toContain("CAPITAL ONE");
+    expect(JSON.stringify(state.calls[0].body)).not.toContain(SECRET);
+    expect(state.audits[0].success).toBe(true);
+    expect(state.audits[0].subjectId).toBe(SESSION_ID);
+  });
+
+  it("can store without starting, then start_analysis uses the text chunks", async () => {
+    const state: FakeState = {
+      agent: await agentWith(["reports.upload", "analysis.start"]),
+      audits: [],
+      calls: [],
+      hubReply: okReply({
+        queued: false,
+        bureau: "equifax",
+        input_mode: "text",
+        storage_paths: [`${STAFF_ID}/upload/chunk-001.txt`],
+        session_id: null,
+        client_id: CLIENT_ID,
+      }),
+    };
+    const store = fakeStore(state);
+    const uploaded = await rpc(store, "tools/call", {
+      name: "upload_bureau_report",
+      arguments: { bureau: "equifax", client_id: CLIENT_ID, report_text: reportText, queue: false },
+    });
+    expect(toolText(uploaded.json.result).queued).toBe(false);
+    state.hubReply = okReply({ jobId: "job-1", status: "QUEUED" });
+    const started = await rpc(store, "tools/call", {
+      name: "start_analysis",
+      arguments: {
+        storage_paths: [`${STAFF_ID}/upload/chunk-001.txt`],
+        client_id: CLIENT_ID,
+        input_mode: "text",
+        bureau: "equifax",
+        total_pages: 36,
+        report_type: "equifax",
+      },
+    });
+    expect(started.json.result?.isError).toBe(false);
+    expect(state.calls[1]).toMatchObject({
+      target: "analysis-start",
+      body: {
+        operatorUserId: STAFF_ID,
+        clientId: CLIENT_ID,
+        inputMode: "text",
+        bureau: "equifax",
+        totalPages: 36,
+        source: "agent_upload",
+      },
+    });
+  });
+
+  it("refuses a bad upload before any hub call", async () => {
+    const state: FakeState = { agent: await agentWith(["reports.upload", "analysis.start"]), audits: [], calls: [] };
+    const res = await rpc(fakeStore(state), "tools/call", {
+      name: "upload_bureau_report",
+      arguments: { bureau: "experian", session_id: SESSION_ID, pdf_url: "https://169.254.169.254/report.pdf" },
+    });
+    expect(res.json.result?.isError).toBe(true);
+    expect(toolText(res.json.result).error).toContain("not allowed");
+    expect(state.calls).toHaveLength(0);
+    expect(state.audits[0].success).toBe(false);
+
+    const outside = await rpc(fakeStore(state), "tools/call", {
+      name: "start_analysis",
+      arguments: { storage_paths: ["someone-else/page-001.jpg"] },
+    });
+    expect(toolText(outside.json.result).error).toContain("staff member");
+    expect(state.calls).toHaveLength(0);
+  });
+
+  it("does not offer upload without the scope", async () => {
+    const state: FakeState = { agent: await agentWith(["analysis.start"]), audits: [], calls: [] };
+    const res = await rpc(fakeStore(state), "tools/call", {
+      name: "upload_bureau_report",
+      arguments: { bureau: "experian", session_id: SESSION_ID, report_text: reportText },
+    });
+    expect(toolText(res.json.result).error).toBe("agent is not allowed to use this tool");
+    expect(state.calls).toHaveLength(0);
   });
 });
 

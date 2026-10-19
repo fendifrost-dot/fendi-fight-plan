@@ -52,6 +52,12 @@ interface Job {
     questionnaire: any;
     reportType: string;
     totalPages: number;
+    inputMode?: "text" | "images";
+    bureau?: string | null;
+    clientId?: string | null;
+    sourcePdfPath?: string | null;
+    textChars?: number | null;
+    _source?: string | null;
     contractVersion?: string;
   };
   checkpoints: {
@@ -132,6 +138,36 @@ async function updateJob(client: any, jobId: string, updates: Record<string, any
   if (error) console.error(`Failed to update job ${jobId}:`, error);
 }
 
+interface SessionSyncClient {
+  from: (table: string) => {
+    select: (columns: string) => {
+      eq: (column: string, value: string) => {
+        maybeSingle: () => Promise<{ data: { id: string; user_id: string; session_id: string | null } | null }>;
+      };
+    };
+    update: (values: Record<string, unknown>) => {
+      eq: (column: string, value: string) => {
+        eq: (column: string, value: string) => Promise<{ error: { message?: string } | null }>;
+      };
+    };
+  };
+}
+
+async function syncSessionTerminal(client: SessionSyncClient, jobId: string, jobStatus: string) {
+  const { data: job } = await client.from("analysis_jobs").select("id, user_id, session_id").eq("id", jobId).maybeSingle();
+  if (!job?.session_id) return;
+  const analysisStatus = jobStatus === "FAILED" ? "FAILED" : "DONE";
+  const patch: Record<string, unknown> = {
+    analysis_status: analysisStatus,
+    active_job_id: null,
+    latest_analysis_job_id: job.id,
+    updated_at: new Date().toISOString(),
+  };
+  if (analysisStatus === "DONE") patch.is_analyzed = true;
+  const { error } = await client.from("dispute_sessions").update(patch).eq("id", job.session_id).eq("user_id", job.user_id);
+  if (error) console.error(`Failed to sync session for job ${jobId}:`, error.message);
+}
+
 async function failJob(client: any, jobId: string, se: StructuredError) {
   await updateJob(client, jobId, {
     status: "FAILED",
@@ -141,6 +177,21 @@ async function failJob(client: any, jobId: string, se: StructuredError) {
     error_meta: { step: se.step, chunk: se.chunk, page: se.page, cause: se.cause, where: se.where, elapsedMs: se.elapsedMs },
     completed_at: new Date().toISOString(),
   });
+  await syncSessionTerminal(client, jobId, "FAILED");
+}
+
+interface StoredTextClient {
+  storage: {
+    from: (bucket: string) => {
+      download: (path: string) => Promise<{ data: { text: () => Promise<string> } | null; error: { message?: string } | null }>;
+    };
+  };
+}
+
+async function downloadStoredText(client: StoredTextClient, objectName: string): Promise<string> {
+  const { data, error } = await client.storage.from(STORAGE_BUCKET).download(objectName);
+  if (error || !data) throw new Error(`Failed to download ${objectName}: ${error?.message || "no data"}`);
+  return await data.text();
 }
 
 async function downloadImageAsDataUrl(client: any, objectName: string): Promise<string> {
@@ -228,25 +279,33 @@ interface ChunkEntities {
 async function processChunk(
   client: any, jobId: string, lovableApiKey: string,
   chunkPaths: string[], chunkIndex: number, totalChunks: number,
+  mode: "text" | "images" = "images",
 ): Promise<ChunkEntities> {
   const startedAt = new Date();
-  console.log(`[chunk] job=${jobId} chunk=${chunkIndex + 1}/${totalChunks} pages=${chunkPaths.length} started`);
+  console.log(`[chunk] job=${jobId} chunk=${chunkIndex + 1}/${totalChunks} mode=${mode} parts=${chunkPaths.length} started`);
 
   try {
     await heartbeat(client, jobId, { step: `chunk_${chunkIndex + 1}_download` });
-    const chunkImages: string[] = [];
-    for (const path of chunkPaths) {
-      chunkImages.push(await downloadImageAsDataUrl(client, path));
+    const userContent: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
+    if (mode === "text") {
+      const parts: string[] = [];
+      for (const path of chunkPaths) parts.push(await downloadStoredText(client, path));
+      userContent.push({
+        type: "text",
+        text: `Analyze chunk ${chunkIndex + 1} of ${totalChunks}. The content is extracted credit-report text, not a page image. ${WORKER_ACCOUNTS_PROMPT}\n\n## CREDIT REPORT TEXT:\n"""\n${parts.join("\n\n")}\n"""`,
+      });
+    } else {
+      const chunkImages: string[] = [];
+      for (const path of chunkPaths) {
+        chunkImages.push(await downloadImageAsDataUrl(client, path));
+      }
+      userContent.push({ type: "text", text: `Analyze chunk ${chunkIndex + 1} of ${totalChunks}. ${WORKER_ACCOUNTS_PROMPT}` });
+      for (const img of chunkImages) {
+        userContent.push({ type: "image_url", image_url: { url: img } });
+      }
     }
 
     await heartbeat(client, jobId, { step: `chunk_${chunkIndex + 1}_ai_call` });
-
-    const userContent: any[] = [
-      { type: "text", text: `Analyze chunk ${chunkIndex + 1} of ${totalChunks}. ${WORKER_ACCOUNTS_PROMPT}` },
-    ];
-    for (const img of chunkImages) {
-      userContent.push({ type: "image_url", image_url: { url: img } });
-    }
 
     const result = await callAIWithRetry(lovableApiKey, [
       { role: "system", content: WORKER_SYSTEM_PROMPT },
@@ -380,68 +439,87 @@ serve(async (req) => {
       await heartbeat(client, jobId, { step: "resuming" });
     }
 
-    const inputData = job.input_data as Job["input_data"];
+    const inputData = (job.input_data || {}) as Job["input_data"];
     const checkpoints = (job.checkpoints || {}) as Job["checkpoints"];
-    const storagePaths = inputData.storagePaths;
+    const storagePaths = Array.isArray(inputData.storagePaths) ? inputData.storagePaths : [];
+    const inputMode = inputData.inputMode === "text" ? "text" : "images";
+    const reportedPages = Number(inputData.totalPages) > 0 ? Number(inputData.totalPages) : storagePaths.length;
 
-    console.log(`[worker] job=${jobId} totalPages=${storagePaths.length} resume=${isResume} processedChunks=${checkpoints.processedChunks || 0}`);
+    if (storagePaths.length === 0) {
+      const se: StructuredError = { code: "START_BAD_REQUEST", message: "Job has no stored report pages", stage: "WORKER", step: "mapping" };
+      await failJob(client, jobId, se);
+      return new Response(JSON.stringify({ error: se }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    console.log(`[worker] job=${jobId} mode=${inputMode} totalPages=${reportedPages} objects=${storagePaths.length} resume=${isResume} processedChunks=${checkpoints.processedChunks || 0}`);
 
     // Step 1: Document Mapping
     let documentMap = checkpoints.documentMap;
     if (!documentMap) {
       try {
         await updateJob(client, jobId, { step: "map_document", progress: 5 });
-        const totalPages = storagePaths.length;
-        const sampleIndices: number[] = [];
-        for (let i = 0; i < Math.min(5, totalPages); i++) sampleIndices.push(i);
-        if (totalPages > 7) { sampleIndices.push(totalPages - 2); sampleIndices.push(totalPages - 1); }
-
-        const sampleImages: string[] = [];
-        for (const idx of sampleIndices) {
-          try { sampleImages.push(await downloadImageAsDataUrl(client, storagePaths[idx])); }
-          catch (dlErr) {
-            const se = classifyWorkerError(dlErr instanceof Error ? dlErr : new Error(String(dlErr)), `download_page_${idx}`);
-            se.page = idx; se.elapsedMs = Date.now() - invocationStartedAt;
-            await failJob(client, jobId, se);
-            await cleanupJobStorage(client, job.user_id, jobId);
-            return new Response(JSON.stringify({ error: se }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-          }
-        }
-
-        const mapPrompt = `Analyze these credit report sample pages and output a JSON document map. Identify section boundaries using structural anchors (section headers, page breaks, content type changes).
+        const mapPrompt = `Analyze this credit report and output a JSON document map. Identify section boundaries using structural anchors (section headers, page breaks, content type changes).
 
 Sections to detect: personal_info, accounts, inquiries, payment_history, public_records, summary.
 For each: detected (boolean), start_page (1-indexed), end_page (1-indexed), page_count.
-Also output: is_multi_bureau (true if Experian/Equifax/TransUnion appear side-by-side), detected_bureaus (array), total_pages: ${storagePaths.length}, report_type (privacyguard|identityiq|smartcredit|experian|equifax|transunion|unknown).
+Also output: is_multi_bureau (true if Experian/Equifax/TransUnion appear side-by-side), detected_bureaus (array), total_pages: ${reportedPages}, report_type (privacyguard|identityiq|smartcredit|experian|equifax|transunion|unknown).
 
 IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment history grids that show month-by-month data should be classified as payment_history, not accounts.`;
 
-        const userContent: any[] = [{ type: "text", text: mapPrompt }];
-        for (const img of sampleImages) userContent.push({ type: "image_url", image_url: { url: img } });
+        const userContent: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
+        if (inputMode === "text") {
+          const first = await downloadStoredText(client, storagePaths[0]);
+          const last = storagePaths.length > 1 ? await downloadStoredText(client, storagePaths[storagePaths.length - 1]) : "";
+          const sample = `${first.slice(0, 8000)}${last ? `\n\n${last.slice(0, 4000)}` : ""}`;
+          userContent.push({
+            type: "text",
+            text: `${mapPrompt}\n\nThe sample below is extracted credit-report text, not a page image.\n\n"""\n${sample}\n"""`,
+          });
+        } else {
+          const totalPages = storagePaths.length;
+          const sampleIndices: number[] = [];
+          for (let i = 0; i < Math.min(5, totalPages); i++) sampleIndices.push(i);
+          if (totalPages > 7) { sampleIndices.push(totalPages - 2); sampleIndices.push(totalPages - 1); }
+
+          const sampleImages: string[] = [];
+          for (const idx of sampleIndices) {
+            try { sampleImages.push(await downloadImageAsDataUrl(client, storagePaths[idx])); }
+            catch (dlErr) {
+              const se = classifyWorkerError(dlErr instanceof Error ? dlErr : new Error(String(dlErr)), `download_page_${idx}`);
+              se.page = idx; se.elapsedMs = Date.now() - invocationStartedAt;
+              await failJob(client, jobId, se);
+              await cleanupJobStorage(client, job.user_id, jobId);
+              return new Response(JSON.stringify({ error: se }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+            }
+          }
+          userContent.push({ type: "text", text: mapPrompt });
+          for (const img of sampleImages) userContent.push({ type: "image_url", image_url: { url: img } });
+        }
 
         documentMap = await callAIWithRetry(lovableApiKey, [
           { role: "system", content: "You are a document structure analyzer. Output JSON only." },
           { role: "user", content: userContent },
         ]);
-        documentMap.total_pages = storagePaths.length;
+        documentMap.total_pages = reportedPages;
         await updateJob(client, jobId, { checkpoints: { ...checkpoints, documentMap }, progress: 15 });
         console.log(`[worker] job=${jobId} document mapping complete`);
       } catch (error) {
         console.error(`[worker] job=${jobId} document mapping failed, using fallback:`, error);
         documentMap = {
-          is_multi_bureau: false, detected_bureaus: [], total_pages: storagePaths.length,
-          sections: { accounts: { detected: true, start_page: 1, end_page: storagePaths.length, page_count: storagePaths.length } },
+          is_multi_bureau: false, detected_bureaus: [], total_pages: reportedPages,
+          sections: { accounts: { detected: true, start_page: 1, end_page: reportedPages, page_count: reportedPages } },
         };
         await updateJob(client, jobId, { checkpoints: { ...checkpoints, documentMap } });
       }
     }
 
-    // Step 2: Chunk and analyze ALL pages
+    // Step 2: Chunk and analyze ALL pages. Text jobs are already one chunk per file.
     await updateJob(client, jobId, { step: "analyzing", progress: 20 });
 
+    const chunkSize = inputMode === "text" ? 1 : MAX_IMAGES_PER_CHUNK;
     const chunks: string[][] = [];
-    for (let i = 0; i < storagePaths.length; i += MAX_IMAGES_PER_CHUNK) {
-      chunks.push(storagePaths.slice(i, i + MAX_IMAGES_PER_CHUNK));
+    for (let i = 0; i < storagePaths.length; i += chunkSize) {
+      chunks.push(storagePaths.slice(i, i + chunkSize));
     }
 
     const totalChunks = chunks.length;
@@ -495,7 +573,7 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
       });
 
       try {
-        const result = await processChunk(client, jobId, lovableApiKey, chunks[i], i, totalChunks);
+        const result = await processChunk(client, jobId, lovableApiKey, chunks[i], i, totalChunks, inputMode);
         // CRITICAL: Push every entity individually — NEVER merge or deduplicate
         allAccounts.push(...result.accounts);
         allCollections.push(...result.collections);
@@ -520,7 +598,7 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
         await heartbeat(client, jobId, { step: `chunk_${i + 1}_retry` });
 
         try {
-          const retryResult = await processChunk(client, jobId, lovableApiKey, chunks[i], i, totalChunks);
+          const retryResult = await processChunk(client, jobId, lovableApiKey, chunks[i], i, totalChunks, inputMode);
           allAccounts.push(...retryResult.accounts);
           allCollections.push(...retryResult.collections);
           allInquiries.push(...retryResult.inquiries);
@@ -614,10 +692,10 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
       validation_status: postProcessed.report.validation_status,
       validation_messages: postProcessed.report.validation_messages || postProcessed.validation.messages,
       warnings: postProcessed.report.warnings || [],
-      report_metadata: { documentMap, totalPages: storagePaths.length, reportType: inputData.reportType },
+      report_metadata: { documentMap, totalPages: reportedPages, reportType: inputData.reportType, inputMode, bureau: inputData.bureau || null },
       // Worker metadata
       documentMap,
-      totalPages: storagePaths.length,
+      totalPages: reportedPages,
       processedChunks,
       totalChunks,
       failedChunks,
@@ -656,7 +734,12 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
       checkpoints: buildCheckpoints(),
       completed_at: new Date().toISOString(), ...errorFields,
     });
+    await syncSessionTerminal(client, jobId, finalStatus);
 
+    if (finalStatus === "DONE" && inputMode === "text" && storagePaths.length > 0) {
+      const { error: removeError } = await client.storage.from(STORAGE_BUCKET).remove(storagePaths);
+      if (removeError) console.error(`Failed to remove report text for ${jobId}:`, removeError.message);
+    }
     await cleanupJobStorage(client, job.user_id, jobId);
     console.log(`[worker] job=${jobId} FINALIZED status=${finalStatus} derogatory=${postProcessed.report.derogatory_accounts?.length || 0} manual_review=${(postProcessed.report.manual_review_accounts || []).length} clean=${(postProcessed.report.clean_accounts || []).length} collections=${allCollections.length} inquiries=${allInquiries.length} public_records=${allPublicRecords.length} names=${allInaccurateNames.length} addresses=${allInaccurateAddresses.length} elapsed=${totalElapsedMs}ms validation=${postProcessed.validation.status} contract=${PARSER_CONTRACT_VERSION}`);
 

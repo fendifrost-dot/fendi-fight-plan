@@ -20,6 +20,8 @@ import {
   fetchJobStatus,
   retryJob as retryJobApi,
   fetchActiveJob,
+  fetchLatestAnalysisJob,
+  agentUploadSurfaceAction,
   isTerminalStatus,
   isPollExpired,
   isJobStale,
@@ -55,6 +57,8 @@ export interface UseAnalysisJobReturn {
 
 export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalysisJobReturn {
   const { onComplete, onError, onPartial, autoResume = true } = options;
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
   
   const [state, setState] = useState<JobState>(DEFAULT_JOB_STATE);
   const pollIntervalRef = useRef<number | null>(null);
@@ -333,6 +337,38 @@ export function useAnalysisJobV2(options: UseAnalysisJobOptions = {}): UseAnalys
       if (activeJob && !isTerminalStatus(activeJob.status as JobStatus)) {
         toast.info('Resuming in-progress analysis...');
         resumeJob(activeJob.id);
+        return;
+      }
+
+      const recent = await fetchLatestAnalysisJob();
+      const action = agentUploadSurfaceAction(recent ? {
+        status: recent.status,
+        completed_at: recent.completedAt,
+        created_at: recent.createdAt,
+        input_data: recent.inputData,
+      } : null, Date.now());
+      if (action !== 'hydrate' || !recent?.resultData) return;
+
+      const canonical = parseJobResult(recent.resultData);
+      setState(prev => ({
+        ...prev,
+        jobId: recent.id,
+        status: recent.status as JobStatus,
+        step: recent.step || 'complete',
+        progress: recent.progress || 100,
+        result: recent.resultData,
+        completedAt: recent.completedAt,
+        createdAt: recent.createdAt,
+        startedAt: recent.startedAt,
+        lastUpdated: Date.now(),
+        totalPages: Number(recent.inputData?.totalPages) || 0,
+      }));
+      completedRef.current = true;
+      try {
+        onCompleteRef.current?.(canonical);
+        toast.success('Loaded a bureau analysis uploaded by an agent.');
+      } catch (err) {
+        console.error('[useAnalysisJobV2] agent upload hydration failed:', err);
       }
     };
 

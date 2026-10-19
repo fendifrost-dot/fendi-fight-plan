@@ -23,6 +23,7 @@ const SCOPE_LABELS: Record<McpScope, string> = {
   "analysis.read": "Read analysis job status",
   "assessments.create": "Create an assessment",
   "reports.generate": "Generate dispute letters (stored report)",
+  "reports.upload": "Upload a bureau report",
   "intake.create": "Create an intake client",
   "intake.score": "Score a file",
   "intake.approve_pricing": "Approve pricing and open a payment plan",
@@ -39,7 +40,7 @@ const SCOPE_LABELS: Record<McpScope, string> = {
   "ai.ask": "Ask Credit Compass AI",
 };
 
-const NAME_CHOICES = ["claude", "cursor", "grok", "other"] as const;
+const NAME_CHOICES = ["claude", "cursor", "grok", "chatgpt", "other"] as const;
 
 interface AgentRow {
   id: string;
@@ -247,7 +248,9 @@ export function AgentAccessCard() {
             ))}
           </div>
           <p className="text-xs text-muted-foreground">
-            Write scopes: {WRITE_SCOPES.length}. Bureau PDFs are still uploaded from this app, not by an agent.
+            Write scopes: {WRITE_SCOPES.length}. With Upload a bureau report, an enrolled agent can send a PDF, a
+            public link, extracted text, or page images. The file is stored in your folder and analyzed like an
+            upload from this app.
           </p>
         </div>
 
