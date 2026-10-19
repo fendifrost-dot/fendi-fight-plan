@@ -734,7 +734,7 @@ IMPORTANT: Be thorough in detecting the accounts section boundaries. Payment his
       checkpoints: buildCheckpoints(),
       completed_at: new Date().toISOString(), ...errorFields,
     });
-    await syncSessionTerminal(client, jobId, finalStatus);
+    await syncSessionTerminal(client as unknown as SessionSyncClient, jobId, finalStatus);
 
     if (finalStatus === "DONE" && inputMode === "text" && storagePaths.length > 0) {
       const { error: removeError } = await client.storage.from(STORAGE_BUCKET).remove(storagePaths);

@@ -112,8 +112,8 @@ Deno.serve(async (req) => {
           id: data.id,
           name: data.name,
           public: data.public,
-          allowed_mime_types: data.allowed_mime_types,
-          file_size_limit: data.file_size_limit,
+          allowed_mime_types: data.allowed_mime_types ?? null,
+          file_size_limit: data.file_size_limit ?? null,
         };
       }
     } catch {
