@@ -95,7 +95,7 @@ export async function buildClientSummaryDocx(
   for (const b of ["equifax", "experian", "transunion"] as const) {
     const v = rec.identityReconciliation.nameMatch.bureauValues?.[b];
     if (v) {
-      idParas.push(new Paragraph({ text: `${b}: ${v}`, italics: true }));
+      idParas.push(new Paragraph({ children: [new TextRun({ text: `${b}: ${v}`, italics: true })] }));
     }
   }
   idParas.push(
@@ -108,7 +108,7 @@ export async function buildClientSummaryDocx(
   );
   for (const b of ["equifax", "experian", "transunion"] as const) {
     const v = rec.identityReconciliation.addressMatch.bureauValues?.[b];
-    if (v) idParas.push(new Paragraph({ text: `${b}: ${v}`, italics: true }));
+    if (v) idParas.push(new Paragraph({ children: [new TextRun({ text: `${b}: ${v}`, italics: true })] }));
   }
 
   const engagementFee = rec.pricingApproved
