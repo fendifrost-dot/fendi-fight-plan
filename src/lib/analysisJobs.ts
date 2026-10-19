@@ -312,6 +312,30 @@ export async function fetchActiveJob(): Promise<AnalysisJob | null> {
   }
 }
 
+/**
+ * Newest analysis job for the signed-in staff member.
+ * The analyzer uses this to show an agent upload only when it is still the latest job.
+ */
+export async function fetchLatestAnalysisJob(): Promise<AnalysisJob | null> {
+  const { data: authData } = await supabase.auth.getSession();
+  if (!authData.session?.user?.id) return null;
+
+  try {
+    const { data, error } = await supabase
+      .from('analysis_jobs')
+      .select('*')
+      .eq('user_id', authData.session.user.id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !data) return null;
+    return mapDbJobToJob(data);
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchJobById(jobId: string): Promise<AnalysisJob | null> {
   const { data: authData } = await supabase.auth.getSession();
   
@@ -354,6 +378,26 @@ export function getPollInterval(): number {
 
 export function isTerminalStatus(status: JobStatus): boolean {
   return ['DONE', 'FAILED', 'PARTIAL'].includes(status);
+}
+
+export type AgentSurfaceAction = 'resume' | 'hydrate' | 'skip';
+
+/**
+ * A finished agent upload should appear in the analyzer for 12 hours.
+ * In-progress jobs are resumed by the existing active-job lookup.
+ */
+export function agentUploadSurfaceAction(
+  job: { status?: string; completed_at?: string | null; created_at?: string | null; input_data?: { _source?: string } | null } | null,
+  now: number,
+  maxAgeMs = 12 * 60 * 60 * 1000,
+): AgentSurfaceAction {
+  if (!job || job.input_data?._source !== 'agent_upload') return 'skip';
+  if (job.status === 'QUEUED' || job.status === 'RUNNING') return 'resume';
+  if (job.status === 'DONE' || job.status === 'PARTIAL') {
+    const stamp = Date.parse(job.completed_at || job.created_at || '');
+    if (Number.isFinite(stamp) && now - stamp >= 0 && now - stamp <= maxAgeMs) return 'hydrate';
+  }
+  return 'skip';
 }
 
 // ============= HELPERS =============

@@ -15,9 +15,10 @@
  *
  * This module has no Deno imports so the frontend and vitest can import it.
  */
+import { isUploadFailure, parseBureauUploadArgs, toAnalysisUploadBody } from "./bureauReportUpload.ts";
 
 export const SERVER_NAME = "credit-compass";
-export const SERVER_VERSION = "1.1.0";
+export const SERVER_VERSION = "1.2.0";
 
 export const SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"] as const;
 export const LATEST_PROTOCOL_VERSION = "2025-06-18";
@@ -35,6 +36,7 @@ export const READ_SCOPES = [
 export const WRITE_SCOPES = [
   "assessments.create",
   "reports.generate",
+  "reports.upload",
   "intake.create",
   "intake.score",
   "intake.approve_pricing",
@@ -236,7 +238,7 @@ const TOOLS: ToolDef[] = [
     scope: "assessments.create",
     description:
       "Create a new assessment (dispute session) owned by the staff member who enrolled this agent. " +
-      "Report PDFs are then uploaded and analyzed from the Credit Compass app; this tool only opens the file.",
+      "A bureau report can then be uploaded with upload_bureau_report, or from the Credit Compass app.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -400,10 +402,44 @@ const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "upload_bureau_report",
+    scope: "reports.upload",
+    description:
+      "Upload a credit bureau report and queue the same analysis job the app uses. " +
+      "Provide pdf_base64 and/or pdf_url (public https), and/or report_text, and/or page_images (jpeg, png, or webp, 5 MB each). " +
+      "Requires bureau and either session_id (assessment) or client_id (intake). " +
+      "By default this stores the file under the enrolling staff member and returns job_id. " +
+      "Set queue to false to only store it, then call start_analysis with the returned storage_paths and input_mode. " +
+      "Poll with get_analysis_status. Does not email, charge, or delete.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["bureau"],
+      properties: {
+        bureau: { type: "string", enum: [...BUREAUS] },
+        session_id: uuidSchema,
+        client_id: uuidSchema,
+        pdf_base64: { type: "string", description: "PDF bytes as base64 or a data:application/pdf;base64 URL. Prefer pdf_url above a few megabytes." },
+        pdf_url: { type: "string", description: "Public https URL of the PDF. Private and link-local hosts are refused." },
+        report_text: { type: "string", description: "Plain text already extracted from the bureau PDF." },
+        page_images: {
+          type: "array",
+          items: { type: "string" },
+          description: "Page images as base64 or data URLs (jpeg, png, or webp). Each image must be 5 MB or smaller.",
+        },
+        questionnaire: { type: "object" },
+        filename: { type: "string" },
+        report_type: { type: "string" },
+        queue: { type: "boolean", description: "Default true. False stores the report without starting the job." },
+      },
+    },
+  },
+  {
     name: "start_analysis",
     scope: "analysis.start",
     description:
       "Queue a report analysis job. storage_paths must already exist under the enrolling staff member's storage prefix (`{staff_user_id}/...`). " +
+      "Use input_mode text for the text chunk paths returned by upload_bureau_report. " +
       "Returns a job_id; poll with get_analysis_status.",
     inputSchema: {
       type: "object",
@@ -412,8 +448,13 @@ const TOOLS: ToolDef[] = [
       properties: {
         storage_paths: { type: "array", items: { type: "string" }, minItems: 1 },
         session_id: uuidSchema,
+        client_id: uuidSchema,
         questionnaire: { type: "object" },
         report_type: { type: "string" },
+        input_mode: { type: "string", enum: ["text", "images"] },
+        bureau: { type: "string", enum: [...BUREAUS] },
+        total_pages: { type: "integer", minimum: 1, maximum: 500 },
+        source_pdf_path: { type: "string" },
       },
     },
   },
@@ -1169,8 +1210,49 @@ async function executeTool(
     return fromHub(await store.intake("payments-mark-late", graceDays == null ? {} : { graceDays }));
   }
 
+  if (name === "upload_bureau_report") {
+    const parsed = parseBureauUploadArgs(args);
+    if (isUploadFailure(parsed)) return { ok: false, error: parsed.error };
+    const subject = parsed.value.sessionId ?? parsed.value.clientId;
+    const result = fromHub(await store.session("analysis-upload", toAnalysisUploadBody(parsed.value), operator!), subject);
+    if (result.ok !== true) return result;
+    const body = isRecord(result.value) ? result.value : {};
+    const jobId = typeof body.job_id === "string" ? body.job_id : undefined;
+    return {
+      ok: true,
+      subjectId: subject ?? jobId,
+      value: {
+        job_id: jobId ?? null,
+        status: typeof body.status === "string" ? body.status : null,
+        queued: body.queued === true,
+        bureau: body.bureau ?? parsed.value.bureau,
+        input_mode: body.input_mode ?? null,
+        page_count: body.page_count ?? null,
+        text_chars: body.text_chars ?? null,
+        storage_paths: Array.isArray(body.storage_paths) ? body.storage_paths : [],
+        source_pdf_path: typeof body.source_pdf_path === "string" ? body.source_pdf_path : null,
+        source_pdf_stored: body.source_pdf_stored === true,
+        session_id: body.session_id ?? parsed.value.sessionId ?? null,
+        client_id: body.client_id ?? parsed.value.clientId ?? null,
+        upload_id: typeof body.upload_id === "string" ? body.upload_id : null,
+        intake_saved: body.intake_saved === true,
+        warning: typeof body.warning === "string" ? publicError(body.warning) : null,
+      },
+    };
+  }
+
   if (name === "start_analysis") {
-    const extra = unknownField(args, ["storage_paths", "session_id", "questionnaire", "report_type"]);
+    const extra = unknownField(args, [
+      "storage_paths",
+      "session_id",
+      "client_id",
+      "questionnaire",
+      "report_type",
+      "input_mode",
+      "bureau",
+      "total_pages",
+      "source_pdf_path",
+    ]);
     if (extra) return { ok: false, error: `unknown field: ${extra}` };
     if (!Array.isArray(args.storage_paths) || args.storage_paths.length === 0) {
       return { ok: false, error: "storage_paths must be a non-empty list" };
@@ -1178,6 +1260,9 @@ async function executeTool(
     const storagePaths: string[] = [];
     for (const path of args.storage_paths) {
       if (typeof path !== "string" || path.trim() === "") return { ok: false, error: "storage_paths must be strings" };
+      if (!path.startsWith(`${operator}/`) || path.includes("..") || path.includes("\\")) {
+        return { ok: false, error: "storage_paths must stay under the enrolling staff member's folder" };
+      }
       storagePaths.push(path);
     }
     let sessionId: string | undefined;
@@ -1186,23 +1271,63 @@ async function executeTool(
       if (typeof parsed !== "string") return { ok: false, error: parsed.error };
       sessionId = parsed;
     }
+    let clientId: string | undefined;
+    if (args.client_id != null) {
+      const parsed = requireUuid(args.client_id, "client_id");
+      if (typeof parsed !== "string") return { ok: false, error: parsed.error };
+      clientId = parsed;
+    }
     if (args.questionnaire != null && !isRecord(args.questionnaire)) {
       return { ok: false, error: "questionnaire must be an object" };
     }
     const reportType = optionalText(args.report_type, "report_type", 80);
     if (reportType && typeof reportType === "object") return { ok: false, error: reportType.error };
+    let inputMode: "text" | "images" = "images";
+    if (args.input_mode != null) {
+      if (args.input_mode !== "text" && args.input_mode !== "images") {
+        return { ok: false, error: "input_mode must be text or images" };
+      }
+      inputMode = args.input_mode;
+    }
+    let bureau: string | undefined;
+    if (args.bureau != null) {
+      if (typeof args.bureau !== "string" || !(BUREAUS as readonly string[]).includes(args.bureau)) {
+        return { ok: false, error: "bureau must be equifax, experian, or transunion" };
+      }
+      bureau = args.bureau;
+    }
+    let totalPages: number | undefined;
+    if (args.total_pages != null) {
+      if (typeof args.total_pages !== "number" || !Number.isInteger(args.total_pages) || args.total_pages < 1 || args.total_pages > 500) {
+        return { ok: false, error: "total_pages must be a whole number from 1 to 500" };
+      }
+      totalPages = args.total_pages;
+    }
+    let sourcePdfPath: string | undefined;
+    if (args.source_pdf_path != null) {
+      if (typeof args.source_pdf_path !== "string" || !args.source_pdf_path.startsWith(`${operator}/`) || args.source_pdf_path.includes("..")) {
+        return { ok: false, error: "source_pdf_path must stay under the enrolling staff member's folder" };
+      }
+      sourcePdfPath = args.source_pdf_path;
+    }
     const result = fromHub(
       await store.session(
         "analysis-start",
         {
           storagePaths,
           sessionId,
+          clientId,
           questionnaire: isRecord(args.questionnaire) ? args.questionnaire : {},
           reportType: typeof reportType === "string" ? reportType : undefined,
+          inputMode,
+          bureau,
+          totalPages,
+          sourcePdfPath,
+          source: "agent_upload",
         },
         operator!,
       ),
-      sessionId,
+      sessionId ?? clientId,
     );
     if (result.ok !== true) return result;
     const body = isRecord(result.value) ? result.value : {};
@@ -1445,7 +1570,7 @@ async function handleMessage(
           serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
           instructions:
             "Credit Compass staff file: assessments, intake, report analysis, document tools, letter generation, pricing, and payments. " +
-            "Agents may create clients with only a legal name and may use every staff workflow tool. Every call is audited. " +
+            "Agents may create clients with only a legal name and may upload a bureau report for analysis. Every call is audited. " +
             "This server cannot delete anything, send mail, charge a card, or run SQL.",
         },
       };

@@ -36,7 +36,15 @@ serve(async (req) => {
       });
     }
 
-    const { sessionId, storagePaths, questionnaire, reportType } = await req.json();
+    const body = await req.json();
+    const { sessionId, storagePaths, questionnaire, reportType } = body;
+    const inputMode = body.inputMode === "text" ? "text" : "images";
+    const bureau = typeof body.bureau === "string" ? body.bureau : null;
+    const clientId = typeof body.clientId === "string" ? body.clientId : null;
+    const sourcePdfPath = typeof body.sourcePdfPath === "string" ? body.sourcePdfPath : null;
+    const textChars = typeof body.textChars === "number" && Number.isFinite(body.textChars) ? body.textChars : null;
+    const uploadSource = body.source === "agent_upload" ? "agent_upload" : null;
+    const requestedPages = Number(body.totalPages);
 
     if (!storagePaths || !Array.isArray(storagePaths) || storagePaths.length === 0) {
       return new Response(JSON.stringify({ error: { code: "START_BAD_REQUEST", message: "No storage paths provided", stage: "START" } }), {
@@ -46,17 +54,44 @@ serve(async (req) => {
     }
 
     const userPrefix = `${user.id}/`;
+    const pathAllowed = (path: unknown) =>
+      typeof path === "string" && path.startsWith(userPrefix) && !path.includes("..") && !path.includes("\\");
     for (const path of storagePaths) {
-      if (!path.startsWith(userPrefix)) {
+      if (!pathAllowed(path)) {
         return new Response(JSON.stringify({ error: { code: "START_PATH_VALIDATION_FAILED", message: `Invalid storage path: access denied for ${path}`, stage: "START", step: "path_validation" } }), {
           status: 403,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
     }
+    if (sourcePdfPath && !pathAllowed(sourcePdfPath)) {
+      return new Response(JSON.stringify({ error: { code: "START_PATH_VALIDATION_FAILED", message: "Invalid source PDF path", stage: "START", step: "path_validation" } }), {
+        status: 403,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const totalPages = Number.isInteger(requestedPages) && requestedPages > 0 && requestedPages <= 500
+      ? requestedPages
+      : storagePaths.length;
 
     const jobId = crypto.randomUUID();
     const adminClient = createClient(supabaseUrl, supabaseServiceKey);
+
+    const inputData = {
+      storagePaths,
+      questionnaire: questionnaire || {},
+      reportType: reportType || bureau || "unknown",
+      totalPages,
+      inputMode,
+      bureau,
+      clientId,
+      sourcePdfPath,
+      textChars,
+      _source: uploadSource,
+      _contract_version: "v2-canonical",
+      _started_at: new Date().toISOString(),
+    };
 
     const { error: insertError } = await adminClient.from("analysis_jobs").insert({
       id: jobId,
@@ -65,27 +100,9 @@ serve(async (req) => {
       status: "QUEUED",
       step: "pending",
       progress: 0,
-      input_data: {
-        storagePaths,
-        questionnaire: questionnaire || {},
-        reportType: reportType || "unknown",
-        totalPages: storagePaths.length,
-      },
+      input_data: inputData,
       checkpoints: {},
-      // Contract version metadata for forensic traceability
     });
-
-    // Stamp contract version into input_data for audit trail
-    await adminClient.from("analysis_jobs").update({
-      input_data: {
-        storagePaths,
-        questionnaire: questionnaire || {},
-        reportType: reportType || "unknown",
-        totalPages: storagePaths.length,
-        _contract_version: 'v2-canonical',
-        _started_at: new Date().toISOString(),
-      },
-    }).eq('id', jobId);
 
     if (insertError) {
       console.error("Failed to create job:", insertError);
@@ -93,6 +110,26 @@ serve(async (req) => {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+    }
+
+    if (sessionId) {
+      const { data: sessionRow } = await adminClient
+        .from("dispute_sessions")
+        .select("id, selected_bureaus")
+        .eq("id", sessionId)
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (sessionRow) {
+        const selected = Array.isArray(sessionRow.selected_bureaus) ? sessionRow.selected_bureaus : [];
+        const bureaus = bureau && !selected.includes(bureau) ? [...selected, bureau] : selected;
+        const { error: sessionError } = await adminClient.from("dispute_sessions").update({
+          analysis_status: "IN_PROGRESS",
+          active_job_id: jobId,
+          selected_bureaus: bureaus,
+          updated_at: new Date().toISOString(),
+        }).eq("id", sessionId).eq("user_id", user.id);
+        if (sessionError) console.error("Failed to stamp session", sessionError.message);
+      }
     }
 
     // Trigger the worker (fire and forget)
@@ -106,7 +143,7 @@ serve(async (req) => {
       body: JSON.stringify({ jobId }),
     }).catch((err) => console.error("Failed to trigger worker:", err));
 
-    console.log(`Job ${jobId} created for user ${user.id} with ${storagePaths.length} pages (storage paths)`);
+    console.log(`Job ${jobId} created for user ${user.id} with ${totalPages} pages mode=${inputMode} objects=${storagePaths.length}`);
 
     return new Response(JSON.stringify({ jobId, status: "QUEUED" }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
